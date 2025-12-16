@@ -23,26 +23,7 @@ RUN apt-get update && apt-get install -y \
 COPY pyproject.toml ./
 
 # Install Python dependencies from pyproject.toml
-RUN pip install --no-cache-dir \
-    fastapi[standard]>=0.119.0 \
-    uvicorn[standard] \
-    alembic \
-    psycopg[binary] \
-    redis \
-    fastapi-cache2[redis] \
-    python-multipart \
-    python-jose[cryptography] \
-    passlib[argon2] \
-    python-dotenv \
-    pydantic-settings \
-    pydantic[email] \
-    sqlalchemy \
-    pandas \
-    openpyxl \
-    httpx \
-    pytest \
-    pytest-asyncio \
-    pytest-cov
+RUN pip install --no-cache-dir .
 
 # Create necessary directories
 RUN mkdir -p /app/uploads /app/logs /app/src /app/alembic /app/scripts /app/data

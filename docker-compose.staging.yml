@@ -19,12 +19,12 @@ services:
     env_file:
       - .env.staging
     volumes:
-      # Mount source code for hot reload
-      - ./src:/app/src:ro
-      - ./alembic:/app/alembic:ro
-      - ./alembic.ini:/app/alembic.ini:ro
-      - ./scripts:/app/scripts:ro
-      - ./data:/app/data:ro
+      # Mount source code for hot reload (writable for temp files/logs)
+      - ./src:/app/src
+      - ./alembic:/app/alembic
+      - ./alembic.ini:/app/alembic.ini
+      - ./scripts:/app/scripts
+      - ./data:/app/data
       # Persistent data volumes
       - upload_data:/app/uploads
       - log_data:/app/logs

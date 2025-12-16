@@ -19,14 +19,15 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy dependency files
+# Copy dependency files and minimal source structure for build
 COPY pyproject.toml ./
+COPY src/ ./src/
 
 # Install Python dependencies from pyproject.toml
 RUN pip install --no-cache-dir .
 
 # Create necessary directories
-RUN mkdir -p /app/uploads /app/logs /app/src /app/alembic /app/scripts /app/data
+RUN mkdir -p /app/uploads /app/logs /app/alembic /app/scripts /app/data
 
 # Expose port
 EXPOSE 7070

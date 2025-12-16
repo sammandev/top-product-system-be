@@ -14,21 +14,6 @@ services:
     restart: unless-stopped
     ports:
       - "7070:7070"
-    environment:
-      - APP_NAME=${APP_NAME:-AST_Parser_Staging}
-      - DEBUG=${DEBUG:-False}
-      - DATABASE_URL=postgresql+psycopg://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-      - JWT_SECRET=${JWT_SECRET}
-      - JWT_ALGORITHM=HS256
-      - ACCESS_TOKEN_EXPIRE_MINUTES=1440
-      - REFRESH_TOKEN_EXPIRE_DAYS=30
-      - UPLOAD_PERSIST=1
-      - UPLOAD_TTL_SECONDS=3600
-      - DUT_API_BASE_URL=${DUT_API_BASE_URL:-http://172.18.220.56:9001}
-      - CORS_ORIGINS=${CORS_ORIGINS}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - PORT=7070
     env_file:
       - .env.staging
     volumes:

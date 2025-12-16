@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+test_outputs/
+.ruff_cache/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Documentation
+docs/
+reference/
+*.md
+!README.md
+
+# Git
+.git/
+.gitignore
+
+# Uploads and temporary files
+uploads/
+temp/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# CI/CD
+.github/
+Makefile
+
+# Development
+scripts/create_user.py
+scripts/bootstrap_rbac.py
+scripts/run_real_comparison.py

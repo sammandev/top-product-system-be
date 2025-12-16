@@ -1,0 +1,115 @@
+[project]
+name = "backend-fastapi"
+version = "0.1.0"
+description = "FastAPI Backend"
+requires-python = ">=3.13"
+dependencies = [
+    "aiofiles",
+    "annotated-types",
+    "anyio",
+    "argon2-cffi",
+    "axios",
+    "certifi",
+    "chardet",
+    "charset-normalizer",
+    "click",
+    "colorama",
+    "dnspython",
+    "email-validator",
+    "et-xmlfile",
+    "fastapi>=0.119.0",
+    "fastapi-cache2[redis]",
+    "fastapi-cli",
+    "fastapi-cloud-cli",
+    "h11",
+    "httpcore",
+    "httptools",
+    "httpx",
+    "idna",
+    "iniconfig",
+    "itsdangerous",
+    "jinja2",
+    "markdown-it-py",
+    "markupsafe",
+    "mdurl",
+    "numpy",
+    "openpyxl",
+    "orjson",
+    "packaging",
+    "pandas",
+    "pwdlib[argon2]",
+    "pluggy",
+    "py7zr",
+    "pydantic",
+    "pydantic-core",
+    "pydantic-extra-types",
+    "pydantic-settings",
+    "pygments",
+    "pyjwt",
+    "pytest",
+    "pytest-asyncio",
+    "python-dateutil",
+    "python-dotenv",
+    "python-multipart",
+    "pytz",
+    "pyyaml",
+    "rarfile",
+    "requests",
+    "rich",
+    "rich-toolkit",
+    "rignore",
+    "ruff",
+    "sentry-sdk",
+    "shellingham",
+    "six",
+    "sniffio",
+    "sqlalchemy",
+    "starlette",
+    "swagger-ui-bundle",
+    "typer",
+    "typing-extensions",
+    "typing-inspection",
+    "tzdata",
+    "ujson",
+    "urllib3",
+    "uv",
+    "uvicorn",
+    "watchfiles",
+    "websockets",
+    "psycopg[binary]",
+    "pip-review",
+    "redis",
+    "alembic",
+]
+
+[dependency-groups]
+dev = ["ruff"]
+test = ["pytest"]
+all = ["ruff", "pytest"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 256
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.uv]
+package = true
+link-mode = "copy"
+
+[tool.uv_scripts]
+dev = "python -W ignore::UserWarning:fastapi._compat.v1 -m fastapi dev src/app/main.py --port 8001"
+start = "python -W ignore::UserWarning:fastapi._compat.v1 -m uvicorn app.main:app --host 0.0.0.0 --port 8001"
+format = "ruff format"
+check = "ruff check"
+test = "pytest -q"
+lock = "uv pip freeze > requirements.txt"

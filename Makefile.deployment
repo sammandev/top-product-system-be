@@ -1,0 +1,66 @@
+# Makefile for AST Tools Backend
+
+.PHONY: help install dev start test test-cov lint format clean upgrade docker-build docker-up docker-down deploy
+
+help:
+	@echo "Available commands:"
+	@echo "  make install      - Install dependencies"
+	@echo "  make dev          - Run development server"
+	@echo "  make start        - Run production server"
+	@echo "  make test         - Run tests"
+	@echo "  make test-cov     - Run tests with coverage"
+	@echo "  make lint         - Run linter"
+	@echo "  make format       - Format code"
+	@echo "  make clean        - Clean cache and temp files"
+	@echo "  make upgrade      - Run database migrations"
+	@echo "  make docker-build - Build Docker images"
+	@echo "  make docker-up    - Start Docker containers"
+	@echo "  make docker-down  - Stop Docker containers"
+	@echo "  make deploy       - Deploy to staging"
+
+install:
+	uv pip install -e .
+
+dev:
+	uv run python -W ignore::UserWarning:fastapi._compat.v1 -m fastapi dev src/app/main.py --port 7070
+
+start:
+	uv run python -W ignore::UserWarning:fastapi._compat.v1 -m uvicorn app.main:app --host 0.0.0.0 --port 7070
+
+test:
+	uv run pytest -v
+
+test-cov:
+	uv run pytest --cov=app --cov-report=html --cov-report=term
+
+lint:
+	uv run ruff check
+
+format:
+	uv run ruff format
+
+clean:
+	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+	find . -type d -name ".pytest_cache" -exec rm -rf {} + 2>/dev/null || true
+	find . -type d -name ".ruff_cache" -exec rm -rf {} + 2>/dev/null || true
+	find . -type d -name "htmlcov" -exec rm -rf {} + 2>/dev/null || true
+	find . -type f -name "*.pyc" -delete 2>/dev/null || true
+	find . -type f -name ".coverage" -delete 2>/dev/null || true
+
+upgrade:
+	uv run alembic upgrade head
+
+docker-build:
+	docker-compose build --no-cache
+
+docker-up:
+	docker-compose up -d
+
+docker-down:
+	docker-compose down
+
+docker-logs:
+	docker-compose logs -f
+
+deploy:
+	./deploy.sh staging

@@ -1,0 +1,424 @@
+# =============================================================================
+# .gitignore for FastAPI Python Backend Project
+# =============================================================================
+
+# =============================================================================
+# Python
+# =============================================================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+coverage.xml
+*.cover
+*.log
+.py _cache/
+.pytest_cache/
+.hypothesis/
+pytestdebug.log
+nosetests.xml
+test-results/
+junit/
+
+# Translations
+*.mo
+*.pot
+
+# Django/Flask stuff (if applicable)
+instance/
+.webassets-cache
+db.sqlite3
+db.sqlite3-journal
+
+# Scrapy stuff
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+docs/_static/
+docs/_templates/
+doc/_build/
+target/
+
+# PyBuilder
+.pybuilder/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# poetry
+poetry.lock
+
+# pdm
+.pdm.toml
+__pypackages__/
+
+# PEP 582
+__pypackages__/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.env.local
+.env.*.local
+.venv
+.venv/
+.venv-1/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+pythonenv*
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+# Ruff
+.ruff_cache/
+
+# =============================================================================
+# FastAPI / Uvicorn / Starlette Specific
+# =============================================================================
+
+# Uploaded files
+uploads/
+data/uploads/
+temp_uploads/
+
+# Generated test outputs
+test_outputs/
+data/test_outputs/
+output/
+outputs/
+
+# Logs
+logs/
+*.log
+log/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Local development files
+.local/
+local/
+.temp/
+temp/
+
+# =============================================================================
+# IDE / Editor Specific
+# =============================================================================
+
+# Visual Studio Code
+.vscode/
+.vscode-test/
+*.code-workspace
+
+# PyCharm / IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+.vim/
+Session.vim
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# Atom
+.atom/
+
+# VS / Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.vcxproj.filters
+
+# =============================================================================
+# Operating System Files
+# =============================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+.directory
+.Trash-*
+.nfs*
+
+# =============================================================================
+# Cloud / CI/CD
+# =============================================================================
+
+# Docker
+docker-compose.override.yml
+.dockerignore.local
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Kubernetes
+*.kubeconfig
+
+# =============================================================================
+# Security / Credentials
+# =============================================================================
+
+# Secrets and credentials
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.der
+secrets.yml
+secrets.yaml
+credentials.json
+.secrets/
+.credentials/
+
+# SSH keys
+id_rsa
+id_rsa.pub
+id_ecdsa
+id_ecdsa.pub
+id_ed25519
+id_ed25519.pub
+
+# API keys and tokens
+.token
+*.token
+access_token.txt
+refresh_token.txt
+
+# =============================================================================
+# Project Specific
+# =============================================================================
+
+# Alembic migrations (keep the directory structure)
+# alembic/versions/*.py  # Uncomment if you want to ignore migration files
+
+# Sample data that shouldn't be committed
+data/private/
+data/sensitive/
+data/production/
+
+# Backup files
+*.bak
+*.backup
+*.old
+*.orig
+
+# Cache directories
+.cache/
+cache/
+
+# Compiled translations
+locale/*/LC_MESSAGES/*.mo
+
+# Session files
+.session
+
+# Lock files (except requirements.txt equivalent)
+# uv.lock  # Uncomment if using uv and want to ignore lock file
+
+# Local configuration overrides
+config.local.py
+settings.local.py
+local_settings.py
+
+# Performance profiling
+*.prof
+*.lprof
+.profiling/
+
+# Benchmark results
+benchmark_results/
+benchmarks/results/
+
+# Redis dump
+dump.rdb
+
+# PostgreSQL
+*.pgdata
+pgdata/
+
+# Debug files
+debug/
+.debug/
+*.debug
+
+# Temporary files
+*.tmp
+tmp/
+.tmp/
+
+# Archive files (if you don't want them in version control)
+# *.zip
+# *.tar.gz
+# *.tar
+# *.rar
+# *.7z
+
+# =============================================================================
+# Documentation (Optional - uncomment if needed)
+# =============================================================================
+
+# Generated API documentation
+# docs/api/
+# docs/_build/
+# docs/.doctrees/
+
+# =============================================================================
+# Node.js (if using frontend or build tools)
+# =============================================================================
+
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn/
+.pnp.*
+
+# =============================================================================
+# End of .gitignore
+# =============================================================================

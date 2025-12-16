@@ -1,0 +1,104 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ast-tools-backend:latest
+    container_name: ast-tools-backend
+    restart: unless-stopped
+    ports:
+      - "7070:7070"
+    environment:
+      - APP_NAME=${APP_NAME:-AST_Parser_Staging}
+      - DEBUG=${DEBUG:-False}
+      - DATABASE_URL=postgresql+psycopg://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}
+      - REDIS_URL=${REDIS_URL:-redis://172.18.220.56:6379/0}
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=1440
+      - REFRESH_TOKEN_EXPIRE_DAYS=30
+      - UPLOAD_PERSIST=1
+      - UPLOAD_TTL_SECONDS=3600
+      - DUT_API_BASE_URL=${DUT_API_BASE_URL:-http://172.18.220.56:9001}
+      - CORS_ORIGINS=${CORS_ORIGINS}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    env_file:
+      - .env
+    volumes:
+      - upload_data:/app/uploads
+      - log_data:/app/logs
+    networks:
+      - ast-tools-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7070/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      - redis
+    labels:
+      - "com.ast-tools.service=backend"
+      - "com.ast-tools.environment=staging"
+
+  redis:
+    image: redis:7-alpine
+    container_name: ast-tools-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - ast-tools-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    labels:
+      - "com.ast-tools.service=redis"
+      - "com.ast-tools.environment=staging"
+
+  nginx:
+    image: nginx:alpine
+    container_name: ast-tools-nginx
+    restart: unless-stopped
+    ports:
+      - "9090:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ../frontend_vuetify/dist:/usr/share/nginx/html:ro
+      - nginx_logs:/var/log/nginx
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    networks:
+      - ast-tools-network
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    labels:
+      - "com.ast-tools.service=nginx"
+      - "com.ast-tools.environment=staging"
+
+volumes:
+  upload_data:
+    driver: local
+  log_data:
+    driver: local
+  redis_data:
+    driver: local
+  nginx_logs:
+    driver: local
+
+networks:
+  ast-tools-network:
+    driver: bridge

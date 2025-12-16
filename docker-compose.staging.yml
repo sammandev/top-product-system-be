@@ -1,0 +1,167 @@
+# Docker Compose for Staging Environment with Hot Reload
+# This configuration mounts source code as volumes for instant updates
+# No need to rebuild images when code changes
+
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.staging
+    image: ast-tools-backend:staging
+    container_name: ast-tools-backend
+    restart: unless-stopped
+    ports:
+      - "7070:7070"
+    environment:
+      - APP_NAME=${APP_NAME:-AST_Parser_Staging}
+      - DEBUG=${DEBUG:-False}
+      - DATABASE_URL=postgresql+psycopg://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}
+      - REDIS_URL=${REDIS_URL:-redis://redis:7071/0}
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=1440
+      - REFRESH_TOKEN_EXPIRE_DAYS=30
+      - UPLOAD_PERSIST=1
+      - UPLOAD_TTL_SECONDS=3600
+      - DUT_API_BASE_URL=${DUT_API_BASE_URL:-http://172.18.220.56:9001}
+      - CORS_ORIGINS=${CORS_ORIGINS}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PORT=7070
+    env_file:
+      - .env.staging
+    volumes:
+      # Mount source code for hot reload
+      - ./src:/app/src:ro
+      - ./alembic:/app/alembic:ro
+      - ./alembic.ini:/app/alembic.ini:ro
+      - ./scripts:/app/scripts:ro
+      - ./data:/app/data:ro
+      # Persistent data volumes
+      - upload_data:/app/uploads
+      - log_data:/app/logs
+    networks:
+      - ast-tools-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7070/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      redis:
+        condition: service_healthy
+    labels:
+      - "com.ast-tools.service=backend"
+      - "com.ast-tools.environment=staging"
+      - "com.ast-tools.hot-reload=enabled"
+    # Enable auto-reload for code changes
+    command: uvicorn app.main:app --host 0.0.0.0 --port 7070 --reload --reload-dir /app/src
+
+  redis:
+    image: redis:7-alpine
+    container_name: ast-tools-redis
+    restart: unless-stopped
+    ports:
+      - "7071:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - ast-tools-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    labels:
+      - "com.ast-tools.service=redis"
+      - "com.ast-tools.environment=staging"
+
+  frontend:
+    build:
+      context: ../frontend_vuetify
+      dockerfile: Dockerfile.dev
+    image: ast-tools-frontend:dev
+    container_name: ast-tools-frontend
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_BASE_URL=/api
+      - VITE_APP_TITLE=AST Parser - Staging
+      - VITE_ENVIRONMENT=staging
+    env_file:
+      - ../frontend_vuetify/.env.staging
+    volumes:
+      # Mount source code for HMR (Hot Module Replacement)
+      - ../frontend_vuetify/src:/app/src
+      - ../frontend_vuetify/public:/app/public
+      - ../frontend_vuetify/index.html:/app/index.html
+      - ../frontend_vuetify/vite.config.ts:/app/vite.config.ts
+      - ../frontend_vuetify/tsconfig.json:/app/tsconfig.json
+      - ../frontend_vuetify/tsconfig.app.json:/app/tsconfig.app.json
+      - ../frontend_vuetify/package.json:/app/package.json
+      - ../frontend_vuetify/pnpm-lock.yaml:/app/pnpm-lock.yaml
+      - ../frontend_vuetify/.env.staging:/app/.env.staging
+      # Cache node_modules for faster startup
+      - frontend_node_modules:/app/node_modules
+    networks:
+      - ast-tools-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:5173/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    labels:
+      - "com.ast-tools.service=frontend"
+      - "com.ast-tools.environment=staging"
+      - "com.ast-tools.hot-reload=enabled"
+
+  nginx:
+    image: nginx:alpine
+    container_name: ast-tools-nginx
+    restart: unless-stopped
+    ports:
+      - "9090:80"
+      - "443:443"
+    volumes:
+      # Mount nginx config for easy updates
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d/staging.conf:/etc/nginx/conf.d/default.conf:ro
+      - nginx_logs:/var/log/nginx
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    networks:
+      - ast-tools-network
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "com.ast-tools.service=nginx"
+      - "com.ast-tools.environment=staging"
+
+volumes:
+  upload_data:
+    driver: local
+  log_data:
+    driver: local
+  redis_data:
+    driver: local
+  nginx_logs:
+    driver: local
+  frontend_node_modules:
+    driver: local
+
+networks:
+  ast-tools-network:
+    driver: bridge

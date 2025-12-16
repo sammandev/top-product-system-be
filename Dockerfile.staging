@@ -1,0 +1,42 @@
+# Staging Dockerfile with Hot Reload Support
+# This image contains dependencies only - source code is mounted as volume
+
+FROM python:3.13-slim
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    postgresql-client \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv for faster dependency installation
+RUN pip install --no-cache-dir uv
+
+# Copy dependency files
+COPY pyproject.toml requirements.txt ./
+
+# Install Python dependencies
+RUN uv pip install --system -r requirements.txt
+
+# Create necessary directories
+RUN mkdir -p /app/uploads /app/logs /app/src /app/alembic /app/scripts /app/data
+
+# Expose port
+EXPOSE 7070
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:7070/health || exit 1
+
+# Default command (will be overridden in docker-compose for hot reload)
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7070", "--reload", "--reload-dir", "/app/src"]

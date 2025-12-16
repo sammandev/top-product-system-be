@@ -20,11 +20,29 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy dependency files
-COPY requirements.txt ./
+COPY pyproject.toml ./
 
-# Install Python dependencies (exclude editable install line)
-RUN grep -v '^-e' requirements.txt > requirements-docker.txt && \
-    pip install --no-cache-dir -r requirements-docker.txt
+# Install Python dependencies from pyproject.toml
+RUN pip install --no-cache-dir \
+    fastapi[standard]>=0.119.0 \
+    uvicorn[standard] \
+    alembic \
+    psycopg[binary] \
+    redis \
+    fastapi-cache2[redis] \
+    python-multipart \
+    python-jose[cryptography] \
+    passlib[argon2] \
+    python-dotenv \
+    pydantic-settings \
+    pydantic[email] \
+    sqlalchemy \
+    pandas \
+    openpyxl \
+    httpx \
+    pytest \
+    pytest-asyncio \
+    pytest-cov
 
 # Create necessary directories
 RUN mkdir -p /app/uploads /app/logs /app/src /app/alembic /app/scripts /app/data

@@ -545,7 +545,7 @@ class TestLogParser:
                 "numeric_value": numeric_value,
                 "is_hex": is_hex,
                 "hex_decimal": hex_decimal,
-                "matches_criteria": matches_criteria,
+                "matched_criteria": matches_criteria,
                 "target": target_used,
                 "score": score,
                 "score_breakdown": score_breakdown,
@@ -1003,7 +1003,7 @@ class TestLogParser:
                         "avg_deviation": avg_deviation,
                         "avg_score": avg_score,
                         "median_score": median_score,
-                        "matches_criteria": matches_criteria,
+                        "matched_criteria": matches_criteria,
                     }
                 )
 
@@ -1015,7 +1015,7 @@ class TestLogParser:
                         "usl": usl,
                         "lsl": lsl,
                         "per_isn_data": per_isn_data,
-                        "matches_criteria": matches_criteria,
+                        "matched_criteria": matches_criteria,
                     }
                 )
 
@@ -1087,7 +1087,7 @@ class TestLogParser:
                         }
                     )
 
-            comparison_non_value_items.append({"test_item": test_item, "usl": None, "lsl": None, "per_isn_data": per_isn_data, "matches_criteria": False})
+            comparison_non_value_items.append({"test_item": test_item, "usl": None, "lsl": None, "per_isn_data": per_isn_data, "matched_criteria": False})
 
         # Sort items using custom test item sorting logic
         comparison_value_items.sort(key=cls._test_item_sort_key)

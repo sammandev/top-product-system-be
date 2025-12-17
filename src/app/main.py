@@ -16,8 +16,16 @@ from starlette.staticfiles import StaticFiles
 
 try:
     from swagger_ui_bundle import swagger_ui_5_path
-except ImportError:  # pragma: no cover - optional dependency for offline Swagger
-    swagger_ui_5_path = None
+except (ImportError, AttributeError):  # pragma: no cover - optional dependency for offline Swagger
+    # Fallback: try to find swagger-ui-dist package path
+    try:
+        import swagger_ui_bundle
+
+        swagger_ui_5_path = os.path.join(os.path.dirname(swagger_ui_bundle.__file__), "vendor", "swagger-ui-5.18.2")
+        if not os.path.exists(swagger_ui_5_path):
+            swagger_ui_5_path = None
+    except Exception:
+        swagger_ui_5_path = None
 
 from app.dependencies.external_api_client import get_settings
 from app.utils.helpers import _start_cleanup_worker
@@ -73,9 +81,9 @@ app = FastAPI(
     title=settings.app_name,
     debug=settings.debug,
     openapi_tags=tags_metadata,
-    docs_url=None if use_local_swagger else "/swagger",
+    docs_url=None,  # Disable default docs to use our custom offline version
     swagger_ui_parameters={"displayRequestDuration": True, "persistAuthorization": True},
-    redoc_url=None if use_local_swagger else "/redoc",
+    redoc_url=None,  # Disable default redoc to use our custom version
     lifespan=_lifespan,
 )
 
@@ -174,21 +182,48 @@ def _custom_openapi():
 app.openapi = _custom_openapi
 
 
-if use_local_swagger:
-    app.mount("/swagger-ui-assets", StaticFiles(directory=swagger_ui_5_path), name="swagger-ui-assets")
+# Mount static files for offline Swagger UI
+# Path resolution: from src/app/main.py go up to project root then to static/
+import pathlib
 
-    @app.get("/swagger", include_in_schema=False)
-    async def swagger_ui():
-        return get_swagger_ui_html(
-            openapi_url=app.openapi_url,
-            title=f"{settings.app_name} - Swagger UI",
-            swagger_js_url="/swagger-ui-assets/swagger-ui-bundle.js",
-            swagger_css_url="/swagger-ui-assets/swagger-ui.css",
-        )
+_project_root = pathlib.Path(__file__).parent.parent.parent
+_static_dir = _project_root / "static"
+if _static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+    logger.info(f"Serving static files from: {_static_dir}")
+else:
+    logger.warning(f"Static directory not found: {_static_dir}")
 
-    @app.get("/swagger/oauth2-redirect", include_in_schema=False)
-    async def swagger_oauth_redirect():
-        return get_swagger_ui_oauth2_redirect_html()
+
+# Custom Swagger UI endpoint using local static files (fully offline)
+@app.get("/swagger", include_in_schema=False)
+async def custom_swagger_ui_html():
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=f"{settings.app_name} - Swagger UI",
+        swagger_js_url="/static/swagger-ui/swagger-ui-bundle.js",
+        swagger_css_url="/static/swagger-ui/swagger-ui.css",
+        swagger_favicon_url="/static/swagger-ui/favicon-32x32.png",
+    )
+
+
+# Alias /docs to /swagger for compatibility
+@app.get("/docs", include_in_schema=False)
+async def redirect_docs():
+    return await custom_swagger_ui_html()
+
+
+# Custom ReDoc endpoint (still needs CDN unless we download redoc standalone)
+from fastapi.openapi.docs import get_redoc_html
+
+
+@app.get("/redoc", include_in_schema=False)
+async def custom_redoc_html():
+    return get_redoc_html(
+        openapi_url=app.openapi_url,
+        title=f"{settings.app_name} - ReDoc",
+        redoc_js_url="https://unpkg.com/redoc@latest/bundles/redoc.standalone.js",
+    )
 
 
 # Basic root endpoint
@@ -205,10 +240,7 @@ app.add_middleware(
 )
 
 # Set up CORS middleware
-cors_origins_env = os.getenv(
-    "CORS_ORIGINS",
-    "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173,http://172.18.220.56,http://172.18.220.56:3000"
-)
+cors_origins_env = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173,http://172.18.220.56,http://172.18.220.56:3000")
 cors_origins = [origin.strip() for origin in cors_origins_env.split(",")]
 
 logger.info(f"CORS enabled for origins: {cors_origins}")

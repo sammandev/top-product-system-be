@@ -25,6 +25,7 @@ services:
       - ./alembic.ini:/app/alembic.ini
       - ./scripts:/app/scripts
       - ./data:/app/data
+      - ./static:/app/static
       # Persistent data volumes
       - upload_data:/app/uploads
       - log_data:/app/logs

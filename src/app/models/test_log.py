@@ -160,7 +160,7 @@ class CompareItemEnhanced(BaseModel):
     avg_deviation: float | None = Field(None, description="Average absolute deviation (value items only)")
     avg_score: float | None = Field(None, description="Average score (value items only)")
     median_score: float | None = Field(None, description="Median score (value items only)")
-    matches_criteria: bool = Field(..., description="Whether item matches criteria pattern")
+    matched_criteria: bool = Field(..., description="Whether item matches criteria pattern")
 
 
 class FileSummaryEnhanced(BaseModel):

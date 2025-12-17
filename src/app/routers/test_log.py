@@ -181,16 +181,10 @@ async def parse_test_log(
                                "'*** Test flow ***'"
                     )
             
-            if criteria_rules:
-                # Enhanced parsing with criteria
-                result = TestLogParser.parse_file_enhanced(str(temp_file_path), criteria_rules=criteria_rules, show_only_criteria=show_only_criteria)
-                response = TestLogParseResponseEnhanced(**result)
-                return response
-            else:
-                # Standard parsing
-                result = TestLogParser.parse_file(str(temp_file_path))
-                response = TestLogParseResponse(**result)
-                return response
+            # Always use enhanced parsing (with or without criteria)
+            result = TestLogParser.parse_file_enhanced(str(temp_file_path), criteria_rules=criteria_rules, show_only_criteria=show_only_criteria)
+            response = TestLogParseResponseEnhanced(**result)
+            return response
 
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to parse file: {str(e)}") from e

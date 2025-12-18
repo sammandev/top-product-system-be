@@ -9,6 +9,7 @@ user_roles = Table(
     Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
     Column("role_id", ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True),
     UniqueConstraint("user_id", "role_id", name="uq_user_role"),
+    extend_existing=True,
 )
 
 role_permissions = Table(
@@ -17,6 +18,7 @@ role_permissions = Table(
     Column("role_id", ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True),
     Column("perm_id", ForeignKey("permissions.id", ondelete="CASCADE"), primary_key=True),
     UniqueConstraint("role_id", "perm_id", name="uq_role_perm"),
+    extend_existing=True,
 )
 
 

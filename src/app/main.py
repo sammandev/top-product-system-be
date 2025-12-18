@@ -20,7 +20,6 @@ except (ImportError, AttributeError):  # pragma: no cover - optional dependency 
     # Fallback: try to find swagger-ui-dist package path
     try:
         import swagger_ui_bundle
-
         swagger_ui_5_path = os.path.join(os.path.dirname(swagger_ui_bundle.__file__), "vendor", "swagger-ui-5.18.2")
         if not os.path.exists(swagger_ui_5_path):
             swagger_ui_5_path = None
@@ -185,7 +184,6 @@ app.openapi = _custom_openapi
 # Mount static files for offline Swagger UI
 # Path resolution: from src/app/main.py go up to project root then to static/
 import pathlib
-
 _project_root = pathlib.Path(__file__).parent.parent.parent
 _static_dir = _project_root / "static"
 if _static_dir.exists():
@@ -193,7 +191,6 @@ if _static_dir.exists():
     logger.info(f"Serving static files from: {_static_dir}")
 else:
     logger.warning(f"Static directory not found: {_static_dir}")
-
 
 # Custom Swagger UI endpoint using local static files (fully offline)
 @app.get("/swagger", include_in_schema=False)
@@ -206,16 +203,13 @@ async def custom_swagger_ui_html():
         swagger_favicon_url="/static/swagger-ui/favicon-32x32.png",
     )
 
-
 # Alias /docs to /swagger for compatibility
 @app.get("/docs", include_in_schema=False)
 async def redirect_docs():
     return await custom_swagger_ui_html()
 
-
 # Custom ReDoc endpoint (still needs CDN unless we download redoc standalone)
 from fastapi.openapi.docs import get_redoc_html
-
 
 @app.get("/redoc", include_in_schema=False)
 async def custom_redoc_html():
@@ -240,7 +234,10 @@ app.add_middleware(
 )
 
 # Set up CORS middleware
-cors_origins_env = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173,http://172.18.220.56,http://172.18.220.56:3000")
+cors_origins_env = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173,http://172.18.220.56,http://172.18.220.56:3000,http://172.18.220.56:9090,http://ast-tools-frontend.localhost,http://ast-tools-frontend.localhost:3000"
+)
 cors_origins = [origin.strip() for origin in cors_origins_env.split(",")]
 
 logger.info(f"CORS enabled for origins: {cors_origins}")

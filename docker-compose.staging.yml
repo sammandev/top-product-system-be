@@ -10,8 +10,9 @@ services:
     image: ast-tools-backend:staging
     container_name: ast-tools-backend
     restart: unless-stopped
-    ports:
-      - "7070:7070"
+    # Use host network to access PostgreSQL and Redis on the host/network
+    # This matches the Django project setup
+    network_mode: "host"
     environment:
       - PYTHONPATH=/app/src
     env_file:
@@ -24,46 +25,45 @@ services:
       - ./scripts:/app/scripts
       - ./data:/app/data
       - ./static:/app/static
+      - ./.env.staging:/app/.env.staging
       # Persistent data volumes
       - upload_data:/app/uploads
       - log_data:/app/logs
-    networks:
-      - ast-tools-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:7070/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
-    depends_on:
-      redis:
-        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        # Log rotation settings for backend service
+        max-size: "20m"
+        max-file: "5"
+        labels: "service=backend-api"
     labels:
       - "com.ast-tools.service=backend"
       - "com.ast-tools.environment=staging"
       - "com.ast-tools.hot-reload=enabled"
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
     # Enable auto-reload for code changes
+    # Migrations run automatically on startup
     command: >-
       sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 7070 --reload --reload-dir /app/src"
 
+  # NOTE: Redis is not included here because we use the existing Redis
+  # on the host network (configured via REDIS_URL in .env.staging)
+  # If you need a local Redis for development, uncomment the section below:
   redis:
     image: redis:7-alpine
     container_name: ast-tools-redis
     restart: unless-stopped
-    ports:
-      - "7071:6379"
-    command: redis-server --appendonly yes
+    network_mode: "host"
+    command: redis-server --appendonly yes --port 7071
     volumes:
       - redis_data:/data
-    networks:
-      - ast-tools-network
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-p", "7071", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -73,8 +73,8 @@ services:
     logging:
       driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
+        max-size: "75m"
+        max-file: "1000"
 
 volumes:
   upload_data:
@@ -83,8 +83,3 @@ volumes:
     driver: local
   redis_data:
     driver: local
-
-networks:
-  ast-tools-network:
-    driver: bridge
-    name: ast-tools-network

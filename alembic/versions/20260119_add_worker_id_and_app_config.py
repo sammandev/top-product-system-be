@@ -17,7 +17,19 @@ depends_on = None
 
 def upgrade() -> None:
     # Normalize existing usernames to lowercase to enforce case-insensitive logins
-    op.execute("UPDATE users SET username = LOWER(username)")
+    # First, handle duplicates by removing all but the first occurrence (case-insensitive)
+    # This uses a CTE to identify and delete duplicate usernames
+    op.execute("""
+        DELETE FROM users
+        WHERE id NOT IN (
+            SELECT MIN(id)
+            FROM users
+            GROUP BY LOWER(username)
+        )
+    """)
+    
+    # Now lowercase all remaining usernames
+    op.execute("UPDATE users SET username = LOWER(username) WHERE username != LOWER(username)")
 
     op.add_column("users", sa.Column("worker_id", sa.String(length=64), nullable=True))
 

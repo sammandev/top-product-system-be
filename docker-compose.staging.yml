@@ -51,9 +51,7 @@ services:
     command: >-
       sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 7070 --reload --reload-dir /app/src"
 
-  # NOTE: Redis is not included here because we use the existing Redis
-  # on the host network (configured via REDIS_URL in .env.staging)
-  # If you need a local Redis for development, uncomment the section below:
+  # Redis service - hosted by this project, shared with Django project
   redis:
     image: redis:7-alpine
     container_name: ast-tools-redis

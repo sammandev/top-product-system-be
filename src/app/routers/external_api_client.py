@@ -46,6 +46,7 @@ from app.schemas.dut_schemas import (
     DUTProgressSchema,
     DUTRunSummarySchema,
     DUTTestSummarySchema,
+    LatestTestItemsRequestSchema,
     LatestTestsResponseSchema,
     ModelSchema,
     ModelSummaryRequestSchema,
@@ -4239,6 +4240,15 @@ def _build_hierarchical_scores(
     def _round_score(value: float) -> float:
         return round(value + 1e-9, 2)
 
+    def _bayes_score(values: list[float], *, prior_mean: float = 5.0, prior_weight: float = 2.0, min_weight: float = 0.35) -> float:
+        if not values:
+            return 0.0
+        total = sum(values)
+        count = len(values)
+        bayes_avg = (prior_mean * prior_weight + total) / (prior_weight + count)
+        min_score = min(values)
+        return (bayes_avg * (1 - min_weight)) + (min_score * min_weight)
+
     group_map: dict[str, dict[str, dict[str, dict[str, list[float]]]]] = {}
 
     for row in measurements:
@@ -4284,31 +4294,46 @@ def _build_hierarchical_scores(
 
             for antenna in sorted(antenna_map.keys()):
                 categories = antenna_map[antenna]
-                category_result: dict[str, float] = {}
-                category_scores: list[float] = []
+                category_result: dict[str, Any] = {}
+                category_avg_scores: list[float] = []
+                category_bayes_scores: list[float] = []
                 for category in sorted(categories.keys()):
                     values = categories[category]
                     avg = sum(values) / len(values)
-                    category_result[category] = _round_score(avg)
-                    category_scores.append(avg)
-                antenna_avg = sum(category_scores) / len(category_scores) if category_scores else 0.0
-                category_result[f"{antenna.lower()}_score"] = _round_score(antenna_avg)
+                    bayes = _bayes_score(values)
+                    category_result[category] = {
+                        "category_avg_score": _round_score(avg),
+                        "category_bayes_score": _round_score(bayes),
+                    }
+                    category_avg_scores.append(avg)
+                    category_bayes_scores.append(bayes)
+                antenna_bayes = _bayes_score(category_bayes_scores) if category_bayes_scores else 0.0
+                category_result[f"{antenna.lower()}_group_score"] = _round_score(antenna_bayes)
+                category_result[f"{antenna.lower()}_avg_score"] = _round_score(
+                    sum(category_avg_scores) / len(category_avg_scores)
+                ) if category_avg_scores else 0.0
                 subgroup_result[antenna] = category_result
-                if category_scores:
-                    antenna_scores.append(antenna_avg)
+                if category_bayes_scores:
+                    antenna_scores.append(antenna_bayes)
 
-            subgroup_avg = sum(antenna_scores) / len(antenna_scores) if antenna_scores else 0.0
-            subgroup_result[f"{subgroup.lower()}_group_score"] = _round_score(subgroup_avg)
+            subgroup_bayes = _bayes_score(antenna_scores) if antenna_scores else 0.0
+            subgroup_result[f"{subgroup.lower()}_group_score"] = _round_score(subgroup_bayes)
+            subgroup_result[f"{subgroup.lower()}_avg_score"] = _round_score(
+                sum(antenna_scores) / len(antenna_scores)
+            ) if antenna_scores else 0.0
             group_result[subgroup] = subgroup_result
             if antenna_scores:
-                subgroup_scores.append(subgroup_avg)
-                subgroup_totals[subgroup].append(subgroup_avg)
+                subgroup_scores.append(subgroup_bayes)
+                subgroup_totals[subgroup].append(subgroup_bayes)
 
-        group_avg = sum(subgroup_scores) / len(subgroup_scores) if subgroup_scores else 0.0
-        group_result["group_score"] = _round_score(group_avg)
+        group_bayes = _bayes_score(subgroup_scores) if subgroup_scores else 0.0
+        group_result["final_group_score"] = _round_score(group_bayes)
+        group_result["group_avg_score"] = _round_score(
+            sum(subgroup_scores) / len(subgroup_scores)
+        ) if subgroup_scores else 0.0
         final_groups[group_key] = group_result
 
-    overall_group_scores = {subgroup: _round_score(sum(values) / len(values)) for subgroup, values in subgroup_totals.items() if values}
+    overall_group_scores = {subgroup: _round_score(_bayes_score(values)) for subgroup, values in subgroup_totals.items() if values}
 
     return final_groups, overall_group_scores
 

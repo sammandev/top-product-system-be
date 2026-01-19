@@ -21,6 +21,7 @@ from app.db import Base  # noqa: E402
 
 # Import all models so Alembic can detect them
 from app.models.rbac import Permission, Role  # noqa: E402, F401
+from app.models.app_config import AppConfig  # noqa: E402, F401
 from app.models.top_product import TopProduct, TopProductMeasurement  # noqa: E402, F401
 from app.models.user import User  # noqa: E402, F401
 

@@ -4,11 +4,13 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import jwt
+from sqlalchemy import func
 from pwdlib import PasswordHash
 from pwdlib.hashers.argon2 import Argon2Hasher
 from sqlalchemy.orm import Session
 
 from app.models.user import User
+from app.utils.admin_access import is_user_admin
 
 # === Config ===
 JWT_SECRET = os.environ.get("JWT_SECRET", "change_this_secret")  # random 32-bytes | run in terminal: openssl rand -hex 32
@@ -47,7 +49,7 @@ def _base_payload(user: User) -> dict:
     now = datetime.now(UTC)
     return {
         "sub": user.username,
-        "admin": bool(user.is_admin or user.is_ptb_admin),  # Admin if EITHER flag is true
+        "admin": is_user_admin(user),
         "ver": user.token_version,  # versioned JWT for stateless revocation
         "iat": int(now.timestamp()),
         "jti": uuid.uuid4().hex,
@@ -105,17 +107,25 @@ def decode_jwt_token(token: str, expected_type: str | None = "access") -> tuple[
     return payload.get("sub"), bool(payload.get("admin"))
 
 
+def normalize_username(username: str) -> str:
+    return (username or "").strip().lower()
+
+
 def get_user(db: Session, username: str) -> User | None:
-    return db.query(User).filter(User.username == username).one_or_none()
+    normalized = normalize_username(username)
+    if not normalized:
+        return None
+    return db.query(User).filter(func.lower(User.username) == normalized).one_or_none()
 
 
 def create_user(db: Session, username: str, password: str, is_admin: bool = False) -> User:
-    user = get_user(db, username)
+    normalized = normalize_username(username)
+    user = get_user(db, normalized)
     if user:
         user.password_hash = hash_password(password)
         user.is_admin = is_admin
     else:
-        user = User(username=username, password_hash=hash_password(password), is_admin=is_admin)
+        user = User(username=normalized, password_hash=hash_password(password), is_admin=is_admin)
         db.add(user)
     db.commit()
     db.refresh(user)

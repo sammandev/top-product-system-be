@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from app.dependencies.authz import get_current_user
+from app.utils.admin_access import is_user_admin
 from app.models.user import User
 from app.utils.cache_manager import (
     adjust_cache_ttl,
@@ -116,7 +117,7 @@ async def clear_all_cache_endpoint(
 
     **Warning:** This will clear ALL cached data and may temporarily impact performance.
     """
-    if not current_user.is_admin:
+    if not is_user_admin(current_user):
         return CacheInvalidationResponse(
             status="error",
             keys_deleted=0,
@@ -149,7 +150,7 @@ async def clear_cache_by_pattern_endpoint(
 
     **Returns:** Number of keys deleted
     """
-    if not current_user.is_admin:
+    if not is_user_admin(current_user):
         return CacheInvalidationResponse(
             status="error",
             keys_deleted=0,
@@ -183,7 +184,15 @@ async def invalidate_dut_cache_endpoint(
 
     **Returns:** Number of cache entries invalidated
     """
-    result = await invalidate_dut_cache(dut_isn)
+        if not is_user_admin(current_user):
+            return DUTCacheInvalidationResponse(
+                status="error",
+                dut_isn=dut_isn,
+                total_keys_deleted=0,
+                message="Admin privileges required"
+            )
+    
+        result = await invalidate_dut_cache(dut_isn)
     return DUTCacheInvalidationResponse(**result)
 
 
@@ -231,7 +240,7 @@ async def get_cached_keys(
     - total_keys: Total number of cached keys
     - keys: List of keys with TTL and type information
     """
-    if not current_user.is_admin:
+    if not is_user_admin(current_user):
         return {"status": "error", "message": "Admin privileges required"}
 
     result = await get_cache_keys_info(limit)
@@ -267,7 +276,7 @@ async def adjust_cache_ttl_endpoint(
 
     **Returns:** Number of keys updated
     """
-    if not current_user.is_admin:
+    if not is_user_admin(current_user):
         return CacheInvalidationResponse(
             status="error",
             keys_deleted=0,

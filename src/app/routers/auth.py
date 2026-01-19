@@ -4,6 +4,7 @@ import logging
 
 from fastapi import APIRouter, Depends, Form, Header, HTTPException
 from fastapi.responses import JSONResponse
+import httpx
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -20,6 +21,7 @@ from app.schemas.auth_schemas import (
 )
 from app.services import dut_token_service
 from app.utils import auth as auth_utils
+from app.utils.admin_access import is_user_admin
 
 router = APIRouter(prefix="/api/auth", tags=["Auth"])
 # module-level dependency to avoid calling Depends() inside function defaults
@@ -62,8 +64,9 @@ def login(
         "token_type": "bearer",
         "user": {
             "username": user.username,
-            "is_admin": user.is_admin or user.is_ptb_admin,  # Combined admin check
+            "is_admin": is_user_admin(user),
             "is_ptb_admin": user.is_ptb_admin,  # External admin status
+            "worker_id": user.worker_id,
             "roles": [r.name for r in user.roles],
         },
     }
@@ -100,7 +103,14 @@ async def external_login(
 
     try:
         # Step 1: Authenticate with external DUT API
-        auth_data = await client.authenticate(username=username, password=password)
+        try:
+            auth_data = await client.authenticate(username=username, password=password)
+        except httpx.HTTPStatusError as exc:
+            normalized_username = auth_utils.normalize_username(username)
+            if exc.response.status_code in {401, 403} and normalized_username and normalized_username != username:
+                auth_data = await client.authenticate(username=normalized_username, password=password)
+            else:
+                raise HTTPException(status_code=401, detail="invalid external credentials") from exc
         access_token_external = auth_data.get("access")
         refresh_token_external = auth_data.get("refresh")
 
@@ -110,9 +120,10 @@ async def external_login(
         # Step 2: Fetch user account info from external API
         try:
             user_info = await client.get_user_account_info()
-            # Extract is_ptb_admin from nested employee_info object
+            # Extract is_ptb_admin/worker_id from nested employee_info object
             employee_info = user_info.get("employee_info", {})
             is_ptb_admin = employee_info.get("is_ptb_admin", False)
+            worker_id = employee_info.get("worker_id")
             logger.info(f"Fetched external user info for {username}: email={user_info.get('email')}, is_ptb_admin={is_ptb_admin}")
         except Exception as e:
             logger.warning(f"Failed to fetch user account info for {username}: {e}")
@@ -122,6 +133,7 @@ async def external_login(
                 "email": None,
             }
             is_ptb_admin = False
+            worker_id = None
 
         # Extract user details from external API
         external_email = user_info.get("email")
@@ -134,6 +146,7 @@ async def external_login(
             logger.info(f"Creating new user {username} with is_ptb_admin={is_ptb_admin} from external API")
             user = auth_utils.create_user(db, username, password, is_admin=False)
             user.is_ptb_admin = is_ptb_admin
+            user.worker_id = worker_id
             if external_email:
                 user.email = external_email
             db.commit()
@@ -145,6 +158,10 @@ async def external_login(
 
             # Update PTB admin status from external API
             user.is_ptb_admin = is_ptb_admin
+
+            # Update worker_id from external API
+            if worker_id and user.worker_id != worker_id:
+                user.worker_id = worker_id
 
             # Update email if provided and different
             if external_email and user.email != external_email:
@@ -161,7 +178,7 @@ async def external_login(
         db.commit()
 
         # Step 5: Save external DUT tokens securely for later use
-        dut_token_service.store_tokens(username, access_token_external, refresh_token_external)
+        dut_token_service.store_tokens(user.username, access_token_external, refresh_token_external)
 
         # Step 6: Issue our local JWT tokens
         access_token = auth_utils.create_access_token(user)
@@ -173,8 +190,9 @@ async def external_login(
             "token_type": "bearer",
             "user": {
                 "username": user.username,
-                "is_admin": user.is_admin or user.is_ptb_admin,  # Combined admin check
+                "is_admin": is_user_admin(user),
                 "is_ptb_admin": user.is_ptb_admin,  # External admin status
+                "worker_id": user.worker_id,
                 "roles": [r.name for r in user.roles],
             },
         }
@@ -195,8 +213,9 @@ async def external_login(
 def me(user: DBUser = current_user_dependency):
     return {
         "username": user.username,
-        "is_admin": user.is_admin or user.is_ptb_admin,  # Combined admin check
+        "is_admin": is_user_admin(user),
         "is_ptb_admin": user.is_ptb_admin,  # External admin status
+        "worker_id": user.worker_id,
         "roles": [r.name for r in user.roles],
     }
 

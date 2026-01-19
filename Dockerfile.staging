@@ -1,30 +1,47 @@
 # Staging Dockerfile with Hot Reload Support
-# This image contains dependencies only - source code is mounted as volume
+# Multi-stage build to reduce image size
 
-FROM python:3.13-slim
+FROM python:3.13-slim AS builder
 
-# Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     DEBIAN_FRONTEND=noninteractive
 
-# Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Build dependencies (removed in final image)
 RUN apt-get update && apt-get install -y \
     gcc \
-    postgresql-client \
     libpq-dev \
-    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy dependency files and minimal source structure for build
 COPY pyproject.toml ./
 COPY src/ ./src/
 
-# Install Python dependencies from pyproject.toml
-RUN pip install --no-cache-dir .
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir .
+
+
+FROM python:3.13-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /app
+
+# Runtime dependencies only
+RUN apt-get update && apt-get install -y \
+    libpq5 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
 # Create necessary directories
 RUN mkdir -p /app/uploads /app/logs /app/alembic /app/scripts /app/data

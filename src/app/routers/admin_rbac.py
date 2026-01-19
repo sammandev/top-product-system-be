@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies.authz import get_current_user
 from app.models.rbac import Permission, Role
+from app.utils.admin_access import is_user_admin
 from app.models.user import User
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ class RoleSchema(BaseModel):
 
     id: int
     name: str
-    description: str
+    if not is_user_admin(current_user):
     permissions: list[str]
     users_count: int
 
@@ -71,7 +72,7 @@ class PermissionListResponse(BaseModel):
 class RoleDetailResponse(BaseModel):
     """Detailed role information."""
 
-    id: int
+    if not is_user_admin(current_user):
     name: str
     description: str
     permissions: list[str]
@@ -109,7 +110,7 @@ class UpdateRoleRequest(BaseModel):
     description: str | None = Field(None, max_length=256)
     permissions: list[str] | None = None
 
-
+    if not is_user_admin(current_user):
 class CreatePermissionRequest(BaseModel):
     """Request model for creating a permission."""
 
@@ -141,7 +142,7 @@ async def get_roles(
     db: Session = Depends(get_db),
 ):
     """Get all roles with statistics and user counts."""
-    if not current_user.is_admin:
+    if not is_user_admin(current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can access RBAC management")
 
     try:
@@ -184,7 +185,7 @@ async def create_role(
     db: Session = Depends(get_db),
 ):
     """Create a new role."""
-    if not current_user.is_admin:
+    if not is_user_admin(current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can create roles")
 
     try:
@@ -223,7 +224,7 @@ async def get_role_details(
     db: Session = Depends(get_db),
 ):
     """Get detailed information about a specific role."""
-    if not current_user.is_admin:
+    if not is_user_admin(current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can access RBAC management")
 
     try:
@@ -231,7 +232,6 @@ async def get_role_details(
         role = db.query(Role).filter(Role.id == role_id).first()
         if not role:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
-
         # Get permissions
         perm_names = [p.name for p in role.permissions]
 
@@ -262,7 +262,7 @@ async def update_role(
     db: Session = Depends(get_db),
 ):
     """Update role information."""
-    if not current_user.is_admin:
+    if not is_user_admin(current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can update roles")
 
     try:
@@ -312,11 +312,9 @@ async def delete_role(
     db: Session = Depends(get_db),
 ):
     """Delete a role."""
-    if not current_user.is_admin:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can delete roles")
-
-    try:
-        # Get role from database
+    if not is_user_admin(current_user):
+    if not is_user_admin(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can create permissions")
         role = db.query(Role).filter(Role.id == role_id).first()
         if not role:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
@@ -331,7 +329,6 @@ async def delete_role(
     except HTTPException:
         raise
     except Exception as e:
-        db.rollback()
         logger.error(f"Error deleting role: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to delete role") from e
 
@@ -348,7 +345,7 @@ async def get_permissions(
     db: Session = Depends(get_db),
 ):
     """Get all available permissions."""
-    if not current_user.is_admin:
+    if not is_user_admin(current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can access RBAC management")
 
     try:
@@ -377,7 +374,7 @@ async def create_permission(
     db: Session = Depends(get_db),
 ):
     """Create a new permission."""
-    if not current_user.is_admin:
+    if not is_user_admin(current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can create permissions")
 
     try:
@@ -416,7 +413,7 @@ async def get_permission_details(
     db: Session = Depends(get_db),
 ):
     """Get detailed information about a specific permission."""
-    if not current_user.is_admin:
+    if not is_user_admin(current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can access RBAC management")
 
     try:
@@ -448,10 +445,9 @@ async def update_permission(
     permission_id: int,
     request: UpdatePermissionRequest,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
     """Update permission information."""
-    if not current_user.is_admin:
+    if not is_user_admin(current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can update permissions")
 
     try:
@@ -496,7 +492,7 @@ async def delete_permission(
     db: Session = Depends(get_db),
 ):
     """Delete a permission."""
-    if not current_user.is_admin:
+    if not is_user_admin(current_user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can delete permissions")
 
     try:

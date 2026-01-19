@@ -64,6 +64,7 @@ class TopProductSchema(BaseModel):
 
 
 class TopProductDetailSchema(TopProductSchema):
+    from app.utils.admin_access import is_user_admin
     """Top product with measurements."""
 
     measurements: list[TopProductMeasurementSchema]
@@ -94,7 +95,7 @@ class TopProductStatsResponse(BaseModel):
     recent_products_7d: int
 
 
-# ============================================================================
+            if not is_user_admin(current_user):
 # Endpoints
 # ============================================================================
 
@@ -458,7 +459,7 @@ async def delete_top_product(
     """
     try:
         # Check if user is admin
-        if not current_user.is_admin:
+        if not is_user_admin(current_user):
             from fastapi import HTTPException
             raise HTTPException(status_code=403, detail="Only admins can delete top products")
         

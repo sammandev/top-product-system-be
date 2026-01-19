@@ -18,6 +18,7 @@ class User(Base):
     username = Column(String(150), unique=True, index=True, nullable=False)
     password_hash = Column(String(256), nullable=False)
     email = Column(String(255), nullable=True)  # Optional email field
+    worker_id = Column(String(64), nullable=True)  # External worker_id (from DUT API)
     is_admin = Column(Boolean, default=False)  # Local admin privileges (manually granted)
     is_ptb_admin = Column(Boolean, default=False)  # External PTB admin status (synced from external API)
     is_active = Column(Boolean, default=True)

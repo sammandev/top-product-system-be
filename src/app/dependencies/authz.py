@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models.user import User as DBUser
 from app.utils.auth import decode_jwt, get_user
+from app.utils.admin_access import is_user_admin
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -51,16 +52,14 @@ current_user_dependency = Depends(get_current_user)
 
 
 def require_admin(user: DBUser = current_user_dependency) -> DBUser:
-    # Admin access granted if EITHER is_admin OR is_ptb_admin is true
-    if not (user.is_admin or user.is_ptb_admin):
+    if not is_user_admin(user):
         raise HTTPException(403, "admin privileges required")
     return user
 
 
 def require_permission(perm: str):
     def checker(user: DBUser = current_user_dependency) -> DBUser:
-        # Admin access granted if EITHER is_admin OR is_ptb_admin is true
-        if user.is_admin or user.is_ptb_admin:
+        if is_user_admin(user):
             return user
         has = any(perm == p.name for r in user.roles for p in r.permissions)
         if not has:

@@ -92,6 +92,7 @@ class UserResponse(BaseModel):
     username: str = Field(..., description="Username")
     is_admin: bool = Field(..., description="Admin status (true if local admin OR external PTB admin)")
     is_ptb_admin: bool = Field(False, description="External PTB admin status (from DUT API)")
+    worker_id: str | None = Field(None, description="External worker ID (from DUT API)")
     roles: list[str] = Field(default_factory=list, description="Assigned roles")
 
 

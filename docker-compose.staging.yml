@@ -2,8 +2,6 @@
 # Backend API with Redis cache and hot reload support
 # Run independently or with frontend
 
-version: '3.8'
-
 services:
   backend:
     build:
@@ -44,8 +42,14 @@ services:
       - "com.ast-tools.service=backend"
       - "com.ast-tools.environment=staging"
       - "com.ast-tools.hot-reload=enabled"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     # Enable auto-reload for code changes
-    command: uvicorn app.main:app --host 0.0.0.0 --port 7070 --reload --reload-dir /app/src
+    command: >-
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 7070 --reload --reload-dir /app/src"
 
   redis:
     image: redis:7-alpine
@@ -66,6 +70,11 @@ services:
     labels:
       - "com.ast-tools.service=redis"
       - "com.ast-tools.environment=staging"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   upload_data:

@@ -1,8 +1,10 @@
 import asyncio
+import json
 import logging
 import os
 import warnings
 from contextlib import asynccontextmanager
+from logging.handlers import RotatingFileHandler
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -13,7 +15,12 @@ from fastapi_cache import FastAPICache
 from fastapi_cache.backends.redis import RedisBackend
 from redis import asyncio as aioredis
 from starlette.staticfiles import StaticFiles
-
+try:
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+except ImportError:  # pragma: no cover - optional dependency
+    sentry_sdk = None
+    FastApiIntegration = None
 try:
     from swagger_ui_bundle import swagger_ui_5_path
 except (ImportError, AttributeError):  # pragma: no cover - optional dependency for offline Swagger
@@ -37,6 +44,45 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 
+class _JsonLogFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:  # noqa: D401
+        payload = {
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "time": self.formatTime(record, self.datefmt),
+        }
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+def _configure_logging() -> None:
+    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    log_format = os.getenv("LOG_FORMAT", "text").lower()
+    formatter: logging.Formatter = (
+        _JsonLogFormatter() if log_format == "json" else logging.Formatter("%(levelname)s [%(name)s] %(message)s")
+    )
+
+    handlers: list[logging.Handler] = []
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    handlers.append(stream_handler)
+
+    log_file = os.getenv("LOG_FILE")
+    if log_file:
+        max_bytes = int(os.getenv("LOG_MAX_BYTES", "10485760"))
+        backup_count = int(os.getenv("LOG_BACKUP_COUNT", "3"))
+        file_handler = RotatingFileHandler(log_file, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
+        file_handler.setFormatter(formatter)
+        handlers.append(file_handler)
+
+    logging.basicConfig(level=level_name, handlers=handlers)
+
+
+_configure_logging()
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     # Initialize FastAPI Cache with Redis backend
@@ -58,6 +104,15 @@ async def _lifespan(_app: FastAPI):
 
 
 settings = get_settings()
+
+if sentry_sdk is not None and os.getenv("SENTRY_DSN"):
+    sentry_sdk.init(
+        dsn=os.getenv("SENTRY_DSN"),
+        integrations=[FastApiIntegration()] if FastApiIntegration else None,
+        traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0")),
+        environment=os.getenv("ENVIRONMENT", "local"),
+        release=os.getenv("APP_VERSION", None),
+    )
 
 tags_metadata = [
     {"name": "Root", "description": "Basic status endpoint."},
@@ -226,12 +281,10 @@ async def root():
     return {"message": "DUT Management API"}
 
 
-# Set up GZip compression middleware (BEFORE CORS)
-app.add_middleware(
-    GZipMiddleware,
-    minimum_size=1000,  # Only compress responses > 1KB
-    compresslevel=6,  # Default compression level (1-9)
-)
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "app": settings.app_name}
+
 
 # Set up CORS middleware
 cors_origins_env = os.getenv(
@@ -255,6 +308,7 @@ from .routers import (  # noqa: E402
     activity,
     admin_rbac,
     admin_users,
+    app_config,
     auth,
     cache_admin,
     compare,
@@ -273,6 +327,7 @@ from .routers import (  # noqa: E402
 app.include_router(activity.router)
 app.include_router(admin_rbac.router)
 app.include_router(admin_users.router)
+app.include_router(app_config.router)
 app.include_router(auth.router)
 app.include_router(cache_admin.router)
 app.include_router(compare.router)

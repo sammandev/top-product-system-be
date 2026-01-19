@@ -14,7 +14,9 @@ from app.db import get_db
 from app.dependencies.authz import get_current_user
 from app.models.rbac import Role
 from app.models.user import User
-from app.utils.auth import hash_password
+from app.utils.admin_access import is_user_admin
+from app.utils.auth import get_user as get_user_by_username
+from app.utils.auth import hash_password, normalize_username
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +123,7 @@ async def get_users(
     ```
     """
     # Check if user is admin
-    if not current_user.is_admin:
+    if not is_user_admin(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only administrators can access user management"
@@ -224,7 +226,7 @@ async def create_user(
     - **422**: Invalid data format
     """
     # Check if user is admin
-    if not current_user.is_admin:
+    if not is_user_admin(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only administrators can create users"
@@ -232,7 +234,7 @@ async def create_user(
 
     try:
         # Check if username already exists
-        existing_user = db.query(User).filter(User.username == user_data.username).first()
+        existing_user = get_user_by_username(db, user_data.username)
         if existing_user:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -241,7 +243,7 @@ async def create_user(
 
         # Create new user
         new_user = User(
-            username=user_data.username,
+            username=normalize_username(user_data.username),
             email=user_data.email,
             password_hash=hash_password(user_data.password),
             is_active=user_data.is_active,
@@ -308,7 +310,7 @@ async def update_user(
         UserSchema with updated user data
     """
     # Check if user is admin
-    if not current_user.is_admin:
+    if not is_user_admin(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only administrators can update users"
@@ -417,7 +419,7 @@ async def delete_user(
         db: Database session
     """
     # Check if user is admin
-    if not current_user.is_admin:
+    if not is_user_admin(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only administrators can delete users"
@@ -477,7 +479,7 @@ async def change_user_password(
         Success response
     """
     # Check if user is admin
-    if not current_user.is_admin:
+    if not is_user_admin(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only administrators can change user passwords"
@@ -541,7 +543,7 @@ async def revoke_user_tokens(
         Success response with new token version
     """
     # Check if user is admin
-    if not current_user.is_admin:
+    if not is_user_admin(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only administrators can revoke user tokens"

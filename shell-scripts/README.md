@@ -33,22 +33,31 @@ Full deployment with Docker image build. Use for initial setup or when dependenc
 ---
 
 ### 2. `update-code.sh` - Update Code (No Rebuild!)
-Pull latest code from Git and restart services. **Does NOT rebuild the Docker image.**
+Restart services to pick up code changes and run migrations. **Does NOT rebuild or recreate containers.**
 
 ```bash
+# First, manually pull latest code
+git pull
+
+# Then restart the service and run migrations
 ./update-code.sh
+
+# Skip migrations if not needed
+./update-code.sh --skip-migrations
 ```
 
 **What it does:**
-- 📥 Git pull to update code on host
-- ♻️ Restart service to reload code
+- ♻️ Restarts the service (lightweight, no new images/containers)
+- 🔄 Runs `alembic upgrade head` inside the container
 - ⏳ Health check verification
 
 **Why no rebuild?**
 - Source code is mounted as a volume (`./src:/app/src`)
 - Uvicorn runs with `--reload` flag
-- Most changes are picked up automatically
-- Restart ensures all modules reload fresh
+- `docker compose restart` is lightweight - just sends restart signal
+- Migrations run separately via `docker compose exec`
+
+**Note:** Remember to run `git pull` manually before running this script!
 
 ---
 
@@ -126,7 +135,10 @@ Generate a new Alembic migration based on model changes.
 
 ### Deploy New Code (Daily Usage)
 ```bash
-# Just pull and restart - no rebuild needed!
+# 1. Pull latest code manually
+git pull
+
+# 2. Recreate container (runs migrations on startup)
 ./update-code.sh
 ```
 

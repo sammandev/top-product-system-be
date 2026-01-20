@@ -2,11 +2,16 @@
 
 # Quick update script - restarts services to pick up code changes
 # Use this when you only changed Python code (not requirements.txt or Dockerfile)
-# Usage: ./update-code.sh
+# Usage: ./update-code.sh [--skip-migrations]
+#
+# Options:
+#   --skip-migrations : Skip running database migrations
 #
 # NOTE: Since source code is mounted as a volume with hot reload enabled,
 #       many changes are picked up automatically. This script ensures all
 #       processes reload the code by restarting the container.
+#
+# IMPORTANT: Run `git pull` manually before running this script.
 
 set -e
 
@@ -18,9 +23,17 @@ cd "${PROJECT_ROOT}"
 COMPOSE_FILE="docker-compose.staging.yml"
 SERVICE_NAME="backend"
 HEALTH_PORT="7070"
+SKIP_MIGRATIONS=false
+
+# Parse arguments
+if [ "$1" = "--skip-migrations" ]; then
+    SKIP_MIGRATIONS=true
+fi
 
 echo "🔄 Updating code without rebuild..."
 echo "=================================================="
+echo "Skip migrations: ${SKIP_MIGRATIONS}"
+echo ""
 
 # Check if docker-compose file exists
 if [ ! -f "$COMPOSE_FILE" ]; then
@@ -42,19 +55,19 @@ fi
 
 echo "✅ Containers are running"
 
-# Pull latest code from Git (code is mounted as volume)
-echo ""
-echo "📥 Pulling latest code from Git..."
-git pull --rebase || {
-    echo "❌ Git pull failed. Please resolve conflicts and try again."
-    exit 1
-}
+# Check for uncommitted changes (informational)
+if command -v git >/dev/null 2>&1 && [ -d ".git" ]; then
+    echo ""
+    if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+        echo "⚠️  You have uncommitted local changes:"
+        git status --short
+    else
+        echo "✅ Git working directory is clean"
+    fi
+fi
 
-echo "✅ Code updated from Git"
-
-# Restart backend service to reload code
-# Note: With --reload flag, many changes are picked up automatically,
-#       but restart ensures all modules are reloaded fresh
+# Restart container to pick up code changes
+# Note: Using 'restart' is lightweight - no new images or containers created
 echo ""
 echo "♻️  Restarting ${SERVICE_NAME} service..."
 docker compose -f ${COMPOSE_FILE} restart ${SERVICE_NAME}
@@ -75,13 +88,28 @@ done" || {
 }
 
 echo ""
+echo "✅ Service restarted successfully!"
+
+# Run migrations unless skipped
+if [ "$SKIP_MIGRATIONS" = false ]; then
+    echo ""
+    echo "🔄 Running database migrations..."
+    docker compose -f ${COMPOSE_FILE} exec -T ${SERVICE_NAME} alembic upgrade head
+    echo "✅ Migrations complete!"
+fi
+
+echo ""
 echo "✅ Code updated successfully!"
 echo ""
-echo "📝 Note: The ${SERVICE_NAME} service has been restarted."
-echo "   Source code is mounted as a volume with hot reload enabled."
-echo "   Most changes are picked up automatically by uvicorn --reload."
+echo "📝 Notes:"
+echo "   - Service was restarted (no new images/containers created)"
+echo "   - Source code is mounted as a volume with hot reload enabled"
+echo "   - Most Python changes are picked up automatically by uvicorn --reload"
 echo ""
 echo "🔨 If you changed dependencies (pyproject.toml), run:"
 echo "   ./deploy-staging.sh (to rebuild the image)"
 echo ""
+echo "📋 Useful commands:"
+echo "   View logs: docker compose -f $COMPOSE_FILE logs -f $SERVICE_NAME"
+echo "   Run migrations only: ./run-migrations-docker.sh"
 echo "=================================================="

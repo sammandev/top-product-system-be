@@ -317,6 +317,7 @@ from .routers import (  # noqa: E402
     external_api_client,
     format_compare,
     health,
+    menu_access,
     multi_dut_analysis,
     parsing,
     rbac,
@@ -336,6 +337,7 @@ app.include_router(external_api_client.router)
 app.include_router(dvt_mc2_converter.router)
 app.include_router(format_compare.router)
 app.include_router(health.router)
+app.include_router(menu_access.router)
 app.include_router(multi_dut_analysis.router)
 app.include_router(parsing.router)
 app.include_router(rbac.router)

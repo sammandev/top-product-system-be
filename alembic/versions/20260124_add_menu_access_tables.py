@@ -22,13 +22,14 @@ def upgrade() -> None:
         'menu_definitions',
         sa.Column('id', sa.Integer(), nullable=False),
         sa.Column('menu_key', sa.String(length=100), nullable=False),
-        sa.Column('title', sa.String(length=100), nullable=False),
-        sa.Column('path', sa.String(length=255), nullable=True),
-        sa.Column('icon', sa.String(length=100), nullable=True),
+        sa.Column('title', sa.String(length=128), nullable=False),
+        sa.Column('path', sa.String(length=256), nullable=False),
+        sa.Column('icon', sa.String(length=64), nullable=True),
         sa.Column('parent_key', sa.String(length=100), nullable=True),
-        sa.Column('section', sa.String(length=50), nullable=False),
+        sa.Column('section', sa.String(length=32), nullable=False),
         sa.Column('sort_order', sa.Integer(), nullable=False, server_default='0'),
         sa.Column('is_active', sa.Boolean(), nullable=False, server_default='true'),
+        sa.Column('description', sa.Text(), nullable=True),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
         sa.PrimaryKeyConstraint('id'),
@@ -36,6 +37,7 @@ def upgrade() -> None:
     )
     op.create_index(op.f('ix_menu_definitions_id'), 'menu_definitions', ['id'], unique=False)
     op.create_index(op.f('ix_menu_definitions_menu_key'), 'menu_definitions', ['menu_key'], unique=True)
+    op.create_index(op.f('ix_menu_definitions_parent_key'), 'menu_definitions', ['parent_key'], unique=False)
     op.create_index(op.f('ix_menu_definitions_section'), 'menu_definitions', ['section'], unique=False)
 
     # Create menu_role_access table

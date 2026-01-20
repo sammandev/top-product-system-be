@@ -12,7 +12,7 @@ from app.db import get_db
 router = APIRouter(tags=["Health"])
 
 
-@router.get("/health", status_code=status.HTTP_200_OK)
+@router.get("/health", status_code=status.HTTP_200_OK, operation_id="health_check_main")
 async def health_check():
     """
     Health check endpoint for monitoring and load balancers.

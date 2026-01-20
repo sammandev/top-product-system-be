@@ -281,7 +281,7 @@ async def root():
     return {"message": "DUT Management API"}
 
 
-@app.get("/health")
+@app.get("/health", operation_id="health_check_root")
 async def health_check():
     return {"status": "ok", "app": settings.app_name}
 

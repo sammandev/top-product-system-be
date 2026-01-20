@@ -333,7 +333,7 @@ async def compare_test_logs(
             await criteria_file.close()
 
 
-@router.get("/health", summary="Health check for test log parser", description="Check if the test log parsing service is operational.")
+@router.get("/health", summary="Health check for test log parser", description="Check if the test log parsing service is operational.", operation_id="health_check_test_log")
 async def health_check():
     """
     Health check endpoint.

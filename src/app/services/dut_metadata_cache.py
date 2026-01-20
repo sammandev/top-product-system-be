@@ -10,7 +10,7 @@ import redis
 
 logger = logging.getLogger(__name__)
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:7071/0")
 DEFAULT_TTL = int(os.getenv("DUT_METADATA_CACHE_TTL", "300"))
 DEFAULT_RECORD_TTL = int(os.getenv("DUT_RECORD_CACHE_TTL", "120"))
 

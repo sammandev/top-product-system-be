@@ -86,7 +86,7 @@ _configure_logging()
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     # Initialize FastAPI Cache with Redis backend
-    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:7071/0")
     redis_client = aioredis.from_url(redis_url, encoding="utf8", decode_responses=True)
     FastAPICache.init(RedisBackend(redis_client), prefix="api-cache")
     logger.info(f"FastAPI Cache initialized with Redis at {redis_url}")

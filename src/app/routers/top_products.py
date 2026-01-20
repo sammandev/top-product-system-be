@@ -12,7 +12,7 @@ from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.dependencies.authz import get_current_user
+from app.dependencies.authz import get_current_user, is_user_admin
 from app.models.top_product import TopProduct, TopProductMeasurement
 from app.models.user import User
 
@@ -64,7 +64,6 @@ class TopProductSchema(BaseModel):
 
 
 class TopProductDetailSchema(TopProductSchema):
-    from app.utils.admin_access import is_user_admin
     """Top product with measurements."""
 
     measurements: list[TopProductMeasurementSchema]
@@ -95,7 +94,7 @@ class TopProductStatsResponse(BaseModel):
     recent_products_7d: int
 
 
-            if not is_user_admin(current_user):
+# ============================================================================
 # Endpoints
 # ============================================================================
 
@@ -169,9 +168,7 @@ async def get_top_products_list(
         # Add measurements count for each product
         products_with_count = []
         for product in top_products:
-            measurement_count = db.query(func.count(TopProductMeasurement.id)).filter(
-                TopProductMeasurement.top_product_id == product.id
-            ).scalar()
+            measurement_count = db.query(func.count(TopProductMeasurement.id)).filter(TopProductMeasurement.top_product_id == product.id).scalar()
 
             product_dict = {
                 "id": product.id,
@@ -231,17 +228,14 @@ async def get_top_product_detail(
     """
     try:
         product = db.query(TopProduct).filter(TopProduct.id == product_id).first()
-        
+
         if not product:
             from fastapi import HTTPException
+
             raise HTTPException(status_code=404, detail="Top product not found")
 
         # Get measurements
-        measurements = (
-            db.query(TopProductMeasurement)
-            .filter(TopProductMeasurement.top_product_id == product_id)
-            .all()
-        )
+        measurements = db.query(TopProductMeasurement).filter(TopProductMeasurement.top_product_id == product_id).all()
 
         measurement_count = len(measurements)
 
@@ -311,17 +305,9 @@ async def get_top_products_stats(
         total_pass = db.query(func.sum(TopProduct.pass_count)).scalar() or 0
         total_fail = db.query(func.sum(TopProduct.fail_count)).scalar() or 0
 
-        recent_24h = (
-            db.query(func.count(TopProduct.id))
-            .filter(TopProduct.created_at >= twenty_four_hours_ago)
-            .scalar() or 0
-        )
+        recent_24h = db.query(func.count(TopProduct.id)).filter(TopProduct.created_at >= twenty_four_hours_ago).scalar() or 0
 
-        recent_7d = (
-            db.query(func.count(TopProduct.id))
-            .filter(TopProduct.created_at >= seven_days_ago)
-            .scalar() or 0
-        )
+        recent_7d = db.query(func.count(TopProduct.id)).filter(TopProduct.created_at >= seven_days_ago).scalar() or 0
 
         return TopProductStatsResponse(
             total_products=total_products,
@@ -343,12 +329,14 @@ async def get_top_products_stats(
 
 class ProjectOption(BaseModel):
     """Project option for filter dropdown."""
+
     value: str
     label: str
 
 
 class StationOption(BaseModel):
     """Station option for filter dropdown with project association."""
+
     value: str
     label: str
     project: str | None
@@ -367,13 +355,7 @@ async def get_unique_projects(
 ):
     """Get unique project names."""
     try:
-        projects = (
-            db.query(TopProduct.project_name)
-            .filter(TopProduct.project_name.isnot(None))
-            .distinct()
-            .order_by(TopProduct.project_name)
-            .all()
-        )
+        projects = db.query(TopProduct.project_name).filter(TopProduct.project_name.isnot(None)).distinct().order_by(TopProduct.project_name).all()
         return [ProjectOption(value=p[0], label=p[0]) for p in projects]
     except Exception as e:
         logger.error(f"Error fetching projects: {e}", exc_info=True)
@@ -394,16 +376,8 @@ async def get_unique_stations(
     """Get unique station names with project associations."""
     try:
         # Get unique station-project combinations
-        stations = (
-            db.query(
-                TopProduct.station_name,
-                TopProduct.project_name
-            )
-            .distinct()
-            .order_by(TopProduct.station_name, TopProduct.project_name)
-            .all()
-        )
-        
+        stations = db.query(TopProduct.station_name, TopProduct.project_name).distinct().order_by(TopProduct.station_name, TopProduct.project_name).all()
+
         # Group by station and collect projects
         station_map = {}
         for station_name, project_name in stations:
@@ -411,7 +385,7 @@ async def get_unique_stations(
                 station_map[station_name] = []
             if project_name:
                 station_map[station_name].append(project_name)
-        
+
         # Create options with project info in label
         options = []
         for station_name in sorted(station_map.keys()):
@@ -423,13 +397,9 @@ async def get_unique_stations(
             else:
                 project = None
                 label = station_name
-            
-            options.append(StationOption(
-                value=station_name,
-                label=label,
-                project=project
-            ))
-        
+
+            options.append(StationOption(value=station_name, label=label, project=project))
+
         return options
     except Exception as e:
         logger.error(f"Error fetching stations: {e}", exc_info=True)
@@ -448,12 +418,12 @@ async def delete_top_product(
 ):
     """
     Delete a top product by ID.
-    
+
     Args:
         product_id: ID of the product to delete
         current_user: Authenticated user (must be admin)
         db: Database session
-        
+
     Returns:
         Success message
     """
@@ -461,26 +431,27 @@ async def delete_top_product(
         # Check if user is admin
         if not is_user_admin(current_user):
             from fastapi import HTTPException
+
             raise HTTPException(status_code=403, detail="Only admins can delete top products")
-        
+
         # Find the product
         product = db.query(TopProduct).filter(TopProduct.id == product_id).first()
         if not product:
             from fastapi import HTTPException
+
             raise HTTPException(status_code=404, detail="Top product not found")
-        
+
         # Delete measurements first (cascade should handle this, but being explicit)
         db.query(TopProductMeasurement).filter(TopProductMeasurement.top_product_id == product_id).delete()
-        
+
         # Delete the product
         db.delete(product)
         db.commit()
-        
+
         logger.info(f"Top product {product_id} deleted by user {current_user.username}")
         return {"message": "Top product deleted successfully", "id": product_id}
-        
+
     except Exception as e:
         db.rollback()
         logger.error(f"Error deleting top product {product_id}: {e}", exc_info=True)
         raise
-

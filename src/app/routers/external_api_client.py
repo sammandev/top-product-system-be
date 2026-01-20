@@ -841,7 +841,7 @@ def get_user_dut_client(current_user=dut_get_current_user_dependency) -> DUTAPIC
     if not token_bundle or not token_bundle.get("access"):
         raise HTTPException(status_code=401, detail="Please re-login via /api/auth/external-login")
 
-    client = DUTAPIClient(base_url=os.getenv("DUT_API_BASE_URL", "http://192.168.180.56:9001"))
+    client = DUTAPIClient(base_url=os.getenv("DUT_API_BASE_URL", "http://172.18.220.56:9001"))
     client.access_token = token_bundle.get("access")
     client.refresh_token = token_bundle.get("refresh")
 

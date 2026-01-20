@@ -184,15 +184,15 @@ async def invalidate_dut_cache_endpoint(
 
     **Returns:** Number of cache entries invalidated
     """
-        if not is_user_admin(current_user):
-            return DUTCacheInvalidationResponse(
-                status="error",
-                dut_isn=dut_isn,
-                total_keys_deleted=0,
-                message="Admin privileges required"
-            )
-    
-        result = await invalidate_dut_cache(dut_isn)
+    if not is_user_admin(current_user):
+        return DUTCacheInvalidationResponse(
+            status="error",
+            dut_isn=dut_isn,
+            total_keys_deleted=0,
+            message="Admin privileges required"
+        )
+
+    result = await invalidate_dut_cache(dut_isn)
     return DUTCacheInvalidationResponse(**result)
 
 

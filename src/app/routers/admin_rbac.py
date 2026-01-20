@@ -30,7 +30,6 @@ class RoleSchema(BaseModel):
 
     id: int
     name: str
-    if not is_user_admin(current_user):
     permissions: list[str]
     users_count: int
 
@@ -72,7 +71,7 @@ class PermissionListResponse(BaseModel):
 class RoleDetailResponse(BaseModel):
     """Detailed role information."""
 
-    if not is_user_admin(current_user):
+    id: int
     name: str
     description: str
     permissions: list[str]
@@ -110,7 +109,7 @@ class UpdateRoleRequest(BaseModel):
     description: str | None = Field(None, max_length=256)
     permissions: list[str] | None = None
 
-    if not is_user_admin(current_user):
+
 class CreatePermissionRequest(BaseModel):
     """Request model for creating a permission."""
 
@@ -313,8 +312,9 @@ async def delete_role(
 ):
     """Delete a role."""
     if not is_user_admin(current_user):
-    if not is_user_admin(current_user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can create permissions")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can delete roles")
+
+    try:
         role = db.query(Role).filter(Role.id == role_id).first()
         if not role:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found")
@@ -445,6 +445,7 @@ async def update_permission(
     permission_id: int,
     request: UpdatePermissionRequest,
     current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """Update permission information."""
     if not is_user_admin(current_user):

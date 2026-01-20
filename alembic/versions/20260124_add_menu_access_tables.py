@@ -1,7 +1,7 @@
 """add_menu_access_tables
 
 Revision ID: 20260124_menu
-Revises: 6356ccd2f4ca
+Revises: 8f24c7d7c2b1
 Create Date: 2025-01-24 10:00:00.000000
 
 """
@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = '20260124_menu'
-down_revision = '6356ccd2f4ca'
+down_revision = '8f24c7d7c2b1'
 branch_labels = None
 depends_on = None
 

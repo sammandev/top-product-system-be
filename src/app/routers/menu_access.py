@@ -110,7 +110,7 @@ DEFAULT_MENUS = [
     {"menu_key": "top-products-analysis", "title": "Analysis", "path": "/dut/top-products/analysis", "icon": "mdi-circle-small", "parent_key": "top-products", "section": "main", "sort_order": 11},
     {"menu_key": "top-products-data", "title": "Database", "path": "/dut/top-products/data", "icon": "mdi-circle-small", "parent_key": "top-products", "section": "main", "sort_order": 12},
     {"menu_key": "test-log-download", "title": "Test Log Download", "path": "/dut/test-log-download", "icon": "mdi-download-box", "section": "main", "sort_order": 20},
-    {"menu_key": "iplas-explorer", "title": "iPLAS Explorer", "path": "/iplas/explorer", "icon": "mdi-compass", "section": "main", "sort_order": 30},
+    {"menu_key": "data-explorer", "title": "Data Explorer", "path": "/dut/data-explorer", "icon": "mdi-database-search", "section": "main", "sort_order": 25},
     {"menu_key": "iplas-download", "title": "iPLAS Downloader", "path": "/iplas/download", "icon": "mdi-download", "section": "main", "sort_order": 31},
     
     # Tools Section
@@ -140,7 +140,7 @@ DEFAULT_ROLE_ACCESS = {
     # Regular users can see most menus except system
     "user": [
         "dashboard", "top-products", "top-products-analysis", "top-products-data",
-        "test-log-download", "iplas-explorer", "iplas-download",
+        "test-log-download", "data-explorer", "iplas-download",
         "file-upload", "file-upload-upload", "file-upload-download",
         "compare-files", "compare-files-compare", "compare-files-dvt-mc2",
         "mastercontrol-analyze", "dvt-to-mc2-converter"

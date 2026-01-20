@@ -4,7 +4,7 @@ Menu Access Model for Role-Based Menu Visibility Control.
 Stores which menu items are accessible to which roles.
 """
 
-from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from app.db import Base
@@ -16,7 +16,7 @@ class MenuDefinition(Base):
     This acts as a master list of menu routes.
     """
     __tablename__ = "menu_definitions"
-    
+
     id = Column(Integer, primary_key=True)
     menu_key = Column(String(100), unique=True, nullable=False, index=True)  # e.g., 'dashboard', 'top-products-analysis'
     title = Column(String(128), nullable=False)  # Display title
@@ -26,8 +26,7 @@ class MenuDefinition(Base):
     section = Column(String(32), nullable=False, default="main")  # 'main', 'tools', 'system'
     sort_order = Column(Integer, default=0)  # For ordering menus
     is_active = Column(Boolean, default=True)  # Can disable entire menu items
-    description = Column(Text, nullable=True)
-    
+
     # Relationships
     role_access = relationship("MenuRoleAccess", back_populates="menu", cascade="all, delete-orphan")
 

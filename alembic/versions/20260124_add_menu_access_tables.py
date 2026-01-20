@@ -29,7 +29,6 @@ def upgrade() -> None:
         sa.Column('section', sa.String(length=32), nullable=False),
         sa.Column('sort_order', sa.Integer(), nullable=False, server_default='0'),
         sa.Column('is_active', sa.Boolean(), nullable=False, server_default='true'),
-        sa.Column('description', sa.Text(), nullable=True),
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
         sa.PrimaryKeyConstraint('id'),

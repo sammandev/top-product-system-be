@@ -13,7 +13,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-DUT_BASE_URL = os.getenv("DUT_API_BASE_URL", "http://192.168.180.56:9001")
+DUT_BASE_URL = os.getenv("DUT_API_BASE_URL", "http://172.18.220.56:9001")
 REDIS_DUT_TTL = int(os.getenv("REDIS_DUT_TTL", "90000"))  # ~25h
 
 _local_store: dict[str, dict] = {}

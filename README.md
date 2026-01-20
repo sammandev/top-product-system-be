@@ -11,7 +11,7 @@ Modern FastAPI service for uploading and analysing wireless test data, comparing
 
 ## 📑 Table of Contents
 
-- [AST Parser FastAPI Backend](#ast-tools-fastapi-backend)
+- [AST Parser FastAPI Backend](#ast-parser-fastapi-backend)
   - [📑 Table of Contents](#-table-of-contents)
   - [Prerequisites](#prerequisites)
   - [Getting Started](#getting-started)
@@ -91,6 +91,9 @@ Modern FastAPI service for uploading and analysing wireless test data, comparing
       - [`GET /api/dut/history/progression`](#get-apiduthistoryprogression)
       - [`GET /api/dut/history/results`](#get-apiduthistoryresults)
     - [9.4 Summary \& Analytics](#94-summary--analytics)
+      - [`POST /api/dut/top-product`](#post-apiduttop-product)
+      - [`POST /api/dut/top-product/with-pa-trends`](#post-apiduttop-productwith-pa-trends)
+      - [`POST /api/dut/top-product/hierarchical`](#post-apiduttop-producthierarchical)
       - [`GET /api/dut/summary`](#get-apidutsummary)
       - [`POST /api/dut/stations/{station_id}/top-products`](#post-apidutstationsstation_idtop-products)
       - [`POST /api/dut/pa-test-items/adjusted-power`](#post-apidutpa-test-itemsadjusted-power)
@@ -208,7 +211,7 @@ DATABASE_URL=postgresql+psycopg://postgres:password@localhost:5432/test123
 REDIS_URL=redis://localhost:6379/0
 JWT_SECRET=change_me
 UPLOAD_PERSIST=1
-DUT_API_BASE_URL=http://192.168.180.56:9001
+DUT_API_BASE_URL=http://172.18.220.56:9001
 ```
 
 The `ARGON2_*` settings feed directly into the `pwdlib` Argon2 hasher, so you can dial CPU and memory requirements per environment.

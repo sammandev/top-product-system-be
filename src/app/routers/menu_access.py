@@ -42,6 +42,7 @@ def is_superadmin(user: User) -> bool:
 
 class MenuItemSchema(BaseModel):
     """Menu item schema."""
+
     id: int
     menu_key: str
     title: str
@@ -59,18 +60,21 @@ class MenuItemSchema(BaseModel):
 
 class MenuListResponse(BaseModel):
     """Menu list response."""
+
     menus: list[MenuItemSchema]
     available_roles: list[str]
 
 
 class MenuRoleAccessSchema(BaseModel):
     """Role access for a menu."""
+
     role_name: str
     can_view: bool
 
 
 class UpdateMenuAccessRequest(BaseModel):
     """Request to update menu access for a role."""
+
     menu_key: str
     role_name: str
     can_view: bool
@@ -78,11 +82,13 @@ class UpdateMenuAccessRequest(BaseModel):
 
 class BulkUpdateMenuAccessRequest(BaseModel):
     """Bulk update menu access."""
+
     updates: list[UpdateMenuAccessRequest]
 
 
 class CreateMenuRequest(BaseModel):
     """Request to create a new menu definition."""
+
     menu_key: str = Field(..., min_length=1, max_length=100)
     title: str = Field(..., min_length=1, max_length=128)
     path: str = Field(..., min_length=1, max_length=256)
@@ -95,6 +101,7 @@ class CreateMenuRequest(BaseModel):
 
 class UserMenusResponse(BaseModel):
     """Response for user's accessible menus."""
+
     menus: list[dict]
 
 
@@ -109,10 +116,7 @@ DEFAULT_MENUS = [
     {"menu_key": "top-products", "title": "Top Products", "path": "", "icon": "mdi-trophy", "section": "main", "sort_order": 10},
     {"menu_key": "top-products-analysis", "title": "Analysis", "path": "/dut/top-products/analysis", "icon": "mdi-circle-small", "parent_key": "top-products", "section": "main", "sort_order": 11},
     {"menu_key": "top-products-data", "title": "Database", "path": "/dut/top-products/data", "icon": "mdi-circle-small", "parent_key": "top-products", "section": "main", "sort_order": 12},
-    {"menu_key": "test-log-download", "title": "Test Log Download", "path": "/dut/test-log-download", "icon": "mdi-download-box", "section": "main", "sort_order": 20},
-    {"menu_key": "data-explorer", "title": "Data Explorer", "path": "/dut/data-explorer", "icon": "mdi-database-search", "section": "main", "sort_order": 25},
-    {"menu_key": "iplas-download", "title": "iPLAS Downloader", "path": "/iplas/download", "icon": "mdi-download", "section": "main", "sort_order": 31},
-    
+    {"menu_key": "data-explorer", "title": "Data Explorer", "path": "/dut/data-explorer", "icon": "mdi-database-search", "section": "main", "sort_order": 20},
     # Tools Section
     {"menu_key": "file-upload", "title": "File Upload", "path": "", "icon": "mdi-file-upload", "section": "tools", "sort_order": 0},
     {"menu_key": "file-upload-upload", "title": "Upload File", "path": "/parsing", "icon": "mdi-circle-small", "parent_key": "file-upload", "section": "tools", "sort_order": 1},
@@ -122,7 +126,6 @@ DEFAULT_MENUS = [
     {"menu_key": "compare-files-dvt-mc2", "title": "DVT-MC2 Compare", "path": "/compare/dvt-mc2", "icon": "mdi-circle-small", "parent_key": "compare-files", "section": "tools", "sort_order": 12},
     {"menu_key": "mastercontrol-analyze", "title": "MasterControl Analyze", "path": "/mastercontrol/analyze", "icon": "mdi-file-chart", "section": "tools", "sort_order": 20},
     {"menu_key": "dvt-to-mc2-converter", "title": "DVT to MC2 Converter", "path": "/conversion/dvt-to-mc2", "icon": "mdi-file-swap", "section": "tools", "sort_order": 30},
-    
     # System Section (Admin only by default)
     {"menu_key": "access-control", "title": "Access Control", "path": "", "icon": "mdi-shield-lock", "section": "system", "sort_order": 0},
     {"menu_key": "access-control-users", "title": "User Management", "path": "/admin/users", "icon": "mdi-circle-small", "parent_key": "access-control", "section": "system", "sort_order": 1},
@@ -136,14 +139,36 @@ DEFAULT_MENUS = [
 # Default role access: which roles can see which menus by default
 DEFAULT_ROLE_ACCESS = {
     # Guest can see limited menus
-    "guest": ["dashboard", "file-upload", "file-upload-upload", "file-upload-download", "compare-files", "compare-files-compare"],
+    "guest": [
+        "dashboard",
+        "top-products",
+        "top-products-analysis",
+        "top-products-data",
+        "data-explorer",
+        "file-upload",
+        "file-upload-upload",
+        "file-upload-download",
+        "compare-files",
+        "compare-files-compare",
+        "compare-files-dvt-mc2",
+        "mastercontrol-analyze",
+        "dvt-to-mc2-converter",
+    ],
     # Regular users can see most menus except system
     "user": [
-        "dashboard", "top-products", "top-products-analysis", "top-products-data",
-        "test-log-download", "data-explorer", "iplas-download",
-        "file-upload", "file-upload-upload", "file-upload-download",
-        "compare-files", "compare-files-compare", "compare-files-dvt-mc2",
-        "mastercontrol-analyze", "dvt-to-mc2-converter"
+        "dashboard",
+        "top-products",
+        "top-products-analysis",
+        "top-products-data",
+        "data-explorer",
+        "file-upload",
+        "file-upload-upload",
+        "file-upload-download",
+        "compare-files",
+        "compare-files-compare",
+        "compare-files-dvt-mc2",
+        "mastercontrol-analyze",
+        "dvt-to-mc2-converter",
     ],
     # Admin can see everything
     "admin": [m["menu_key"] for m in DEFAULT_MENUS],
@@ -167,18 +192,13 @@ async def initialize_menus(
 ):
     """Initialize or reset menu definitions to defaults."""
     if not is_superadmin(current_user):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only superadmin can initialize menu definitions"
-        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only superadmin can initialize menu definitions")
 
     try:
         # Create or update menu definitions
         for menu_data in DEFAULT_MENUS:
-            existing = db.query(MenuDefinition).filter(
-                MenuDefinition.menu_key == menu_data["menu_key"]
-            ).first()
-            
+            existing = db.query(MenuDefinition).filter(MenuDefinition.menu_key == menu_data["menu_key"]).first()
+
             if existing:
                 # Update existing
                 for key, value in menu_data.items():
@@ -187,41 +207,29 @@ async def initialize_menus(
                 # Create new
                 menu = MenuDefinition(**menu_data, is_active=True)
                 db.add(menu)
-        
+
         db.commit()
-        
+
         # Initialize default role access
         for role_name, menu_keys in DEFAULT_ROLE_ACCESS.items():
             for menu_key in menu_keys:
-                menu = db.query(MenuDefinition).filter(
-                    MenuDefinition.menu_key == menu_key
-                ).first()
-                
+                menu = db.query(MenuDefinition).filter(MenuDefinition.menu_key == menu_key).first()
+
                 if menu:
-                    existing_access = db.query(MenuRoleAccess).filter(
-                        MenuRoleAccess.menu_id == menu.id,
-                        MenuRoleAccess.role_name == role_name
-                    ).first()
-                    
+                    existing_access = db.query(MenuRoleAccess).filter(MenuRoleAccess.menu_id == menu.id, MenuRoleAccess.role_name == role_name).first()
+
                     if not existing_access:
-                        access = MenuRoleAccess(
-                            menu_id=menu.id,
-                            role_name=role_name,
-                            can_view=True
-                        )
+                        access = MenuRoleAccess(menu_id=menu.id, role_name=role_name, can_view=True)
                         db.add(access)
-        
+
         db.commit()
-        
+
         return {"message": "Menu definitions initialized successfully", "count": len(DEFAULT_MENUS)}
 
     except Exception as e:
         db.rollback()
         logger.error(f"Error initializing menus: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to initialize menu definitions"
-        ) from e
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to initialize menu definitions") from e
 
 
 @router.get(
@@ -236,44 +244,38 @@ async def get_all_menus(
 ):
     """Get all menu definitions with their role access settings."""
     if not is_superadmin(current_user):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only superadmin can manage menu access"
-        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only superadmin can manage menu access")
 
     try:
-        menus = db.query(MenuDefinition).order_by(
-            MenuDefinition.section, MenuDefinition.sort_order
-        ).all()
-        
+        menus = db.query(MenuDefinition).order_by(MenuDefinition.section, MenuDefinition.sort_order).all()
+
         menu_list = []
         for menu in menus:
             role_names = [access.role_name for access in menu.role_access if access.can_view]
-            menu_list.append(MenuItemSchema(
-                id=menu.id,
-                menu_key=menu.menu_key,
-                title=menu.title,
-                path=menu.path,
-                icon=menu.icon,
-                parent_key=menu.parent_key,
-                section=menu.section,
-                sort_order=menu.sort_order,
-                is_active=menu.is_active,
-                description=menu.description,
-                role_access=role_names
-            ))
-        
+            menu_list.append(
+                MenuItemSchema(
+                    id=menu.id,
+                    menu_key=menu.menu_key,
+                    title=menu.title,
+                    path=menu.path,
+                    icon=menu.icon,
+                    parent_key=menu.parent_key,
+                    section=menu.section,
+                    sort_order=menu.sort_order,
+                    is_active=menu.is_active,
+                    description=menu.description,
+                    role_access=role_names,
+                )
+            )
+
         # Available roles
         available_roles = ["guest", "user", "admin"]
-        
+
         return MenuListResponse(menus=menu_list, available_roles=available_roles)
 
     except Exception as e:
         logger.error(f"Error fetching menus: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fetch menu definitions"
-        ) from e
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to fetch menu definitions") from e
 
 
 @router.put(
@@ -289,28 +291,17 @@ async def update_menu_access(
 ):
     """Update menu access for a specific role."""
     if not is_superadmin(current_user):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only superadmin can update menu access"
-        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only superadmin can update menu access")
 
     try:
-        menu = db.query(MenuDefinition).filter(
-            MenuDefinition.menu_key == request.menu_key
-        ).first()
-        
+        menu = db.query(MenuDefinition).filter(MenuDefinition.menu_key == request.menu_key).first()
+
         if not menu:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Menu '{request.menu_key}' not found"
-            )
-        
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Menu '{request.menu_key}' not found")
+
         # Find or create role access
-        existing_access = db.query(MenuRoleAccess).filter(
-            MenuRoleAccess.menu_id == menu.id,
-            MenuRoleAccess.role_name == request.role_name
-        ).first()
-        
+        existing_access = db.query(MenuRoleAccess).filter(MenuRoleAccess.menu_id == menu.id, MenuRoleAccess.role_name == request.role_name).first()
+
         if existing_access:
             if request.can_view:
                 existing_access.can_view = True
@@ -319,15 +310,11 @@ async def update_menu_access(
                 db.delete(existing_access)
         elif request.can_view:
             # Create new access entry
-            access = MenuRoleAccess(
-                menu_id=menu.id,
-                role_name=request.role_name,
-                can_view=True
-            )
+            access = MenuRoleAccess(menu_id=menu.id, role_name=request.role_name, can_view=True)
             db.add(access)
-        
+
         db.commit()
-        
+
         return {"message": "Menu access updated successfully"}
 
     except HTTPException:
@@ -335,10 +322,7 @@ async def update_menu_access(
     except Exception as e:
         db.rollback()
         logger.error(f"Error updating menu access: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to update menu access"
-        ) from e
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to update menu access") from e
 
 
 @router.put(
@@ -354,27 +338,19 @@ async def bulk_update_menu_access(
 ):
     """Bulk update menu access."""
     if not is_superadmin(current_user):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only superadmin can update menu access"
-        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only superadmin can update menu access")
 
     try:
         updated_count = 0
-        
+
         for update in request.updates:
-            menu = db.query(MenuDefinition).filter(
-                MenuDefinition.menu_key == update.menu_key
-            ).first()
-            
+            menu = db.query(MenuDefinition).filter(MenuDefinition.menu_key == update.menu_key).first()
+
             if not menu:
                 continue
-            
-            existing_access = db.query(MenuRoleAccess).filter(
-                MenuRoleAccess.menu_id == menu.id,
-                MenuRoleAccess.role_name == update.role_name
-            ).first()
-            
+
+            existing_access = db.query(MenuRoleAccess).filter(MenuRoleAccess.menu_id == menu.id, MenuRoleAccess.role_name == update.role_name).first()
+
             if existing_access:
                 if update.can_view:
                     existing_access.can_view = True
@@ -382,25 +358,18 @@ async def bulk_update_menu_access(
                     db.delete(existing_access)
                 updated_count += 1
             elif update.can_view:
-                access = MenuRoleAccess(
-                    menu_id=menu.id,
-                    role_name=update.role_name,
-                    can_view=True
-                )
+                access = MenuRoleAccess(menu_id=menu.id, role_name=update.role_name, can_view=True)
                 db.add(access)
                 updated_count += 1
-        
+
         db.commit()
-        
+
         return {"message": f"Updated {updated_count} menu access entries"}
 
     except Exception as e:
         db.rollback()
         logger.error(f"Error bulk updating menu access: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to bulk update menu access"
-        ) from e
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to bulk update menu access") from e
 
 
 @router.get(
@@ -420,55 +389,38 @@ async def get_user_menus(
             role = "admin"
         elif current_user.is_admin:
             role = "admin"
-        elif hasattr(current_user, 'roles') and current_user.roles:
+        elif hasattr(current_user, "roles") and current_user.roles:
             # Get first role name, default to 'user'
             role = current_user.roles[0].name.lower() if current_user.roles else "user"
         else:
             role = "user"
-        
+
         # Check for guest mode (passed via header or stored flag)
         # For now, we'll use the user role
-        
+
         # Get all menus this role can access
-        accessible_menus = db.query(MenuDefinition).join(
-            MenuRoleAccess, MenuDefinition.id == MenuRoleAccess.menu_id
-        ).filter(
-            MenuRoleAccess.role_name == role,
-            MenuRoleAccess.can_view == True,
-            MenuDefinition.is_active == True
-        ).order_by(
-            MenuDefinition.section, MenuDefinition.sort_order
-        ).all()
-        
+        accessible_menus = (
+            db.query(MenuDefinition)
+            .join(MenuRoleAccess, MenuDefinition.id == MenuRoleAccess.menu_id)
+            .filter(MenuRoleAccess.role_name == role, MenuRoleAccess.can_view == True, MenuDefinition.is_active == True)
+            .order_by(MenuDefinition.section, MenuDefinition.sort_order)
+            .all()
+        )
+
         # Also get admin menus if user is admin
         if role == "admin":
-            accessible_menus = db.query(MenuDefinition).filter(
-                MenuDefinition.is_active == True
-            ).order_by(
-                MenuDefinition.section, MenuDefinition.sort_order
-            ).all()
-        
+            accessible_menus = db.query(MenuDefinition).filter(MenuDefinition.is_active == True).order_by(MenuDefinition.section, MenuDefinition.sort_order).all()
+
         # Build menu structure
         menus = []
         for menu in accessible_menus:
-            menus.append({
-                "menu_key": menu.menu_key,
-                "title": menu.title,
-                "path": menu.path,
-                "icon": menu.icon,
-                "parent_key": menu.parent_key,
-                "section": menu.section,
-                "sort_order": menu.sort_order
-            })
-        
+            menus.append({"menu_key": menu.menu_key, "title": menu.title, "path": menu.path, "icon": menu.icon, "parent_key": menu.parent_key, "section": menu.section, "sort_order": menu.sort_order})
+
         return UserMenusResponse(menus=menus)
 
     except Exception as e:
         logger.error(f"Error fetching user menus: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fetch user menus"
-        ) from e
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to fetch user menus") from e
 
 
 @router.get(
@@ -483,33 +435,20 @@ async def get_guest_menus(
     """Get menus accessible to guest users."""
     try:
         # Get all menus that guests can access
-        accessible_menus = db.query(MenuDefinition).join(
-            MenuRoleAccess, MenuDefinition.id == MenuRoleAccess.menu_id
-        ).filter(
-            MenuRoleAccess.role_name == "guest",
-            MenuRoleAccess.can_view == True,
-            MenuDefinition.is_active == True
-        ).order_by(
-            MenuDefinition.section, MenuDefinition.sort_order
-        ).all()
-        
+        accessible_menus = (
+            db.query(MenuDefinition)
+            .join(MenuRoleAccess, MenuDefinition.id == MenuRoleAccess.menu_id)
+            .filter(MenuRoleAccess.role_name == "guest", MenuRoleAccess.can_view == True, MenuDefinition.is_active == True)
+            .order_by(MenuDefinition.section, MenuDefinition.sort_order)
+            .all()
+        )
+
         menus = []
         for menu in accessible_menus:
-            menus.append({
-                "menu_key": menu.menu_key,
-                "title": menu.title,
-                "path": menu.path,
-                "icon": menu.icon,
-                "parent_key": menu.parent_key,
-                "section": menu.section,
-                "sort_order": menu.sort_order
-            })
-        
+            menus.append({"menu_key": menu.menu_key, "title": menu.title, "path": menu.path, "icon": menu.icon, "parent_key": menu.parent_key, "section": menu.section, "sort_order": menu.sort_order})
+
         return UserMenusResponse(menus=menus)
 
     except Exception as e:
         logger.error(f"Error fetching guest menus: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to fetch guest menus"
-        ) from e
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to fetch guest menus") from e

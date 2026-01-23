@@ -53,7 +53,7 @@ class IplasTestItemNamesRequest(BaseModel):
     begin_time: datetime = Field(..., description="Start time for the query")
     end_time: datetime = Field(..., description="End time for the query")
     test_status: Literal["ALL", "PASS", "FAIL"] = Field(
-        default="ALL", description="Filter by test status"
+        default="PASS", description="Filter by test status (defaults to PASS for test item discovery)"
     )
     token: str | None = Field(
         default=None,

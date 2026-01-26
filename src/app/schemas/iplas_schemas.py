@@ -68,6 +68,9 @@ class IplasTestItemInfo(BaseModel):
     is_value: bool = Field(
         ..., description="True if the test item has numeric VALUE (not bin/pass-fail)"
     )
+    is_bin: bool = Field(
+        default=False, description="True if the test item is binary (PASS/FAIL only)"
+    )
 
 
 class IplasTestItemNamesResponse(BaseModel):

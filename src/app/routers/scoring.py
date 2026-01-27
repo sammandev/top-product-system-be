@@ -92,9 +92,9 @@ async def detect_scoring_types(record: dict, current_user: Annotated[User, Depen
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error detecting scoring types: {str(e)}")
 
 
-@router.get("/types", response_model=list[dict], summary="Get available scoring types", description="Returns list of available scoring types with descriptions and default parameters.")
+@router.get("/types", response_model=list[dict], summary="Get available scoring types", description="Returns list of available scoring types with descriptions, LaTeX formulas, and default parameters.")
 async def get_scoring_types() -> list[dict]:
-    """Get all available scoring types with their descriptions."""
+    """Get all available scoring types with their descriptions and LaTeX formulas."""
     return [
         {
             "type": ScoringType.SYMMETRICAL.value,
@@ -103,6 +103,13 @@ async def get_scoring_types() -> list[dict]:
             "use_case": "TX Power, frequency measurements with symmetric limits",
             "params": ["alpha"],
             "defaults": SCORING_TYPE_DEFAULTS[ScoringType.SYMMETRICAL],
+            "formula_latex": r"score = \alpha + (1-\alpha) \cdot \frac{L - |x - T|}{L}",
+            "variables": {
+                "T": r"Target = \frac{UCL + LCL}{2}",
+                "L": r"Limit = \frac{UCL - LCL}{2}",
+                "x": "Measured value",
+                "α": "Minimum score at limit boundary (default: 0.8)",
+            },
         },
         {
             "type": ScoringType.SYMMETRICAL_NL.value,
@@ -111,6 +118,14 @@ async def get_scoring_types() -> list[dict]:
             "use_case": "When you want steeper decay away from target",
             "params": ["target_score", "target_deviation"],
             "defaults": SCORING_TYPE_DEFAULTS[ScoringType.SYMMETRICAL_NL],
+            "formula_latex": r"score = e^{-\lambda \cdot d^2}",
+            "variables": {
+                "λ": r"\lambda = -\frac{\ln(S_t)}{d_t^2}",
+                "d": r"|x - T| \text{ (deviation from target)}",
+                "T": r"Target = \frac{UCL + LCL}{2}",
+                "S_t": "Target score at target deviation (default: 0.8)",
+                "d_t": "Target deviation distance (default: 2.5)",
+            },
         },
         {
             "type": ScoringType.EVM.value,
@@ -119,32 +134,70 @@ async def get_scoring_types() -> list[dict]:
             "use_case": "EVM measurements (typically -20 to -60 dB)",
             "params": ["target", "target_score"],
             "defaults": SCORING_TYPE_DEFAULTS[ScoringType.EVM],
+            "formula_latex": r"score = 1 - e^{-\lambda \cdot x^2}",
+            "variables": {
+                "λ": r"\lambda = -\frac{\ln(1 - S_t)}{T^2}",
+                "x": "Measured EVM value (negative dB)",
+                "T": "Target EVM value (default: -30)",
+                "S_t": "Target score at target EVM (default: 0.9)",
+            },
         },
         {
             "type": ScoringType.THROUGHPUT.value,
             "label": "Throughput (Higher is Better)",
-            "description": "Linear to target, exponential above target",
+            "description": "Linear below target, exponential above target",
             "use_case": "Data throughput, speed measurements",
             "params": ["min_score", "target_score", "target"],
             "defaults": SCORING_TYPE_DEFAULTS[ScoringType.THROUGHPUT],
+            "formula_latex": r"score = \begin{cases} m \cdot x + (S_{min} - m \cdot LCL) & x < T \\ 1 - e^{-\lambda \cdot x^2} & x \geq T \end{cases}",
+            "variables": {
+                "m": r"\text{Slope} = \frac{S_t - S_{min}}{T - LCL}",
+                "λ": r"\lambda = -\frac{\ln(1 - S_t)}{T^2}",
+                "T": "Target throughput value (user-defined)",
+                "LCL": "Lower control limit (minimum acceptable)",
+                "S_min": "Minimum score at LCL (default: 0.4)",
+                "S_t": "Target score at target value (default: 0.9)",
+            },
         },
         {
             "type": ScoringType.ASYMMETRICAL.value,
             "label": "Asymmetrical",
-            "description": "Custom target between UCL and LCL",
+            "description": "Custom target between UCL and LCL (not centered)",
             "use_case": "When optimal value is not centered between limits",
             "params": ["alpha", "target"],
             "defaults": SCORING_TYPE_DEFAULTS[ScoringType.ASYMMETRICAL],
+            "formula_latex": r"score = \alpha + (1-\alpha) \cdot \frac{L - d}{L}",
+            "variables": {
+                "L": r"\begin{cases} UCL - T & x \geq T \\ T - LCL & x < T \end{cases}",
+                "d": r"\begin{cases} x - T & x \geq T \\ T - x & x < T \end{cases}",
+                "T": "User-defined target value",
+                "α": "Minimum score at limit boundary (default: 0.4)",
+            },
+            "required_inputs": ["target"],
         },
         {
             "type": ScoringType.PER_MASK.value,
             "label": "PER/MASK (Zero is Best)",
-            "description": "Linear decrease from 1.0 at 0 to 0.0 at max",
+            "description": "Linear decrease from 1.0 at 0 to 0.0 at max deviation",
             "use_case": "Packet Error Rate, Mask margin measurements",
             "params": ["max_deviation"],
             "defaults": SCORING_TYPE_DEFAULTS[ScoringType.PER_MASK],
+            "formula_latex": r"score = \max\left(0, 1 - \frac{|x - 0|}{d_{max}}\right)",
+            "variables": {
+                "x": "Measured value",
+                "d_max": "Maximum deviation (score = 0 at this distance from 0)",
+            },
         },
-        {"type": ScoringType.BINARY.value, "label": "Binary (PASS/FAIL)", "description": "PASS = 1.0, FAIL = 0.0", "use_case": "Non-numeric test items", "params": [], "defaults": {}},
+        {
+            "type": ScoringType.BINARY.value,
+            "label": "Binary (PASS/FAIL)",
+            "description": "PASS = 1.0, FAIL = 0.0",
+            "use_case": "Non-numeric test items",
+            "params": [],
+            "defaults": {},
+            "formula_latex": r"score = \begin{cases} 1.0 & \text{STATUS} = \text{PASS} \\ 0.0 & \text{STATUS} = \text{FAIL} \end{cases}",
+            "variables": {},
+        },
     ]
 
 

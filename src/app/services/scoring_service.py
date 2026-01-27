@@ -444,9 +444,10 @@ def score_record(
     test_items = record.get("TestItem", [])
     
     item_scores: list[TestItemScoreResult] = []
-    value_scores: list[float] = []
-    bin_scores: list[float] = []
-    all_scores: list[float] = []
+    # Track weighted scores and their weights for proper weighted average
+    value_weighted_scores: list[tuple[float, float]] = []  # (score * weight, weight)
+    bin_weighted_scores: list[tuple[float, float]] = []  # (score * weight, weight)
+    all_weighted_scores: list[tuple[float, float]] = []  # (score * weight, weight)
     failed_count = 0
     
     for item in test_items:
@@ -464,20 +465,27 @@ def score_record(
         weighted_score = result.score * weight
         
         if result.scoring_type == ScoringType.BINARY:
-            bin_scores.append(weighted_score)
+            bin_weighted_scores.append((weighted_score, weight))
             if include_binary_in_overall:
-                all_scores.append(weighted_score)
+                all_weighted_scores.append((weighted_score, weight))
         else:
-            value_scores.append(weighted_score)
-            all_scores.append(weighted_score)
+            value_weighted_scores.append((weighted_score, weight))
+            all_weighted_scores.append((weighted_score, weight))
         
         if result.status.upper() == "FAIL":
             failed_count += 1
     
-    # Calculate aggregate scores
-    overall_score = mean(all_scores) if all_scores else 0.0
-    value_items_score = mean(value_scores) if value_scores else None
-    bin_items_score = mean(bin_scores) if bin_scores else None
+    # Calculate aggregate scores using proper weighted average (sum of weighted scores / sum of weights)
+    def weighted_average(scores: list[tuple[float, float]]) -> float:
+        if not scores:
+            return 0.0
+        total_weighted = sum(ws for ws, _ in scores)
+        total_weight = sum(w for _, w in scores)
+        return total_weighted / total_weight if total_weight > 0 else 0.0
+    
+    overall_score = weighted_average(all_weighted_scores)
+    value_items_score = weighted_average(value_weighted_scores) if value_weighted_scores else None
+    bin_items_score = weighted_average(bin_weighted_scores) if bin_weighted_scores else None
     
     return RecordScoreResult(
         isn=isn,

@@ -71,6 +71,12 @@ class IplasTestItemInfo(BaseModel):
     is_bin: bool = Field(
         default=False, description="True if the test item is binary (PASS/FAIL only)"
     )
+    has_ucl: bool = Field(
+        default=False, description="True if the test item has a UCL (upper control limit)"
+    )
+    has_lcl: bool = Field(
+        default=False, description="True if the test item has a LCL (lower control limit)"
+    )
 
 
 class IplasTestItemNamesResponse(BaseModel):

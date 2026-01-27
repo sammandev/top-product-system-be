@@ -248,7 +248,7 @@ def _extract_unique_test_items(records: list[dict[str, Any]]) -> list[IplasTestI
         records: List of test records from iPLAS
 
     Returns:
-        List of unique test item info with name and is_value flag
+        List of unique test item info with name, is_value, is_bin, has_ucl, has_lcl flags
     """
     test_items_map: dict[str, IplasTestItemInfo] = {}
 
@@ -273,8 +273,34 @@ def _extract_unique_test_items(records: list[dict[str, Any]]) -> list[IplasTestI
                     except (ValueError, TypeError):
                         # Non-value: not numeric and not PASS/FAIL
                         is_value = False
+                
+                # Check for UCL and LCL values
+                ucl_str = item.get("UCL", "").strip()
+                lcl_str = item.get("LCL", "").strip()
+                has_ucl = False
+                has_lcl = False
+                
+                if ucl_str:
+                    try:
+                        float(ucl_str)
+                        has_ucl = True
+                    except (ValueError, TypeError):
+                        pass
+                        
+                if lcl_str:
+                    try:
+                        float(lcl_str)
+                        has_lcl = True
+                    except (ValueError, TypeError):
+                        pass
 
-                test_items_map[name] = IplasTestItemInfo(name=name, is_value=is_value, is_bin=is_bin)
+                test_items_map[name] = IplasTestItemInfo(
+                    name=name, 
+                    is_value=is_value, 
+                    is_bin=is_bin,
+                    has_ucl=has_ucl,
+                    has_lcl=has_lcl
+                )
 
     # Sort by name
     return sorted(test_items_map.values(), key=lambda x: x.name)

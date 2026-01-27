@@ -37,17 +37,18 @@ def _parse_float(value: str | float | None) -> Optional[float]:
 
 
 def _is_value_item(test_item: dict) -> bool:
-    """Check if test item has a numeric VALUE (not PASS/FAIL)."""
+    """Check if test item has a numeric VALUE (not PASS/FAIL/1/0/-999)."""
     value = str(test_item.get("VALUE", "")).upper().strip()
-    if value in ("PASS", "FAIL", "-999", ""):
+    # Exclude binary values: PASS, FAIL, 1, 0, -999, empty
+    if value in ("PASS", "FAIL", "1", "0", "-999", ""):
         return False
     return _parse_float(test_item.get("VALUE")) is not None
 
 
 def _is_bin_item(test_item: dict) -> bool:
-    """Check if test item is binary (PASS/FAIL only)."""
+    """Check if test item is binary (PASS/FAIL/1/0/-999 only)."""
     value = str(test_item.get("VALUE", "")).upper().strip()
-    return value in ("PASS", "FAIL", "-999")
+    return value in ("PASS", "FAIL", "1", "0", "-999")
 
 
 def _get_config_param(
@@ -444,10 +445,15 @@ def score_record(
     test_items = record.get("TestItem", [])
     
     item_scores: list[TestItemScoreResult] = []
-    # Track weighted scores and their weights for proper weighted average
-    value_weighted_scores: list[tuple[float, float]] = []  # (score * weight, weight)
-    bin_weighted_scores: list[tuple[float, float]] = []  # (score * weight, weight)
-    all_weighted_scores: list[tuple[float, float]] = []  # (score * weight, weight)
+    # Track weighted scores and their effective weights for proper weighted average
+    # Using squared weights (weight^2) for more pronounced impact:
+    # - weight=1 → effective=1 (normal)
+    # - weight=2 → effective=4 (4x impact)
+    # - weight=3 → effective=9 (9x impact)
+    # - weight=0.5 → effective=0.25 (reduced impact)
+    value_weighted_scores: list[tuple[float, float]] = []  # (score * effective_weight, effective_weight)
+    bin_weighted_scores: list[tuple[float, float]] = []  # (score * effective_weight, effective_weight)
+    all_weighted_scores: list[tuple[float, float]] = []  # (score * effective_weight, effective_weight)
     failed_count = 0
     
     for item in test_items:
@@ -461,16 +467,18 @@ def score_record(
         result = score_test_item(item, config)
         item_scores.append(result)
         
+        # Use squared weight for more pronounced impact
         weight = config.weight if config else 1.0
-        weighted_score = result.score * weight
+        effective_weight = weight * weight  # Squared for more impact
+        weighted_score = result.score * effective_weight
         
         if result.scoring_type == ScoringType.BINARY:
-            bin_weighted_scores.append((weighted_score, weight))
+            bin_weighted_scores.append((weighted_score, effective_weight))
             if include_binary_in_overall:
-                all_weighted_scores.append((weighted_score, weight))
+                all_weighted_scores.append((weighted_score, effective_weight))
         else:
-            value_weighted_scores.append((weighted_score, weight))
-            all_weighted_scores.append((weighted_score, weight))
+            value_weighted_scores.append((weighted_score, effective_weight))
+            all_weighted_scores.append((weighted_score, effective_weight))
         
         if result.status.upper() == "FAIL":
             failed_count += 1

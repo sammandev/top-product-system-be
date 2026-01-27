@@ -257,13 +257,14 @@ def _extract_unique_test_items(records: list[dict[str, Any]]) -> list[IplasTestI
         for item in test_items:
             name = item.get("NAME")
             if name and name not in test_items_map:
-                # Determine if it's a VALUE type (numeric), BIN type (PASS/FAIL), or Non-Value
+                # Determine if it's a VALUE type (numeric), BIN type (PASS/FAIL/1/0), or Non-Value
                 value = item.get("VALUE", "").upper().strip()
                 is_value = False
                 is_bin = False
                 
-                if value in ("PASS", "FAIL", "-999"):
-                    # Binary data - PASS/FAIL only
+                # UPDATED: Handle both string (PASS/FAIL) and numeric (1/0) status values
+                if value in ("PASS", "FAIL", "1", "0", "-999"):
+                    # Binary data - PASS/FAIL/1/0 only
                     is_bin = True
                 elif value and value not in ("",):
                     # Try to parse as numeric value
@@ -271,7 +272,7 @@ def _extract_unique_test_items(records: list[dict[str, Any]]) -> list[IplasTestI
                         float(value)
                         is_value = True
                     except (ValueError, TypeError):
-                        # Non-value: not numeric and not PASS/FAIL
+                        # Non-value: not numeric and not PASS/FAIL/1/0
                         is_value = False
                 
                 # Check for UCL and LCL values

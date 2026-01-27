@@ -22,7 +22,7 @@ from ..services.scoring_service import calculate_scores, detect_scoring_type
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/scoring", tags=["Scoring"])
+router = APIRouter(prefix="/api/scoring", tags=["Scoring"])
 
 
 @router.post(

@@ -257,25 +257,9 @@ def _extract_unique_test_items(records: list[dict[str, Any]]) -> list[IplasTestI
         for item in test_items:
             name = item.get("NAME")
             if name and name not in test_items_map:
-                # Determine if it's a VALUE type (numeric), BIN type (PASS/FAIL/1/0), or Non-Value
                 value = item.get("VALUE", "").upper().strip()
-                is_value = False
-                is_bin = False
                 
-                # UPDATED: Handle both string (PASS/FAIL) and numeric (1/0) status values
-                if value in ("PASS", "FAIL", "1", "0", "-999"):
-                    # Binary data - PASS/FAIL/1/0 only
-                    is_bin = True
-                elif value and value not in ("",):
-                    # Try to parse as numeric value
-                    try:
-                        float(value)
-                        is_value = True
-                    except (ValueError, TypeError):
-                        # Non-value: not numeric and not PASS/FAIL/1/0
-                        is_value = False
-                
-                # Check for UCL and LCL values
+                # Check for UCL and LCL values first
                 ucl_str = item.get("UCL", "").strip()
                 lcl_str = item.get("LCL", "").strip()
                 has_ucl = False
@@ -294,6 +278,33 @@ def _extract_unique_test_items(records: list[dict[str, Any]]) -> list[IplasTestI
                         has_lcl = True
                     except (ValueError, TypeError):
                         pass
+                
+                # Determine is_value and is_bin based on VALUE and presence of limits
+                # UPDATED: If item has UCL or LCL, treat it as a value item (CRITERIA)
+                # even if VALUE is 1/0/-1/-999 (these are often numeric test results with limits)
+                is_value = False
+                is_bin = False
+                
+                if has_ucl or has_lcl:
+                    # Has control limits - this is a CRITERIA value item
+                    is_value = True
+                    is_bin = False
+                elif value in ("PASS", "FAIL"):
+                    # Pure PASS/FAIL status without limits - binary item
+                    is_bin = True
+                    is_value = False
+                elif value in ("1", "0", "-1", "-999"):
+                    # Numeric status values without limits - treated as binary
+                    is_bin = True
+                    is_value = False
+                elif value and value not in ("",):
+                    # Try to parse as numeric value (NON-CRITERIA)
+                    try:
+                        float(value)
+                        is_value = True
+                    except (ValueError, TypeError):
+                        # Non-value: not numeric and not PASS/FAIL
+                        is_value = False
 
                 test_items_map[name] = IplasTestItemInfo(
                     name=name, 

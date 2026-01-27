@@ -36,19 +36,58 @@ def _parse_float(value: str | float | None) -> Optional[float]:
         return None
 
 
+def _has_control_limits(test_item: dict) -> bool:
+    """Check if test item has UCL or LCL control limits."""
+    ucl_str = str(test_item.get("UCL", "")).strip()
+    lcl_str = str(test_item.get("LCL", "")).strip()
+    has_ucl = False
+    has_lcl = False
+    if ucl_str:
+        try:
+            float(ucl_str)
+            has_ucl = True
+        except (ValueError, TypeError):
+            pass
+    if lcl_str:
+        try:
+            float(lcl_str)
+            has_lcl = True
+        except (ValueError, TypeError):
+            pass
+    return has_ucl or has_lcl
+
+
 def _is_value_item(test_item: dict) -> bool:
-    """Check if test item has a numeric VALUE (not PASS/FAIL/1/0/-999)."""
+    """
+    Check if test item is a value item (CRITERIA or NON-CRITERIA).
+    
+    A test item is considered a value item if:
+    - It has UCL or LCL control limits (CRITERIA), OR
+    - It has a numeric VALUE that is not PASS/FAIL/1/0/-1/-999 (NON-CRITERIA)
+    """
+    # If it has control limits, it's a value item (CRITERIA)
+    if _has_control_limits(test_item):
+        return True
+    
+    # Otherwise, check if VALUE is a non-binary numeric value (NON-CRITERIA)
     value = str(test_item.get("VALUE", "")).upper().strip()
-    # Exclude binary values: PASS, FAIL, 1, 0, -999, empty
-    if value in ("PASS", "FAIL", "1", "0", "-999", ""):
+    if value in ("PASS", "FAIL", "1", "0", "-1", "-999", ""):
         return False
     return _parse_float(test_item.get("VALUE")) is not None
 
 
 def _is_bin_item(test_item: dict) -> bool:
-    """Check if test item is binary (PASS/FAIL/1/0/-999 only)."""
+    """
+    Check if test item is binary (PASS/FAIL/1/0/-1/-999 without control limits).
+    
+    Note: If an item has UCL/LCL, it's treated as CRITERIA even if value is 1/0/-999.
+    """
+    # If it has control limits, it's NOT a binary item
+    if _has_control_limits(test_item):
+        return False
+    
     value = str(test_item.get("VALUE", "")).upper().strip()
-    return value in ("PASS", "FAIL", "1", "0", "-999")
+    return value in ("PASS", "FAIL", "1", "0", "-1", "-999")
 
 
 def _get_config_param(

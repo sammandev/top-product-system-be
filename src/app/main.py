@@ -295,6 +295,10 @@ cors_origins = [origin.strip() for origin in cors_origins_env.split(",")]
 
 logger.info(f"CORS enabled for origins: {cors_origins}")
 
+# GZip compression for large responses (minimum 1KB)
+# This significantly reduces payload size for iPLAS data and large JSON responses
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,

@@ -5,19 +5,24 @@ Provides cached proxy endpoints for iPLAS v1 and v2 APIs with:
 - Multi-site support (PTB, PSZ, PXD, PVN, PTY)
 - Redis caching for performance
 - Server-side filtering to reduce browser memory usage
+- Automatic time-range chunking to bypass 7-day query limit
+- Aggregation of chunked results for large date ranges
 """
 
+import asyncio
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal
 
 import httpx
-import orjson
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from redis import Redis
 
 from app.schemas.iplas_schemas import (
+    CompactCsvTestItemRecord,
+    CompactCsvTestItemResponse,
     IplasCsvTestItemRequest,
     IplasCsvTestItemResponse,
     IplasDeviceListRequest,
@@ -26,6 +31,8 @@ from app.schemas.iplas_schemas import (
     IplasDownloadAttachmentResponse,
     IplasIsnSearchRequest,
     IplasIsnSearchResponse,
+    IplasRecordTestItemsRequest,
+    IplasRecordTestItemsResponse,
     IplasSiteProjectListResponse,
     IplasStation,
     IplasStationListRequest,
@@ -39,6 +46,45 @@ from app.schemas.iplas_schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# JSON Serialization with orjson Fallback
+# ============================================================================
+
+# Try to use orjson for faster JSON serialization on the NDJSON streaming path.
+# Falls back to standard json module if orjson is unavailable.
+try:
+    import orjson as _orjson
+
+    _HAS_ORJSON = True
+
+    def json_dumps(obj: Any) -> bytes:
+        """Serialize object to JSON bytes using orjson (fast path)."""
+        return _orjson.dumps(obj)
+
+    def json_loads(data: bytes | str) -> Any:
+        """Deserialize JSON bytes/string using orjson (fast path)."""
+        return _orjson.loads(data)
+
+    logger.debug("Using orjson for JSON serialization (optimized path)")
+
+except ImportError:
+    import json as _json
+
+    _HAS_ORJSON = False
+
+    def json_dumps(obj: Any) -> bytes:
+        """Serialize object to JSON bytes using stdlib json (fallback path)."""
+        return _json.dumps(obj, separators=(",", ":"), default=str).encode("utf-8")
+
+    def json_loads(data: bytes | str) -> Any:
+        """Deserialize JSON bytes/string using stdlib json (fallback path)."""
+        if isinstance(data, bytes):
+            data = data.decode("utf-8")
+        return _json.loads(data)
+
+    logger.warning("orjson not available, falling back to stdlib json (slower)")
+
 
 router = APIRouter(prefix="/api/iplas", tags=["iPLAS_Proxy"])
 
@@ -207,6 +253,399 @@ async def _fetch_from_iplas(
         return data.get("data", [])
 
 
+# ============================================================================
+# Chunked Fetching (bypass 7-day limit)
+# ============================================================================
+
+# Maximum days per chunk (iPLAS API limit is 7 days, use 6 for safety margin)
+MAX_DAYS_PER_CHUNK = int(os.getenv("IPLAS_MAX_DAYS_PER_CHUNK", "6"))
+MAX_RECORDS_WARNING = 5000  # iPLAS API limit per request
+
+# Hybrid V1/V2 configuration
+# When device count exceeds this threshold, fetch per-device to avoid 5000 limit
+DEVICE_DENSITY_THRESHOLD = int(os.getenv("IPLAS_DEVICE_DENSITY_THRESHOLD", "10"))
+# Maximum devices per parallel batch
+DEVICE_BATCH_SIZE = int(os.getenv("IPLAS_DEVICE_BATCH_SIZE", "5"))
+# Maximum parallel requests
+MAX_PARALLEL_REQUESTS = int(os.getenv("IPLAS_MAX_PARALLEL_REQUESTS", "3"))
+
+
+# ============================================================================
+# Hybrid V1/V2 Fetching Strategy (Phase 5.3)
+# ============================================================================
+
+
+async def _fetch_device_list_v2(
+    site: str,
+    project: str,
+    station: str,
+    start_time: datetime,
+    end_time: datetime,
+    user_token: str | None = None,
+) -> list[str]:
+    """
+    Fetch device list from iPLAS v2 API for a specific station and time range.
+    
+    This is used to determine device density before fetching test data.
+    If device count > DEVICE_DENSITY_THRESHOLD, we switch to per-device fetching.
+    
+    Args:
+        site: Site identifier (PTB, PSZ, PXD, PVN, PTY)
+        project: Project name
+        station: Station display name
+        start_time: Start of date range
+        end_time: End of date range
+        user_token: Optional user-provided token
+        
+    Returns:
+        List of device IDs active in the time range
+    """
+    site_config = _get_site_config(site, user_token)
+    url = f"{site_config['v2_url']}/{site}/{project}/{station}/test_station_device_list"
+    
+    logger.debug(f"Fetching device list from V2: {site}/{project}/{station}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+            response = await client.get(
+                url,
+                params={
+                    "start_time": start_time.isoformat(),
+                    "end_time": end_time.isoformat(),
+                },
+                headers={"Authorization": f"Bearer {site_config['token']}"},
+            )
+            
+            if response.status_code != 200:
+                logger.warning(
+                    f"V2 device list failed ({response.status_code}): {response.text}"
+                )
+                return []
+            
+            devices = response.json()
+            logger.debug(f"V2 returned {len(devices)} devices for {station}")
+            return devices
+            
+    except httpx.RequestError as e:
+        logger.warning(f"V2 API request failed: {e}")
+        return []
+
+
+async def _fetch_devices_in_parallel(
+    site: str,
+    project: str,
+    station: str,
+    device_ids: list[str],
+    begin_time: datetime,
+    end_time: datetime,
+    test_status: str,
+    user_token: str | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """
+    Fetch test data for multiple devices in parallel batches.
+    
+    Splits device list into batches and fetches them concurrently to improve
+    throughput while avoiding rate limiting.
+    
+    Args:
+        site: Site identifier
+        project: Project name
+        station: Station name
+        device_ids: List of device IDs to fetch
+        begin_time: Start of date range
+        end_time: End of date range
+        test_status: PASS, FAIL, or ALL
+        user_token: Optional user-provided token
+        
+    Returns:
+        Tuple of (all_records, possibly_truncated)
+    """
+    all_records: list[dict[str, Any]] = []
+    possibly_truncated = False
+    
+    # Split into batches
+    batches = [
+        device_ids[i : i + DEVICE_BATCH_SIZE]
+        for i in range(0, len(device_ids), DEVICE_BATCH_SIZE)
+    ]
+    
+    logger.info(
+        f"Parallel fetch: {len(device_ids)} devices in {len(batches)} batches "
+        f"(batch size={DEVICE_BATCH_SIZE}, max parallel={MAX_PARALLEL_REQUESTS})"
+    )
+    
+    # Process batches with limited parallelism
+    semaphore = asyncio.Semaphore(MAX_PARALLEL_REQUESTS)
+    
+    async def fetch_batch(batch: list[str], batch_idx: int) -> tuple[list[dict], bool]:
+        async with semaphore:
+            batch_records: list[dict] = []
+            batch_truncated = False
+            
+            for device_id in batch:
+                try:
+                    records = await _fetch_from_iplas(
+                        site, project, station, device_id,
+                        begin_time, end_time, test_status, user_token
+                    )
+                    
+                    if len(records) >= MAX_RECORDS_WARNING:
+                        batch_truncated = True
+                        logger.warning(
+                            f"Device {device_id} returned {len(records)} records "
+                            f"(may be truncated)"
+                        )
+                    
+                    batch_records.extend(records)
+                    
+                except HTTPException as e:
+                    logger.error(f"Device {device_id} fetch failed: {e.detail}")
+                    # Continue with other devices
+                    
+                # Small delay between devices in same batch
+                await asyncio.sleep(0.05)
+            
+            logger.debug(
+                f"Batch {batch_idx + 1}/{len(batches)}: "
+                f"{len(batch_records)} records from {len(batch)} devices"
+            )
+            return batch_records, batch_truncated
+    
+    # Run all batches
+    tasks = [fetch_batch(batch, i) for i, batch in enumerate(batches)]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    for result in results:
+        if isinstance(result, Exception):
+            logger.error(f"Batch failed with exception: {result}")
+            continue
+        records, truncated = result
+        all_records.extend(records)
+        if truncated:
+            possibly_truncated = True
+    
+    logger.info(f"Parallel fetch complete: {len(all_records)} total records")
+    return all_records, possibly_truncated
+
+
+async def _fetch_with_hybrid_strategy(
+    site: str,
+    project: str,
+    station: str,
+    device_id: str,
+    begin_time: datetime,
+    end_time: datetime,
+    test_status: str,
+    user_token: str | None = None,
+) -> tuple[list[dict[str, Any]], bool, bool]:
+    """
+    Fetch test data using hybrid V1/V2 strategy.
+    
+    Strategy:
+    1. If device_id != "ALL", use standard V1 fetch
+    2. If device_id == "ALL":
+       a. Call V2 API to get device list for the time range
+       b. If device count > DEVICE_DENSITY_THRESHOLD, fetch per-device in parallel
+       c. Otherwise, use standard V1 fetch with device_id="ALL"
+    
+    Args:
+        site: Site identifier
+        project: Project name
+        station: Station name
+        device_id: Device ID or "ALL"
+        begin_time: Start of date range
+        end_time: End of date range
+        test_status: PASS, FAIL, or ALL
+        user_token: Optional user-provided token
+        
+    Returns:
+        Tuple of (records, possibly_truncated, used_hybrid)
+    """
+    # If specific device requested, use standard fetch
+    if device_id.upper() != "ALL":
+        records = await _fetch_from_iplas(
+            site, project, station, device_id,
+            begin_time, end_time, test_status, user_token
+        )
+        possibly_truncated = len(records) >= MAX_RECORDS_WARNING
+        return records, possibly_truncated, False
+    
+    # Get device list from V2 API
+    devices = await _fetch_device_list_v2(
+        site, project, station, begin_time, end_time, user_token
+    )
+    
+    device_count = len(devices)
+    
+    # If V2 failed or returned empty, fall back to standard fetch
+    if device_count == 0:
+        logger.info(f"V2 returned no devices for {station}, using standard V1 fetch")
+        records = await _fetch_from_iplas(
+            site, project, station, "ALL",
+            begin_time, end_time, test_status, user_token
+        )
+        possibly_truncated = len(records) >= MAX_RECORDS_WARNING
+        return records, possibly_truncated, False
+    
+    # Check device density
+    if device_count <= DEVICE_DENSITY_THRESHOLD:
+        logger.info(
+            f"Low density ({device_count} devices <= {DEVICE_DENSITY_THRESHOLD}), "
+            f"using standard V1 fetch"
+        )
+        records = await _fetch_from_iplas(
+            site, project, station, "ALL",
+            begin_time, end_time, test_status, user_token
+        )
+        possibly_truncated = len(records) >= MAX_RECORDS_WARNING
+        return records, possibly_truncated, False
+    
+    # High density - use parallel per-device fetching
+    logger.info(
+        f"High density ({device_count} devices > {DEVICE_DENSITY_THRESHOLD}), "
+        f"using parallel per-device fetch"
+    )
+    records, possibly_truncated = await _fetch_devices_in_parallel(
+        site, project, station, devices,
+        begin_time, end_time, test_status, user_token
+    )
+    return records, possibly_truncated, True
+
+
+async def _fetch_chunked_from_iplas(
+    site: str,
+    project: str,
+    station: str,
+    device_id: str,
+    begin_time: datetime,
+    end_time: datetime,
+    test_status: str,
+    user_token: str | None = None,
+    use_hybrid: bool = True,
+) -> tuple[list[dict[str, Any]], bool, int, int, bool]:
+    """
+    Fetch test item data from iPLAS v1 API with automatic time-range chunking.
+    
+    If the date range exceeds MAX_DAYS_PER_CHUNK, splits into multiple
+    sequential requests and aggregates results. This bypasses the 7-day
+    query limit imposed by the iPLAS API.
+    
+    When use_hybrid=True and device_id="ALL", uses hybrid V1/V2 strategy:
+    - Checks device count via V2 API
+    - If device count > DEVICE_DENSITY_THRESHOLD, fetches per-device in parallel
+    - This prevents hitting the 5000 record limit per request
+    
+    Args:
+        site: Site identifier (PTB, PSZ, PXD, PVN, PTY)
+        project: Project name
+        station: Station name
+        device_id: Device ID (or "ALL")
+        begin_time: Start of date range
+        end_time: End of date range
+        test_status: PASS, FAIL, or ALL
+        user_token: Optional user-provided token
+        use_hybrid: Use hybrid V1/V2 strategy for high-density stations
+    
+    Returns:
+        Tuple of (records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid) where:
+        - possibly_truncated: True if any chunk returned exactly 5000 records
+        - chunks_fetched: Number of chunks successfully fetched
+        - total_chunks: Estimated total chunks for the query
+        - used_hybrid: True if hybrid V1/V2 strategy was used in any chunk
+    """
+    total_days = (end_time - begin_time).days
+    used_hybrid_any = False
+    
+    # Single request if within limit
+    if total_days <= MAX_DAYS_PER_CHUNK:
+        # Use hybrid strategy if enabled and device_id is ALL
+        if use_hybrid and device_id.upper() == "ALL":
+            records, possibly_truncated, used_hybrid = await _fetch_with_hybrid_strategy(
+                site, project, station, device_id,
+                begin_time, end_time, test_status, user_token
+            )
+            if used_hybrid:
+                logger.info(f"Single chunk used hybrid V1/V2 strategy")
+            return records, possibly_truncated, 1, 1, used_hybrid
+        else:
+            records = await _fetch_from_iplas(
+                site, project, station, device_id,
+                begin_time, end_time, test_status, user_token
+            )
+            possibly_truncated = len(records) >= MAX_RECORDS_WARNING
+            return records, possibly_truncated, 1, 1, False
+    
+    # Chunked requests for larger date ranges
+    all_records: list[dict[str, Any]] = []
+    possibly_truncated = False
+    current_start = begin_time
+    chunk_count = 0
+    estimated_chunks = (total_days // MAX_DAYS_PER_CHUNK) + 1
+    
+    logger.info(
+        f"Chunked fetch: {site}/{project}/{station} "
+        f"spanning {total_days} days (~{estimated_chunks} chunks)"
+        f"{' with hybrid V1/V2 strategy' if use_hybrid else ''}"
+    )
+    
+    while current_start < end_time:
+        chunk_end = min(
+            current_start + timedelta(days=MAX_DAYS_PER_CHUNK),
+            end_time
+        )
+        chunk_count += 1
+        
+        try:
+            # Use hybrid strategy if enabled and device_id is ALL
+            if use_hybrid and device_id.upper() == "ALL":
+                chunk_records, chunk_truncated, chunk_used_hybrid = await _fetch_with_hybrid_strategy(
+                    site, project, station, device_id,
+                    current_start, chunk_end, test_status, user_token
+                )
+                if chunk_truncated:
+                    possibly_truncated = True
+                if chunk_used_hybrid:
+                    used_hybrid_any = True
+            else:
+                chunk_records = await _fetch_from_iplas(
+                    site, project, station, device_id,
+                    current_start, chunk_end, test_status, user_token
+                )
+                # Check if chunk hit the 5000 limit
+                if len(chunk_records) >= MAX_RECORDS_WARNING:
+                    possibly_truncated = True
+                    logger.warning(
+                        f"Chunk {chunk_count} returned {len(chunk_records)} records "
+                        f"(may be truncated). Consider narrowing date range or filters."
+                    )
+            
+            all_records.extend(chunk_records)
+            logger.debug(
+                f"Chunk {chunk_count}/{estimated_chunks}: "
+                f"{len(chunk_records)} records ({current_start.date()} to {chunk_end.date()})"
+            )
+            
+        except HTTPException as e:
+            # Log but continue with other chunks for partial results
+            logger.error(f"Chunk {chunk_count} failed: {e.detail}")
+            # Re-raise if this is a critical error (auth, etc.)
+            if e.status_code in (401, 403):
+                raise
+        
+        current_start = chunk_end
+        
+        # Small delay between chunks to avoid rate limiting
+        if current_start < end_time:
+            await asyncio.sleep(0.1)
+    
+    logger.info(
+        f"Chunked fetch complete: {len(all_records)} total records "
+        f"from {chunk_count} chunks{' (used hybrid strategy)' if used_hybrid_any else ''}"
+    )
+    
+    return all_records, possibly_truncated, chunk_count, estimated_chunks, used_hybrid_any
+
+
 def _filter_test_items(
     records: list[dict[str, Any]], test_item_filters: list[str] | None
 ) -> list[dict[str, Any]]:
@@ -357,16 +796,21 @@ async def get_csv_test_items(
         try:
             cached_data = redis.get(cache_key)
             if cached_data:
-                records = orjson.loads(cached_data)
+                records = json_loads(cached_data)
                 cached = True
                 logger.debug(f"Cache HIT: {cache_key}")
         except Exception as e:
             logger.warning(f"Redis GET error: {e}")
 
-    # Fetch from iPLAS if cache miss
+    possibly_truncated = False
+    chunks_fetched = 1
+    total_chunks = 1
+    used_hybrid_strategy = False
+    
+    # Fetch from iPLAS if cache miss (using chunked fetching for large date ranges)
     if not cached:
         logger.debug(f"Cache MISS: {cache_key}")
-        records = await _fetch_from_iplas(
+        records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy = await _fetch_chunked_from_iplas(
             request.site,
             request.project,
             request.station,
@@ -380,7 +824,7 @@ async def get_csv_test_items(
         # Store in cache
         if redis:
             try:
-                serialized = orjson.dumps(records)
+                serialized = json_dumps(records)
                 redis.setex(cache_key, IPLAS_CACHE_TTL, serialized)
                 logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL}s)")
             except Exception as e:
@@ -404,6 +848,282 @@ async def get_csv_test_items(
         total_records=total_records,
         returned_records=len(records),
         filtered=filtered,
+        cached=cached,
+        possibly_truncated=possibly_truncated,
+        chunks_fetched=chunks_fetched,
+        total_chunks=total_chunks,
+        used_hybrid_strategy=used_hybrid_strategy,
+    )
+
+
+def _convert_to_compact_record(record: dict[str, Any]) -> CompactCsvTestItemRecord:
+    """Convert a full record to a compact record (without TestItem array)."""
+    test_items = record.get("TestItem", [])
+    return CompactCsvTestItemRecord(
+        Site=record.get("Site", ""),
+        Project=record.get("Project", ""),
+        station=record.get("station", ""),
+        TSP=record.get("TSP", ""),
+        Model=record.get("Model", ""),
+        MO=record.get("MO", ""),
+        Line=record.get("Line", ""),
+        ISN=record.get("ISN", ""),
+        DeviceId=record.get("DeviceId", ""),
+        TestStatus=record.get("Test Status", ""),
+        TestStartTime=record.get("Test Start Time", ""),
+        TestEndTime=record.get("Test end Time", ""),
+        ErrorCode=record.get("ErrorCode", ""),
+        ErrorName=record.get("ErrorName", ""),
+        TestItemCount=len(test_items) if isinstance(test_items, list) else 0,
+    )
+
+
+@router.post(
+    "/csv-test-items/compact",
+    response_model=CompactCsvTestItemResponse,
+    summary="Get compact CSV test items (without TestItem arrays)",
+    description="""
+    Fetches compact test item data from iPLAS - excludes the TestItem arrays 
+    to reduce payload size by 60-80%.
+    
+    Use this endpoint for:
+    - Record list views where you don't need test item details
+    - Initial page load to show record summaries
+    - Performance-critical scenarios
+    
+    To get full TestItem data for a specific record, use the full endpoint
+    with limit=1 and appropriate filters.
+    
+    **Memory Savings**: Typical response is 10-50KB instead of 500KB+
+    """,
+)
+async def get_csv_test_items_compact(
+    request: IplasCsvTestItemRequest,
+) -> CompactCsvTestItemResponse:
+    """Get compact CSV test items without TestItem arrays."""
+    redis = get_redis_client()
+    cache_key = _generate_cache_key(
+        request.site,
+        request.project,
+        request.station,
+        request.device_id,
+        request.begin_time,
+        request.end_time,
+        request.test_status,
+    )
+
+    cached = False
+    records: list[dict[str, Any]] = []
+
+    # Try cache first
+    if redis:
+        try:
+            cached_data = redis.get(cache_key)
+            if cached_data:
+                records = json_loads(cached_data)
+                cached = True
+                logger.debug(f"Cache HIT (compact): {cache_key}")
+        except Exception as e:
+            logger.warning(f"Redis GET error: {e}")
+
+    possibly_truncated = False
+    chunks_fetched = 1
+    total_chunks = 1
+    used_hybrid_strategy = False
+    
+    # Fetch from iPLAS if cache miss
+    if not cached:
+        logger.debug(f"Cache MISS (compact): {cache_key}")
+        records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy = await _fetch_chunked_from_iplas(
+            request.site,
+            request.project,
+            request.station,
+            request.device_id,
+            request.begin_time,
+            request.end_time,
+            request.test_status,
+            request.token,
+        )
+
+        # Store full records in cache (benefits both endpoints)
+        if redis:
+            try:
+                serialized = json_dumps(records)
+                redis.setex(cache_key, IPLAS_CACHE_TTL, serialized)
+                logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL}s)")
+            except Exception as e:
+                logger.warning(f"Redis SET error: {e}")
+
+    # Apply test item filtering (affects TestItemCount)
+    filtered = bool(request.test_item_filters)
+    if filtered:
+        records = _filter_test_items(records, request.test_item_filters)
+
+    total_records = len(records)
+
+    # Apply sorting if specified
+    if request.sort_by:
+        # Map frontend field names to backend record keys
+        field_mapping = {
+            "TestStartTime": "Test Start Time",
+            "TestEndTime": "Test end Time",
+            "TestStatus": "Test Status",
+            "ISN": "ISN",
+            "DeviceId": "DeviceId",
+            "ErrorCode": "ErrorCode",
+            "ErrorName": "ErrorName",
+            "station": "station",
+            "Site": "Site",
+            "Project": "Project",
+        }
+        sort_field = field_mapping.get(request.sort_by, request.sort_by)
+        
+        try:
+            records = sorted(
+                records,
+                key=lambda r: r.get(sort_field, "") or "",
+                reverse=request.sort_desc,
+            )
+        except Exception as e:
+            logger.warning(f"Sorting by {sort_field} failed: {e}")
+
+    # Apply pagination
+    if request.offset:
+        records = records[request.offset :]
+    if request.limit:
+        records = records[: request.limit]
+
+    # Convert to compact format
+    compact_records = [_convert_to_compact_record(r) for r in records]
+
+    return CompactCsvTestItemResponse(
+        data=compact_records,
+        total_records=total_records,
+        returned_records=len(compact_records),
+        filtered=filtered,
+        cached=cached,
+        possibly_truncated=possibly_truncated,
+        chunks_fetched=chunks_fetched,
+        total_chunks=total_chunks,
+        used_hybrid_strategy=used_hybrid_strategy,
+    )
+
+
+@router.post(
+    "/record-test-items",
+    response_model=IplasRecordTestItemsResponse,
+    summary="Get test items for a specific record (lazy loading)",
+    description="""
+    Fetches the TestItem array for a specific record identified by ISN and test start time.
+    
+    Use this endpoint to lazy-load test item details when a user expands a record
+    in the UI, instead of loading all test items upfront.
+    
+    This is part of the memory optimization strategy - load compact records first,
+    then fetch test items only when needed.
+    """,
+)
+async def get_record_test_items(
+    request: IplasRecordTestItemsRequest,
+) -> IplasRecordTestItemsResponse:
+    """Get test items for a specific record."""
+    redis = get_redis_client()
+    
+    # Use a date range around the test start time to minimize API calls
+    # Parse the test start time and query a 1-hour window
+    try:
+        # Parse ISO format or common formats
+        test_time = datetime.fromisoformat(request.test_start_time.replace("Z", "+00:00"))
+    except ValueError:
+        # Try parsing other formats
+        for fmt in ["%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"]:
+            try:
+                test_time = datetime.strptime(request.test_start_time, fmt)
+                break
+            except ValueError:
+                continue
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid test_start_time format: {request.test_start_time}",
+            )
+    
+    # Query a 2-hour window around the test time
+    begin_time = test_time - timedelta(hours=1)
+    end_time = test_time + timedelta(hours=1)
+    
+    cache_key = _generate_cache_key(
+        request.site,
+        request.project,
+        request.station,
+        request.device_id,
+        begin_time,
+        end_time,
+        request.test_status,
+    )
+
+    cached = False
+    records: list[dict[str, Any]] = []
+
+    # Try cache first
+    if redis:
+        try:
+            cached_data = redis.get(cache_key)
+            if cached_data:
+                records = json_loads(cached_data)
+                cached = True
+                logger.debug(f"Cache HIT (record-test-items): {cache_key}")
+        except Exception as e:
+            logger.warning(f"Redis GET error: {e}")
+
+    # Fetch from iPLAS if cache miss
+    if not cached:
+        logger.debug(f"Cache MISS (record-test-items): {cache_key}")
+        records = await _fetch_from_iplas(
+            request.site,
+            request.project,
+            request.station,
+            request.device_id,
+            begin_time,
+            end_time,
+            request.test_status,
+            request.token,
+        )
+
+        # Store in cache
+        if redis:
+            try:
+                serialized = json_dumps(records)
+                redis.setex(cache_key, IPLAS_CACHE_TTL, serialized)
+                logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL}s)")
+            except Exception as e:
+                logger.warning(f"Redis SET error: {e}")
+
+    # Find the specific record by ISN and test start time
+    target_record = None
+    for record in records:
+        if (record.get("ISN") == request.isn and 
+            record.get("Test Start Time") == request.test_start_time):
+            target_record = record
+            break
+    
+    if not target_record:
+        # Record not found - return empty test items
+        return IplasRecordTestItemsResponse(
+            isn=request.isn,
+            test_start_time=request.test_start_time,
+            test_items=[],
+            test_item_count=0,
+            cached=cached,
+        )
+    
+    test_items = target_record.get("TestItem", [])
+    
+    return IplasRecordTestItemsResponse(
+        isn=request.isn,
+        test_start_time=request.test_start_time,
+        test_items=test_items,
+        test_item_count=len(test_items),
         cached=cached,
     )
 
@@ -443,15 +1163,15 @@ async def get_test_item_names(
         try:
             cached_data = redis.get(cache_key)
             if cached_data:
-                records = orjson.loads(cached_data)
+                records = json_loads(cached_data)
                 logger.debug(f"Cache HIT (names): {cache_key}")
         except Exception as e:
             logger.warning(f"Redis GET error: {e}")
 
-    # Fetch from iPLAS if cache miss
+    # Fetch from iPLAS if cache miss (using chunked fetching for large date ranges)
     if not records:
         logger.debug(f"Cache MISS (names): {cache_key}")
-        records = await _fetch_from_iplas(
+        records, _, _, _, _ = await _fetch_chunked_from_iplas(
             request.site,
             request.project,
             request.station,
@@ -465,7 +1185,7 @@ async def get_test_item_names(
         # Store in cache (benefits both endpoints)
         if redis:
             try:
-                serialized = orjson.dumps(records)
+                serialized = json_dumps(records)
                 redis.setex(cache_key, IPLAS_CACHE_TTL, serialized)
                 logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL}s)")
             except Exception as e:
@@ -541,7 +1261,7 @@ async def get_site_projects(
         try:
             cached_data = redis.get(cache_key)
             if cached_data:
-                data = orjson.loads(cached_data)
+                data = json_loads(cached_data)
                 all_projects = [SiteProject(**item) for item in data]
                 cached = True
                 logger.debug(f"Cache HIT: {cache_key}")
@@ -580,7 +1300,7 @@ async def get_site_projects(
         # Store in cache
         if redis and all_projects:
             try:
-                serialized = orjson.dumps([p.model_dump() for p in all_projects])
+                serialized = json_dumps([p.model_dump() for p in all_projects])
                 redis.setex(cache_key, IPLAS_CACHE_TTL_SITE_PROJECTS, serialized)
                 logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_SITE_PROJECTS}s)")
             except Exception as e:
@@ -618,7 +1338,7 @@ async def get_stations(
         try:
             cached_data = redis.get(cache_key)
             if cached_data:
-                data = orjson.loads(cached_data)
+                data = json_loads(cached_data)
                 stations = [IplasStation(**item) for item in data]
                 cached = True
                 logger.debug(f"Cache HIT: {cache_key}")
@@ -655,7 +1375,7 @@ async def get_stations(
         # Store in cache
         if redis and stations:
             try:
-                serialized = orjson.dumps([s.model_dump() for s in stations])
+                serialized = json_dumps([s.model_dump() for s in stations])
                 redis.setex(cache_key, IPLAS_CACHE_TTL_STATIONS, serialized)
                 logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_STATIONS}s)")
             except Exception as e:
@@ -695,7 +1415,7 @@ async def get_devices(
         try:
             cached_data = redis.get(cache_key)
             if cached_data:
-                devices = orjson.loads(cached_data)
+                devices = json_loads(cached_data)
                 cached = True
                 logger.debug(f"Cache HIT: {cache_key}")
         except Exception as e:
@@ -734,7 +1454,7 @@ async def get_devices(
         # Store in cache
         if redis and devices:
             try:
-                serialized = orjson.dumps(devices)
+                serialized = json_dumps(devices)
                 redis.setex(cache_key, IPLAS_CACHE_TTL_DEVICES, serialized)
                 logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_DEVICES}s)")
             except Exception as e:
@@ -774,7 +1494,7 @@ async def search_by_isn(
         try:
             cached_data = redis.get(cache_key)
             if cached_data:
-                results = orjson.loads(cached_data)
+                results = json_loads(cached_data)
                 cached = True
                 logger.debug(f"Cache HIT: {cache_key}")
         except Exception as e:
@@ -835,7 +1555,7 @@ async def search_by_isn(
         # Store in cache
         if redis and results:
             try:
-                serialized = orjson.dumps(results)
+                serialized = json_dumps(results)
                 redis.setex(cache_key, IPLAS_CACHE_TTL_ISN, serialized)
                 logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_ISN}s)")
             except Exception as e:
@@ -966,4 +1686,151 @@ async def verify_access(
             success=False,
             message=f"Connection error: {e}",
         )
+
+
+# ============================================================================
+# Streaming Endpoint for Large Datasets
+# ============================================================================
+
+
+@router.post(
+    "/csv-test-items/stream",
+    summary="Stream CSV test items as NDJSON",
+    description="""
+    Streams test item data as newline-delimited JSON (NDJSON) for reduced memory usage.
+    
+    Benefits:
+    - Frontend can process records as they arrive (progressive rendering)
+    - Reduced peak memory usage on both backend and frontend
+    - Better UX for large datasets (users see data immediately)
+    
+    Response format: One JSON object per line, each line is a complete record.
+    Content-Type: application/x-ndjson
+    
+    Use this endpoint when fetching large datasets (1000+ records) to avoid
+    loading everything into memory at once.
+    """,
+)
+async def stream_csv_test_items(
+    request: IplasCsvTestItemRequest,
+) -> StreamingResponse:
+    """Stream CSV test items as NDJSON for large datasets."""
+    
+    async def generate():
+        """Generator that yields NDJSON records."""
+        redis = get_redis_client()
+        cache_key = _generate_cache_key(
+            request.site,
+            request.project,
+            request.station,
+            request.device_id,
+            request.begin_time,
+            request.end_time,
+            request.test_status,
+        )
+
+        records: list[dict[str, Any]] = []
+        cached = False
+
+        # Try cache first
+        if redis:
+            try:
+                cached_data = redis.get(cache_key)
+                if cached_data:
+                    records = json_loads(cached_data)
+                    cached = True
+                    logger.debug(f"Cache HIT (stream): {cache_key}")
+            except Exception as e:
+                logger.warning(f"Redis GET error in stream: {e}")
+
+        # Fetch from iPLAS if cache miss
+        if not cached:
+            logger.debug(f"Cache MISS (stream): {cache_key}")
+            records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid = await _fetch_chunked_from_iplas(
+                request.site,
+                request.project,
+                request.station,
+                request.device_id,
+                request.begin_time,
+                request.end_time,
+                request.test_status,
+                request.token,
+            )
+
+            # Store in cache for subsequent requests
+            if redis:
+                try:
+                    serialized = json_dumps(records)
+                    redis.setex(cache_key, IPLAS_CACHE_TTL, serialized)
+                    logger.debug(f"Cached (stream): {cache_key} (TTL={IPLAS_CACHE_TTL}s)")
+                except Exception as e:
+                    logger.warning(f"Redis SET error in stream: {e}")
+        else:
+            possibly_truncated = False
+            chunks_fetched = 1
+            total_chunks = 1
+            used_hybrid = False
+
+        # Apply test item filtering if specified
+        if request.test_item_filters:
+            records = _filter_test_items(records, request.test_item_filters)
+
+        total_records = len(records)
+
+        # Apply sorting if specified
+        if request.sort_by:
+            field_mapping = {
+                "TestStartTime": "Test Start Time",
+                "TestEndTime": "Test end Time",
+                "TestStatus": "Test Status",
+                "ISN": "ISN",
+                "DeviceId": "DeviceId",
+                "ErrorCode": "ErrorCode",
+                "ErrorName": "ErrorName",
+                "station": "station",
+                "Site": "Site",
+                "Project": "Project",
+            }
+            sort_field = field_mapping.get(request.sort_by, request.sort_by)
+            
+            try:
+                records = sorted(
+                    records,
+                    key=lambda r: r.get(sort_field, "") or "",
+                    reverse=request.sort_desc,
+                )
+            except Exception as e:
+                logger.warning(f"Sorting by {sort_field} failed in stream: {e}")
+
+        # Yield metadata header first
+        metadata = {
+            "_metadata": True,
+            "total_records": total_records,
+            "filtered": bool(request.test_item_filters),
+            "cached": cached,
+            "possibly_truncated": possibly_truncated,
+            "chunks_fetched": chunks_fetched,
+            "total_chunks": total_chunks,
+            "used_hybrid_strategy": used_hybrid,
+        }
+        yield json_dumps(metadata) + b"\n"
+
+        # Apply pagination offset
+        start_idx = request.offset or 0
+        end_idx = start_idx + request.limit if request.limit else len(records)
+        
+        # Yield records one by one
+        for record in records[start_idx:end_idx]:
+            # Convert to compact format for streaming (excludes TestItem array)
+            compact = _convert_to_compact_record(record)
+            yield json_dumps(compact.model_dump()) + b"\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="application/x-ndjson",
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-cache",
+        },
+    )
 

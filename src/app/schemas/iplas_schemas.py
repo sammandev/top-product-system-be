@@ -37,6 +37,14 @@ class IplasCsvTestItemRequest(BaseModel):
         ge=0,
         description="Number of records to skip (for pagination)",
     )
+    sort_by: str | None = Field(
+        default=None,
+        description="Field name to sort by (e.g., 'TestStartTime', 'ISN', 'TestStatus')",
+    )
+    sort_desc: bool = Field(
+        default=True,
+        description="Sort in descending order (default True for newest first)",
+    )
     token: str | None = Field(
         default=None,
         description="Optional user-provided token. If not provided, uses backend default.",
@@ -88,6 +96,29 @@ class IplasTestItemNamesResponse(BaseModel):
     total_count: int = Field(..., description="Total number of unique test items")
 
 
+class IplasRecordTestItemsRequest(BaseModel):
+    """Request schema for fetching test items for a specific record."""
+
+    site: str = Field(..., description="Site identifier")
+    project: str = Field(..., description="Project identifier")
+    station: str = Field(..., description="Station name")
+    isn: str = Field(..., description="ISN of the record")
+    test_start_time: str = Field(..., description="Test start time (for unique identification)")
+    device_id: str = Field(default="ALL", description="Device ID filter")
+    test_status: Literal["ALL", "PASS", "FAIL"] = Field(default="ALL")
+    token: str | None = Field(default=None, description="Optional user-provided token")
+
+
+class IplasRecordTestItemsResponse(BaseModel):
+    """Response schema for test items of a specific record."""
+
+    isn: str = Field(..., description="ISN of the record")
+    test_start_time: str = Field(..., description="Test start time")
+    test_items: list[dict] = Field(..., description="Test items for this record")
+    test_item_count: int = Field(..., description="Number of test items")
+    cached: bool = Field(default=False, description="True if data was served from cache")
+
+
 class IplasTestItem(BaseModel):
     """Individual test item data from iPLAS."""
 
@@ -132,6 +163,81 @@ class IplasCsvTestItemResponse(BaseModel):
         ..., description="True if test item filtering was applied"
     )
     cached: bool = Field(..., description="True if data was served from cache")
+    possibly_truncated: bool = Field(
+        default=False,
+        description="True if any chunk hit the 5000 record limit (data may be incomplete)"
+    )
+    # Chunking metadata for progress indicators
+    chunks_fetched: int = Field(
+        default=1,
+        description="Number of API chunks fetched (for queries >6 days)"
+    )
+    total_chunks: int = Field(
+        default=1,
+        description="Total number of chunks (for queries >6 days)"
+    )
+    # Hybrid V1/V2 strategy metadata
+    used_hybrid_strategy: bool = Field(
+        default=False,
+        description="True if hybrid V1/V2 strategy was used (per-device fetching for high-density stations)"
+    )
+
+
+class CompactCsvTestItemRecord(BaseModel):
+    """
+    Compact record without TestItem array for memory-efficient list views.
+    
+    Use this for displaying record lists. TestItems can be loaded on-demand
+    via a separate endpoint when the user expands a record.
+    """
+    Site: str
+    Project: str
+    station: str
+    TSP: str
+    Model: str = ""
+    MO: str = ""
+    Line: str
+    ISN: str
+    DeviceId: str
+    TestStatus: str = Field(..., alias="Test Status")
+    TestStartTime: str = Field(..., alias="Test Start Time")
+    TestEndTime: str = Field(..., alias="Test end Time")
+    ErrorCode: str
+    ErrorName: str
+    TestItemCount: int = Field(default=0, description="Number of test items in record")
+
+    class Config:
+        populate_by_name = True
+
+
+class CompactCsvTestItemResponse(BaseModel):
+    """Response schema for compact CSV test items (without TestItem arrays)."""
+
+    data: list[CompactCsvTestItemRecord] = Field(..., description="Compact test item records")
+    total_records: int = Field(..., description="Total records before pagination")
+    returned_records: int = Field(..., description="Number of records returned")
+    filtered: bool = Field(
+        ..., description="True if test item filtering was applied"
+    )
+    cached: bool = Field(..., description="True if data was served from cache")
+    possibly_truncated: bool = Field(
+        default=False,
+        description="True if any chunk hit the 5000 record limit (data may be incomplete)"
+    )
+    # Chunking metadata for progress indicators
+    chunks_fetched: int = Field(
+        default=1,
+        description="Number of API chunks fetched (for queries >6 days)"
+    )
+    total_chunks: int = Field(
+        default=1,
+        description="Total number of chunks (for queries >6 days)"
+    )
+    # Hybrid V1/V2 strategy metadata
+    used_hybrid_strategy: bool = Field(
+        default=False,
+        description="True if hybrid V1/V2 strategy was used (per-device fetching for high-density stations)"
+    )
 
 
 # ============================================================================

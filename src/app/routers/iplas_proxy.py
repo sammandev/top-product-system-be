@@ -205,6 +205,20 @@ def _generate_cache_key(
     return f"iplas:csv-testitem:{site}:{project}:{station}:{device_id}:{begin_str}:{end_str}:{test_status}"
 
 
+# ============================================================================
+# Custom Exception for 5000 Record Limit
+# ============================================================================
+
+
+class IplasRecordLimitError(Exception):
+    """
+    Raised when iPLAS API returns an error indicating the query would exceed
+    the 5000 record limit. This allows callers to retry with smaller time
+    ranges or per-device fetching.
+    """
+    pass
+
+
 async def _fetch_from_iplas(
     site: str,
     project: str,
@@ -214,8 +228,30 @@ async def _fetch_from_iplas(
     end_time: datetime,
     test_status: str,
     user_token: str | None = None,
+    raise_on_limit: bool = False,
 ) -> list[dict[str, Any]]:
-    """Fetch test item data from iPLAS v1 API with multi-site support."""
+    """
+    Fetch test item data from iPLAS v1 API with multi-site support.
+    
+    Args:
+        site: Site identifier (PTB, PSZ, PXD, PVN, PTY)
+        project: Project name
+        station: Station name
+        device_id: Device ID (or "ALL")
+        begin_time: Start of date range
+        end_time: End of date range
+        test_status: PASS, FAIL, or ALL
+        user_token: Optional user-provided token
+        raise_on_limit: If True, raises IplasRecordLimitError on 5000 limit
+                       instead of HTTPException (allows caller to handle retry)
+    
+    Returns:
+        List of test item records
+        
+    Raises:
+        IplasRecordLimitError: If raise_on_limit=True and API returns 5000 limit error
+        HTTPException: For other API errors
+    """
     site_config = _get_site_config(site, user_token)
     url = f"{site_config['v1_url']}/raw/{site}/{project}/get_csv_testitem"
 
@@ -235,6 +271,20 @@ async def _fetch_from_iplas(
     async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
         response = await client.post(url, json=payload)
 
+        # Check for 5000 record limit error (HTTP 400 with specific message)
+        if response.status_code == 400:
+            response_text = response.text
+            if "documents count > 5000" in response_text or "5000" in response_text:
+                logger.warning(
+                    f"iPLAS 5000 record limit hit for {site}/{project}/{station} "
+                    f"device={device_id}, range={begin_time} to {end_time}"
+                )
+                if raise_on_limit:
+                    raise IplasRecordLimitError(
+                        f"Query exceeds 5000 record limit for {station}"
+                    )
+                # Fall through to normal error handling if not raise_on_limit
+        
         if response.status_code != 200:
             logger.error(f"iPLAS API error: {response.status_code} - {response.text}")
             raise HTTPException(
@@ -439,14 +489,21 @@ async def _fetch_with_hybrid_strategy(
     user_token: str | None = None,
 ) -> tuple[list[dict[str, Any]], bool, bool]:
     """
-    Fetch test data using hybrid V1/V2 strategy.
+    Fetch test data using hybrid V1/V2 strategy with automatic 5000-limit fallback.
     
     Strategy:
     1. If device_id != "ALL", use standard V1 fetch
     2. If device_id == "ALL":
-       a. Call V2 API to get device list for the time range
-       b. If device count > DEVICE_DENSITY_THRESHOLD, fetch per-device in parallel
-       c. Otherwise, use standard V1 fetch with device_id="ALL"
+       a. First try standard V1 fetch with raise_on_limit=True
+       b. If 5000 limit error is raised:
+          - Call V2 API to get device list for the time range
+          - If devices found, fetch per-device in parallel
+          - If V2 fails, propagate the error
+       c. If device count > DEVICE_DENSITY_THRESHOLD (proactive), fetch per-device
+    
+    This approach is more efficient because:
+    - We don't call V2 API unless necessary (saves latency)
+    - We automatically handle cases where V2 device list returns too few devices
     
     Args:
         site: Site identifier
@@ -470,40 +527,47 @@ async def _fetch_with_hybrid_strategy(
         possibly_truncated = len(records) >= MAX_RECORDS_WARNING
         return records, possibly_truncated, False
     
-    # Get device list from V2 API
+    # Try standard fetch first with raise_on_limit=True
+    # This is more efficient than always calling V2 API first
+    try:
+        records = await _fetch_from_iplas(
+            site, project, station, "ALL",
+            begin_time, end_time, test_status, user_token,
+            raise_on_limit=True,
+        )
+        possibly_truncated = len(records) >= MAX_RECORDS_WARNING
+        return records, possibly_truncated, False
+        
+    except IplasRecordLimitError:
+        logger.info(
+            f"5000 limit hit for {station}, fetching device list from V2 API "
+            f"for per-device retry"
+        )
+    
+    # Standard fetch failed with 5000 limit - get device list from V2 API
     devices = await _fetch_device_list_v2(
         site, project, station, begin_time, end_time, user_token
     )
     
     device_count = len(devices)
     
-    # If V2 failed or returned empty, fall back to standard fetch
+    # If V2 failed or returned empty, we can't retry - raise error
     if device_count == 0:
-        logger.info(f"V2 returned no devices for {station}, using standard V1 fetch")
-        records = await _fetch_from_iplas(
-            site, project, station, "ALL",
-            begin_time, end_time, test_status, user_token
+        logger.error(
+            f"V2 returned no devices for {station} but V1 hit 5000 limit. "
+            f"Cannot fetch data - consider narrowing date range."
         )
-        possibly_truncated = len(records) >= MAX_RECORDS_WARNING
-        return records, possibly_truncated, False
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Query exceeds 5000 record limit and V2 API returned no devices. "
+                f"Please narrow the date range for station {station}."
+            ),
+        )
     
-    # Check device density
-    if device_count <= DEVICE_DENSITY_THRESHOLD:
-        logger.info(
-            f"Low density ({device_count} devices <= {DEVICE_DENSITY_THRESHOLD}), "
-            f"using standard V1 fetch"
-        )
-        records = await _fetch_from_iplas(
-            site, project, station, "ALL",
-            begin_time, end_time, test_status, user_token
-        )
-        possibly_truncated = len(records) >= MAX_RECORDS_WARNING
-        return records, possibly_truncated, False
-    
-    # High density - use parallel per-device fetching
+    # Fetch per-device in parallel
     logger.info(
-        f"High density ({device_count} devices > {DEVICE_DENSITY_THRESHOLD}), "
-        f"using parallel per-device fetch"
+        f"Retrying with per-device fetch: {device_count} devices found for {station}"
     )
     records, possibly_truncated = await _fetch_devices_in_parallel(
         site, project, station, devices,

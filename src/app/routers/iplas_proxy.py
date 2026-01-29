@@ -300,7 +300,12 @@ async def _fetch_from_iplas(
                 detail=f"iPLAS API returned status {data.get('statuscode')}",
             )
 
-        return data.get("data", [])
+        # Add station field to each record since iPLAS API doesn't include it
+        records = data.get("data", [])
+        for record in records:
+            record["station"] = station
+        
+        return records
 
 
 # ============================================================================

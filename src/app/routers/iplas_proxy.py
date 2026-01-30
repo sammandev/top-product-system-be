@@ -149,17 +149,17 @@ def get_redis_client() -> Redis | None:
 def _get_site_config(site: str, user_token: str | None = None) -> dict[str, str]:
     """
     Get iPLAS API configuration for a specific site.
-    
+
     Args:
         site: Site identifier (PTB, PSZ, PXD, PVN, PTY)
         user_token: Optional user-provided token (overrides default)
-        
+
     Returns:
         Dict with 'base_url', 'token', 'v1_url', 'v2_url'
     """
     # Normalize site to uppercase
     site_upper = site.upper()
-    
+
     if site_upper in IPLAS_SITES:
         config = IPLAS_SITES[site_upper]
         base = config["base_url"]
@@ -171,7 +171,7 @@ def _get_site_config(site: str, user_token: str | None = None) -> dict[str, str]
             "v1_url": f"{base}:{IPLAS_PORT}{IPLAS_V1_VERSION}",
             "v2_url": f"{base}:{IPLAS_PORT}{IPLAS_V2_VERSION}",
         }
-    
+
     # Fallback to PTB if site not found
     logger.warning(f"Unknown site '{site}', falling back to PTB")
     config = IPLAS_SITES["PTB"]
@@ -216,6 +216,7 @@ class IplasRecordLimitError(Exception):
     the 5000 record limit. This allows callers to retry with smaller time
     ranges or per-device fetching.
     """
+
     pass
 
 
@@ -229,10 +230,11 @@ async def _fetch_from_iplas(
     test_status: str,
     user_token: str | None = None,
     raise_on_limit: bool = False,
+    client: httpx.AsyncClient | None = None,
 ) -> list[dict[str, Any]]:
     """
     Fetch test item data from iPLAS v1 API with multi-site support.
-    
+
     Args:
         site: Site identifier (PTB, PSZ, PXD, PVN, PTY)
         project: Project name
@@ -244,15 +246,20 @@ async def _fetch_from_iplas(
         user_token: Optional user-provided token
         raise_on_limit: If True, raises IplasRecordLimitError on 5000 limit
                        instead of HTTPException (allows caller to handle retry)
-    
+
     Returns:
         List of test item records
-        
+
     Raises:
         IplasRecordLimitError: If raise_on_limit=True and API returns 5000 limit error
         HTTPException: For other API errors
     """
     site_config = _get_site_config(site, user_token)
+    if not site_config.get("token"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing iPLAS token for site '{site}'. Please configure IPLAS_API_TOKEN_{site.upper()} or provide a user token.",
+        )
     url = f"{site_config['v1_url']}/raw/{site}/{project}/get_csv_testitem"
 
     payload = {
@@ -268,23 +275,57 @@ async def _fetch_from_iplas(
 
     logger.info(f"Fetching iPLAS v1 data: {site}/{project}/{station} device={device_id}")
 
-    async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
-        response = await client.post(url, json=payload)
+    timeout = httpx.Timeout(IPLAS_TIMEOUT)
+    limits = httpx.Limits(max_connections=20, max_keepalive_connections=10)
+    last_exc: Exception | None = None
+
+    async def _do_request(active_client: httpx.AsyncClient) -> httpx.Response:
+        return await active_client.post(url, json=payload)
+
+    for attempt in range(1, 4):
+        try:
+            if client is not None:
+                response = await _do_request(client)
+            else:
+                async with httpx.AsyncClient(timeout=timeout, limits=limits) as new_client:
+                    response = await _do_request(new_client)
+            last_exc = None
+            break
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            logger.warning(
+                "iPLAS v1 request failed (attempt %s/3) for %s/%s/%s device=%s: %s",
+                attempt,
+                site,
+                project,
+                station,
+                device_id,
+                exc,
+            )
+            if attempt < 3:
+                await asyncio.sleep(0.2 * attempt)
+                continue
+            logger.error("iPLAS v1 request failed after retries", exc_info=True)
+            raise HTTPException(
+                status_code=502,
+                detail="iPLAS upstream connection failed. Please retry.",
+            )
+
+    if last_exc is not None:
+        raise HTTPException(
+            status_code=502,
+            detail="iPLAS upstream connection failed. Please retry.",
+        )
 
         # Check for 5000 record limit error (HTTP 400 with specific message)
         if response.status_code == 400:
             response_text = response.text
             if "documents count > 5000" in response_text or "5000" in response_text:
-                logger.warning(
-                    f"iPLAS 5000 record limit hit for {site}/{project}/{station} "
-                    f"device={device_id}, range={begin_time} to {end_time}"
-                )
+                logger.warning(f"iPLAS 5000 record limit hit for {site}/{project}/{station} device={device_id}, range={begin_time} to {end_time}")
                 if raise_on_limit:
-                    raise IplasRecordLimitError(
-                        f"Query exceeds 5000 record limit for {station}"
-                    )
+                    raise IplasRecordLimitError(f"Query exceeds 5000 record limit for {station}")
                 # Fall through to normal error handling if not raise_on_limit
-        
+
         if response.status_code != 200:
             logger.error(f"iPLAS API error: {response.status_code} - {response.text}")
             raise HTTPException(
@@ -304,7 +345,7 @@ async def _fetch_from_iplas(
         records = data.get("data", [])
         for record in records:
             record["station"] = station
-        
+
         return records
 
 
@@ -326,7 +367,7 @@ MAX_PARALLEL_REQUESTS = int(os.getenv("IPLAS_MAX_PARALLEL_REQUESTS", "3"))
 
 
 # ============================================================================
-# Hybrid V1/V2 Fetching Strategy (Phase 5.3)
+# Hybrid V1/V2 Fetching Strategy
 # ============================================================================
 
 
@@ -340,10 +381,10 @@ async def _fetch_device_list_v2(
 ) -> list[str]:
     """
     Fetch device list from iPLAS v2 API for a specific station and time range.
-    
+
     This is used to determine device density before fetching test data.
     If device count > DEVICE_DENSITY_THRESHOLD, we switch to per-device fetching.
-    
+
     Args:
         site: Site identifier (PTB, PSZ, PXD, PVN, PTY)
         project: Project name
@@ -351,39 +392,59 @@ async def _fetch_device_list_v2(
         start_time: Start of date range
         end_time: End of date range
         user_token: Optional user-provided token
-        
+
     Returns:
         List of device IDs active in the time range
     """
     site_config = _get_site_config(site, user_token)
+    if not site_config.get("token"):
+        logger.warning("Missing iPLAS token for site '%s' in V2 device list request", site)
+        return []
     url = f"{site_config['v2_url']}/{site}/{project}/{station}/test_station_device_list"
-    
+
     logger.debug(f"Fetching device list from V2: {site}/{project}/{station}")
-    
-    try:
-        async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
-            response = await client.get(
-                url,
-                params={
-                    "start_time": start_time.isoformat(),
-                    "end_time": end_time.isoformat(),
-                },
-                headers={"Authorization": f"Bearer {site_config['token']}"},
-            )
-            
-            if response.status_code != 200:
-                logger.warning(
-                    f"V2 device list failed ({response.status_code}): {response.text}"
+
+    timeout = httpx.Timeout(IPLAS_TIMEOUT)
+    limits = httpx.Limits(max_connections=20, max_keepalive_connections=10)
+    last_exc: Exception | None = None
+
+    for attempt in range(1, 3):
+        try:
+            async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
+                response = await client.get(
+                    url,
+                    params={
+                        "start_time": start_time.isoformat(),
+                        "end_time": end_time.isoformat(),
+                    },
+                    headers={"Authorization": f"Bearer {site_config['token']}"},
                 )
+
+            if response.status_code != 200:
+                logger.warning(f"V2 device list failed ({response.status_code}): {response.text}")
                 return []
-            
+
             devices = response.json()
             logger.debug(f"V2 returned {len(devices)} devices for {station}")
             return devices
-            
-    except httpx.RequestError as e:
-        logger.warning(f"V2 API request failed: {e}")
-        return []
+
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            logger.warning(
+                "V2 device list request failed (attempt %s/2) for %s/%s/%s: %s",
+                attempt,
+                site,
+                project,
+                station,
+                exc,
+            )
+            if attempt < 2:
+                await asyncio.sleep(0.2 * attempt)
+                continue
+
+    if last_exc is not None:
+        logger.warning("V2 device list failed after retries: %s", last_exc)
+    return []
 
 
 async def _fetch_devices_in_parallel(
@@ -398,10 +459,10 @@ async def _fetch_devices_in_parallel(
 ) -> tuple[list[dict[str, Any]], bool]:
     """
     Fetch test data for multiple devices in parallel batches.
-    
+
     Splits device list into batches and fetches them concurrently to improve
     throughput while avoiding rate limiting.
-    
+
     Args:
         site: Site identifier
         project: Project name
@@ -411,65 +472,63 @@ async def _fetch_devices_in_parallel(
         end_time: End of date range
         test_status: PASS, FAIL, or ALL
         user_token: Optional user-provided token
-        
+
     Returns:
         Tuple of (all_records, possibly_truncated)
     """
     all_records: list[dict[str, Any]] = []
     possibly_truncated = False
-    
+
     # Split into batches
-    batches = [
-        device_ids[i : i + DEVICE_BATCH_SIZE]
-        for i in range(0, len(device_ids), DEVICE_BATCH_SIZE)
-    ]
-    
-    logger.info(
-        f"Parallel fetch: {len(device_ids)} devices in {len(batches)} batches "
-        f"(batch size={DEVICE_BATCH_SIZE}, max parallel={MAX_PARALLEL_REQUESTS})"
-    )
-    
+    batches = [device_ids[i : i + DEVICE_BATCH_SIZE] for i in range(0, len(device_ids), DEVICE_BATCH_SIZE)]
+
+    logger.info(f"Parallel fetch: {len(device_ids)} devices in {len(batches)} batches (batch size={DEVICE_BATCH_SIZE}, max parallel={MAX_PARALLEL_REQUESTS})")
+
     # Process batches with limited parallelism
     semaphore = asyncio.Semaphore(MAX_PARALLEL_REQUESTS)
-    
+
     async def fetch_batch(batch: list[str], batch_idx: int) -> tuple[list[dict], bool]:
         async with semaphore:
             batch_records: list[dict] = []
             batch_truncated = False
-            
-            for device_id in batch:
-                try:
-                    records = await _fetch_from_iplas(
-                        site, project, station, device_id,
-                        begin_time, end_time, test_status, user_token
-                    )
-                    
-                    if len(records) >= MAX_RECORDS_WARNING:
-                        batch_truncated = True
-                        logger.warning(
-                            f"Device {device_id} returned {len(records)} records "
-                            f"(may be truncated)"
+
+            timeout = httpx.Timeout(IPLAS_TIMEOUT)
+            limits = httpx.Limits(max_connections=20, max_keepalive_connections=10)
+            async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
+                for device_id in batch:
+                    try:
+                        records = await _fetch_from_iplas(
+                            site,
+                            project,
+                            station,
+                            device_id,
+                            begin_time,
+                            end_time,
+                            test_status,
+                            user_token,
+                            client=client,
                         )
-                    
-                    batch_records.extend(records)
-                    
-                except HTTPException as e:
-                    logger.error(f"Device {device_id} fetch failed: {e.detail}")
-                    # Continue with other devices
-                    
-                # Small delay between devices in same batch
-                await asyncio.sleep(0.05)
-            
-            logger.debug(
-                f"Batch {batch_idx + 1}/{len(batches)}: "
-                f"{len(batch_records)} records from {len(batch)} devices"
-            )
+
+                        if len(records) >= MAX_RECORDS_WARNING:
+                            batch_truncated = True
+                            logger.warning(f"Device {device_id} returned {len(records)} records (may be truncated)")
+
+                        batch_records.extend(records)
+
+                    except HTTPException as e:
+                        logger.error(f"Device {device_id} fetch failed: {e.detail}")
+                        # Continue with other devices
+
+                    # Small delay between devices in same batch
+                    await asyncio.sleep(0.05)
+
+            logger.debug(f"Batch {batch_idx + 1}/{len(batches)}: {len(batch_records)} records from {len(batch)} devices")
             return batch_records, batch_truncated
-    
+
     # Run all batches
     tasks = [fetch_batch(batch, i) for i, batch in enumerate(batches)]
     results = await asyncio.gather(*tasks, return_exceptions=True)
-    
+
     for result in results:
         if isinstance(result, Exception):
             logger.error(f"Batch failed with exception: {result}")
@@ -478,7 +537,7 @@ async def _fetch_devices_in_parallel(
         all_records.extend(records)
         if truncated:
             possibly_truncated = True
-    
+
     logger.info(f"Parallel fetch complete: {len(all_records)} total records")
     return all_records, possibly_truncated
 
@@ -495,7 +554,7 @@ async def _fetch_with_hybrid_strategy(
 ) -> tuple[list[dict[str, Any]], bool, bool]:
     """
     Fetch test data using hybrid V1/V2 strategy with automatic 5000-limit fallback.
-    
+
     Strategy:
     1. If device_id != "ALL", use standard V1 fetch
     2. If device_id == "ALL":
@@ -505,11 +564,11 @@ async def _fetch_with_hybrid_strategy(
           - If devices found, fetch per-device in parallel
           - If V2 fails, propagate the error
        c. If device count > DEVICE_DENSITY_THRESHOLD (proactive), fetch per-device
-    
+
     This approach is more efficient because:
     - We don't call V2 API unless necessary (saves latency)
     - We automatically handle cases where V2 device list returns too few devices
-    
+
     Args:
         site: Site identifier
         project: Project name
@@ -519,65 +578,44 @@ async def _fetch_with_hybrid_strategy(
         end_time: End of date range
         test_status: PASS, FAIL, or ALL
         user_token: Optional user-provided token
-        
+
     Returns:
         Tuple of (records, possibly_truncated, used_hybrid)
     """
     # If specific device requested, use standard fetch
     if device_id.upper() != "ALL":
-        records = await _fetch_from_iplas(
-            site, project, station, device_id,
-            begin_time, end_time, test_status, user_token
-        )
+        records = await _fetch_from_iplas(site, project, station, device_id, begin_time, end_time, test_status, user_token)
         possibly_truncated = len(records) >= MAX_RECORDS_WARNING
         return records, possibly_truncated, False
-    
+
     # Try standard fetch first with raise_on_limit=True
     # This is more efficient than always calling V2 API first
     try:
         records = await _fetch_from_iplas(
-            site, project, station, "ALL",
-            begin_time, end_time, test_status, user_token,
+            site,
+            project,
+            station,
+            "ALL",
+            begin_time,
+            end_time,
+            test_status,
+            user_token,
             raise_on_limit=True,
         )
-        possibly_truncated = len(records) >= MAX_RECORDS_WARNING
-        return records, possibly_truncated, False
-        
+        return records, len(records) >= MAX_RECORDS_WARNING, False
     except IplasRecordLimitError:
-        logger.info(
-            f"5000 limit hit for {station}, fetching device list from V2 API "
-            f"for per-device retry"
-        )
-    
-    # Standard fetch failed with 5000 limit - get device list from V2 API
-    devices = await _fetch_device_list_v2(
-        site, project, station, begin_time, end_time, user_token
-    )
-    
-    device_count = len(devices)
-    
-    # If V2 failed or returned empty, we can't retry - raise error
-    if device_count == 0:
-        logger.error(
-            f"V2 returned no devices for {station} but V1 hit 5000 limit. "
-            f"Cannot fetch data - consider narrowing date range."
-        )
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Query exceeds 5000 record limit and V2 API returned no devices. "
-                f"Please narrow the date range for station {station}."
-            ),
-        )
-    
+        logger.info(f"5000 record limit hit for {station}, switching to V2 device list + parallel fetch")
+
+    # Fetch device list from V2
+    devices = await _fetch_device_list_v2(site, project, station, begin_time, end_time, user_token)
+
+    if not devices:
+        logger.warning(f"V1 hit limit but V2 returned zero devices for {station}. Returning empty.")
+        return [], False, True
+
     # Fetch per-device in parallel
-    logger.info(
-        f"Retrying with per-device fetch: {device_count} devices found for {station}"
-    )
-    records, possibly_truncated = await _fetch_devices_in_parallel(
-        site, project, station, devices,
-        begin_time, end_time, test_status, user_token
-    )
+    logger.info(f"Retrying with per-device fetch: {len(devices)} devices found for {station}")
+    records, possibly_truncated = await _fetch_devices_in_parallel(site, project, station, devices, begin_time, end_time, test_status, user_token)
     return records, possibly_truncated, True
 
 
@@ -594,16 +632,16 @@ async def _fetch_chunked_from_iplas(
 ) -> tuple[list[dict[str, Any]], bool, int, int, bool]:
     """
     Fetch test item data from iPLAS v1 API with automatic time-range chunking.
-    
+
     If the date range exceeds MAX_DAYS_PER_CHUNK, splits into multiple
     sequential requests and aggregates results. This bypasses the 7-day
     query limit imposed by the iPLAS API.
-    
+
     When use_hybrid=True and device_id="ALL", uses hybrid V1/V2 strategy:
     - Checks device count via V2 API
     - If device count > DEVICE_DENSITY_THRESHOLD, fetches per-device in parallel
     - This prevents hitting the 5000 record limit per request
-    
+
     Args:
         site: Site identifier (PTB, PSZ, PXD, PVN, PTY)
         project: Project name
@@ -614,7 +652,7 @@ async def _fetch_chunked_from_iplas(
         test_status: PASS, FAIL, or ALL
         user_token: Optional user-provided token
         use_hybrid: Use hybrid V1/V2 strategy for high-density stations
-    
+
     Returns:
         Tuple of (records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid) where:
         - possibly_truncated: True if any chunk returned exactly 5000 records
@@ -624,100 +662,70 @@ async def _fetch_chunked_from_iplas(
     """
     total_days = (end_time - begin_time).days
     used_hybrid_any = False
-    
+
     # Single request if within limit
     if total_days <= MAX_DAYS_PER_CHUNK:
         # Use hybrid strategy if enabled and device_id is ALL
         if use_hybrid and device_id.upper() == "ALL":
-            records, possibly_truncated, used_hybrid = await _fetch_with_hybrid_strategy(
-                site, project, station, device_id,
-                begin_time, end_time, test_status, user_token
-            )
+            records, possibly_truncated, used_hybrid = await _fetch_with_hybrid_strategy(site, project, station, device_id, begin_time, end_time, test_status, user_token)
             if used_hybrid:
                 logger.info(f"Single chunk used hybrid V1/V2 strategy")
             return records, possibly_truncated, 1, 1, used_hybrid
         else:
-            records = await _fetch_from_iplas(
-                site, project, station, device_id,
-                begin_time, end_time, test_status, user_token
-            )
+            records = await _fetch_from_iplas(site, project, station, device_id, begin_time, end_time, test_status, user_token)
             possibly_truncated = len(records) >= MAX_RECORDS_WARNING
             return records, possibly_truncated, 1, 1, False
-    
+
     # Chunked requests for larger date ranges
     all_records: list[dict[str, Any]] = []
     possibly_truncated = False
     current_start = begin_time
     chunk_count = 0
     estimated_chunks = (total_days // MAX_DAYS_PER_CHUNK) + 1
-    
-    logger.info(
-        f"Chunked fetch: {site}/{project}/{station} "
-        f"spanning {total_days} days (~{estimated_chunks} chunks)"
-        f"{' with hybrid V1/V2 strategy' if use_hybrid else ''}"
-    )
-    
+
+    logger.info(f"Chunked fetch: {site}/{project}/{station} spanning {total_days} days (~{estimated_chunks} chunks){' with hybrid V1/V2 strategy' if use_hybrid else ''}")
+
     while current_start < end_time:
-        chunk_end = min(
-            current_start + timedelta(days=MAX_DAYS_PER_CHUNK),
-            end_time
-        )
+        chunk_end = min(current_start + timedelta(days=MAX_DAYS_PER_CHUNK), end_time)
         chunk_count += 1
-        
+
         try:
             # Use hybrid strategy if enabled and device_id is ALL
             if use_hybrid and device_id.upper() == "ALL":
-                chunk_records, chunk_truncated, chunk_used_hybrid = await _fetch_with_hybrid_strategy(
-                    site, project, station, device_id,
-                    current_start, chunk_end, test_status, user_token
-                )
+                chunk_records, chunk_truncated, chunk_used_hybrid = await _fetch_with_hybrid_strategy(site, project, station, device_id, current_start, chunk_end, test_status, user_token)
                 if chunk_truncated:
                     possibly_truncated = True
                 if chunk_used_hybrid:
                     used_hybrid_any = True
             else:
-                chunk_records = await _fetch_from_iplas(
-                    site, project, station, device_id,
-                    current_start, chunk_end, test_status, user_token
-                )
+                chunk_records = await _fetch_from_iplas(site, project, station, device_id, current_start, chunk_end, test_status, user_token)
                 # Check if chunk hit the 5000 limit
                 if len(chunk_records) >= MAX_RECORDS_WARNING:
                     possibly_truncated = True
-                    logger.warning(
-                        f"Chunk {chunk_count} returned {len(chunk_records)} records "
-                        f"(may be truncated). Consider narrowing date range or filters."
-                    )
-            
+                    logger.warning(f"Chunk {chunk_count} returned {len(chunk_records)} records (may be truncated). Consider narrowing date range or filters.")
+
             all_records.extend(chunk_records)
-            logger.debug(
-                f"Chunk {chunk_count}/{estimated_chunks}: "
-                f"{len(chunk_records)} records ({current_start.date()} to {chunk_end.date()})"
-            )
-            
+            logger.debug(f"Chunk {chunk_count}/{estimated_chunks}: {len(chunk_records)} records ({current_start.date()} to {chunk_end.date()})")
+
         except HTTPException as e:
             # Log but continue with other chunks for partial results
             logger.error(f"Chunk {chunk_count} failed: {e.detail}")
             # Re-raise if this is a critical error (auth, etc.)
             if e.status_code in (401, 403):
                 raise
-        
+
         current_start = chunk_end
-        
+
         # Small delay between chunks to avoid rate limiting
         if current_start < end_time:
             await asyncio.sleep(0.1)
-    
-    logger.info(
-        f"Chunked fetch complete: {len(all_records)} total records "
-        f"from {chunk_count} chunks{' (used hybrid strategy)' if used_hybrid_any else ''}"
-    )
-    
+
+    logger.info(f"Chunked fetch complete: {len(all_records)} total records from {chunk_count} chunks{' (used hybrid strategy)' if used_hybrid_any else ''}")
+
     return all_records, possibly_truncated, chunk_count, estimated_chunks, used_hybrid_any
 
 
-def _filter_test_items(
-    records: list[dict[str, Any]], test_item_filters: list[str] | None
-) -> list[dict[str, Any]]:
+def _filter_test_items(records: list[dict[str, Any]], test_item_filters: list[str] | None) -> list[dict[str, Any]]:
     """
     Filter test items within each record based on the filter list.
 
@@ -736,9 +744,7 @@ def _filter_test_items(
 
     for record in records:
         test_items = record.get("TestItem", [])
-        filtered_items = [
-            item for item in test_items if item.get("NAME") in filter_set
-        ]
+        filtered_items = [item for item in test_items if item.get("NAME") in filter_set]
 
         # Only include record if it has matching test items
         if filtered_items:
@@ -766,33 +772,33 @@ def _extract_unique_test_items(records: list[dict[str, Any]]) -> list[IplasTestI
             name = item.get("NAME")
             if name and name not in test_items_map:
                 value = item.get("VALUE", "").upper().strip()
-                
+
                 # Check for UCL and LCL values first
                 ucl_str = item.get("UCL", "").strip()
                 lcl_str = item.get("LCL", "").strip()
                 has_ucl = False
                 has_lcl = False
-                
+
                 if ucl_str:
                     try:
                         float(ucl_str)
                         has_ucl = True
                     except (ValueError, TypeError):
                         pass
-                        
+
                 if lcl_str:
                     try:
                         float(lcl_str)
                         has_lcl = True
                     except (ValueError, TypeError):
                         pass
-                
+
                 # Determine is_value and is_bin based on VALUE and presence of limits
                 # UPDATED: If item has UCL or LCL, treat it as a value item (CRITERIA)
                 # even if VALUE is 1/0/-1/-999 (these are often numeric test results with limits)
                 is_value = False
                 is_bin = False
-                
+
                 if has_ucl or has_lcl:
                     # Has control limits - this is a CRITERIA value item
                     is_value = True
@@ -814,16 +820,10 @@ def _extract_unique_test_items(records: list[dict[str, Any]]) -> list[IplasTestI
                         # Non-value: not numeric and not PASS/FAIL
                         is_value = False
 
-                test_items_map[name] = IplasTestItemInfo(
-                    name=name, 
-                    is_value=is_value, 
-                    is_bin=is_bin,
-                    has_ucl=has_ucl,
-                    has_lcl=has_lcl
-                )
+                test_items_map[name] = IplasTestItemInfo(name=name, is_value=is_value, is_bin=is_bin, has_ucl=has_ucl, has_lcl=has_lcl)
 
-    # Sort by name
-    return sorted(test_items_map.values(), key=lambda x: x.name)
+    # Preserve original appearance order from iPLAS records
+    return list(test_items_map.values())
 
 
 @router.post(
@@ -875,7 +875,7 @@ async def get_csv_test_items(
     chunks_fetched = 1
     total_chunks = 1
     used_hybrid_strategy = False
-    
+
     # Fetch from iPLAS if cache miss (using chunked fetching for large date ranges)
     if not cached:
         logger.debug(f"Cache MISS: {cache_key}")
@@ -1054,7 +1054,7 @@ async def get_csv_test_items_compact(
     chunks_fetched = 1
     total_chunks = 1
     used_hybrid_strategy = False
-    
+
     # Fetch from iPLAS if cache miss
     if not cached_compact and not records:
         logger.debug(f"Cache MISS (compact): {cache_key}")
@@ -1119,7 +1119,7 @@ async def get_csv_test_items_compact(
             "Project": "Project",
         }
         sort_field = field_mapping.get(request.sort_by, request.sort_by)
-        
+
         try:
             compact_records = sorted(
                 compact_records,
@@ -1170,7 +1170,7 @@ async def get_record_test_items(
 ) -> IplasRecordTestItemsResponse:
     """Get test items for a specific record."""
     redis = get_redis_client()
-    
+
     # Use a date range around the test start time to minimize API calls
     # Parse the test start time and query a 1-hour window
     try:
@@ -1189,11 +1189,11 @@ async def get_record_test_items(
                 status_code=400,
                 detail=f"Invalid test_start_time format: {request.test_start_time}",
             )
-    
+
     # Query a 2-hour window around the test time
     begin_time = test_time - timedelta(hours=1)
     end_time = test_time + timedelta(hours=1)
-    
+
     cache_key = _generate_cache_key(
         request.site,
         request.project,
@@ -1244,11 +1244,10 @@ async def get_record_test_items(
     # Find the specific record by ISN and test start time
     target_record = None
     for record in records:
-        if (record.get("ISN") == request.isn and 
-            record.get("Test Start Time") == request.test_start_time):
+        if record.get("ISN") == request.isn and record.get("Test Start Time") == request.test_start_time:
             target_record = record
             break
-    
+
     if not target_record:
         # Record not found - return empty test items
         return IplasRecordTestItemsResponse(
@@ -1258,9 +1257,9 @@ async def get_record_test_items(
             test_item_count=0,
             cached=cached,
         )
-    
+
     test_items = target_record.get("TestItem", [])
-    
+
     return IplasRecordTestItemsResponse(
         isn=request.isn,
         test_start_time=request.test_start_time,
@@ -1387,9 +1386,7 @@ async def health_check():
     """,
 )
 async def get_site_projects(
-    data_type: Literal["simple", "strict"] = Query(
-        default="simple", description="Data type filter"
-    ),
+    data_type: Literal["simple", "strict"] = Query(default="simple", description="Data type filter"),
 ) -> IplasSiteProjectListResponse:
     """Get all site/project pairs with caching."""
     redis = get_redis_client()
@@ -1413,23 +1410,23 @@ async def get_site_projects(
     # Fetch from iPLAS if cache miss
     if not cached:
         logger.debug(f"Cache MISS: {cache_key}")
-        
+
         # Query all configured sites
         for site_name, site_config in IPLAS_SITES.items():
             if not site_config["token"]:
                 continue
-                
+
             try:
                 v2_url = f"{site_config['base_url']}:{IPLAS_PORT}{IPLAS_V2_VERSION}"
                 url = f"{v2_url}/site_project_list"
-                
+
                 async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
                     response = await client.get(
                         url,
                         params={"data_type": data_type},
                         headers={"Authorization": f"Bearer {site_config['token']}"},
                     )
-                    
+
                     if response.status_code == 200:
                         data = response.json()
                         for item in data:
@@ -1482,6 +1479,7 @@ async def get_stations(
             if cached_data:
                 data = json_loads(cached_data)
                 stations = [IplasStation(**item) for item in data]
+                stations.sort(key=lambda s: (s.order is None, s.order))
                 cached = True
                 logger.debug(f"Cache HIT: {cache_key}")
         except Exception as e:
@@ -1508,11 +1506,10 @@ async def get_stations(
 
                 data = response.json()
                 stations = [IplasStation(**item) for item in data]
+                stations.sort(key=lambda s: (s.order is None, s.order))
 
         except httpx.RequestError as e:
-            raise HTTPException(
-                status_code=503, detail=f"iPLAS v2 API unavailable: {e}"
-            ) from None
+            raise HTTPException(status_code=503, detail=f"iPLAS v2 API unavailable: {e}") from None
 
         # Store in cache
         if redis and stations:
@@ -1589,9 +1586,7 @@ async def get_devices(
                 devices = response.json()
 
         except httpx.RequestError as e:
-            raise HTTPException(
-                status_code=503, detail=f"iPLAS v2 API unavailable: {e}"
-            ) from None
+            raise HTTPException(status_code=503, detail=f"iPLAS v2 API unavailable: {e}") from None
 
         # Store in cache
         if redis and devices:
@@ -1645,7 +1640,7 @@ async def search_by_isn(
     # Fetch from iPLAS if cache miss
     if not cached:
         logger.debug(f"Cache MISS: {cache_key}")
-        
+
         # If user provided a token, use it with PTB as default site
         if request.token:
             site_config = _get_site_config("PTB", request.token)
@@ -1668,10 +1663,10 @@ async def search_by_isn(
             for site_name, site_config in IPLAS_SITES.items():
                 if not site_config["token"]:
                     continue
-                
+
                 if results:
                     break  # Found results, stop querying
-                    
+
                 try:
                     v2_url = f"{site_config['base_url']}:{IPLAS_PORT}{IPLAS_V2_VERSION}"
                     url = f"{v2_url}/isn_search"
@@ -1747,10 +1742,7 @@ async def download_attachment(
         "token": site_config["token"],
     }
 
-    logger.info(
-        f"Downloading attachments: {request.site}/{request.project} "
-        f"({len(request.info)} items)"
-    )
+    logger.info(f"Downloading attachments: {request.site}/{request.project} ({len(request.info)} items)")
 
     try:
         async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
@@ -1776,9 +1768,7 @@ async def download_attachment(
             )
 
     except httpx.RequestError as e:
-        raise HTTPException(
-            status_code=503, detail=f"iPLAS v1 API unavailable: {e}"
-        ) from None
+        raise HTTPException(status_code=503, detail=f"iPLAS v1 API unavailable: {e}") from None
 
 
 # ============================================================================
@@ -1857,7 +1847,7 @@ async def stream_csv_test_items(
     request: IplasCsvTestItemRequest,
 ) -> StreamingResponse:
     """Stream CSV test items as NDJSON for large datasets."""
-    
+
     async def generate():
         """Generator that yields NDJSON records."""
         redis = get_redis_client()
@@ -1934,7 +1924,7 @@ async def stream_csv_test_items(
                 "Project": "Project",
             }
             sort_field = field_mapping.get(request.sort_by, request.sort_by)
-            
+
             try:
                 records = sorted(
                     records,
@@ -1960,7 +1950,7 @@ async def stream_csv_test_items(
         # Apply pagination offset
         start_idx = request.offset or 0
         end_idx = start_idx + request.limit if request.limit else len(records)
-        
+
         # Yield records one by one
         for record in records[start_idx:end_idx]:
             # Convert to compact format for streaming (excludes TestItem array)
@@ -1975,4 +1965,3 @@ async def stream_csv_test_items(
             "Cache-Control": "no-cache",
         },
     )
-

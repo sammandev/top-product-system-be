@@ -926,25 +926,69 @@ async def get_csv_test_items(
 
 
 def _convert_to_compact_record(record: dict[str, Any]) -> CompactCsvTestItemRecord:
-    """Convert a full record to a compact record (without TestItem array)."""
-    test_items = record.get("TestItem", [])
+    """Convert full record to compact record without TestItem array."""
+    test_item_count = record.get("__test_item_count")
+    if test_item_count is None:
+        test_items = record.get("TestItem", [])
+        test_item_count = len(test_items) if isinstance(test_items, list) else 0
+
+    def _safe_str(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        return str(value)
+
     return CompactCsvTestItemRecord(
-        Site=record.get("Site", ""),
-        Project=record.get("Project", ""),
-        station=record.get("station", ""),
-        TSP=record.get("TSP", ""),
-        Model=record.get("Model", ""),
-        MO=record.get("MO", ""),
-        Line=record.get("Line", ""),
-        ISN=record.get("ISN", ""),
-        DeviceId=record.get("DeviceId", ""),
-        TestStatus=record.get("Test Status", ""),
-        TestStartTime=record.get("Test Start Time", ""),
-        TestEndTime=record.get("Test end Time", ""),
-        ErrorCode=record.get("ErrorCode", ""),
-        ErrorName=record.get("ErrorName", ""),
-        TestItemCount=len(test_items) if isinstance(test_items, list) else 0,
+        Site=_safe_str(record.get("Site")),
+        Project=_safe_str(record.get("Project")),
+        station=_safe_str(record.get("station")),
+        TSP=_safe_str(record.get("TSP")),
+        Model=_safe_str(record.get("Model")),
+        MO=_safe_str(record.get("MO")),
+        Line=_safe_str(record.get("Line")),
+        ISN=_safe_str(record.get("ISN")),
+        DeviceId=_safe_str(record.get("DeviceId")),
+        TestStatus=_safe_str(record.get("Test Status")),
+        TestStartTime=_safe_str(record.get("Test Start Time")),
+        TestEndTime=_safe_str(record.get("Test end Time")),
+        ErrorCode=_safe_str(record.get("ErrorCode")),
+        ErrorName=_safe_str(record.get("ErrorName")),
+        TestItemCount=int(test_item_count) if isinstance(test_item_count, int | str) else 0,
     )
+
+
+def _convert_to_compact_record_dict(record: dict[str, Any]) -> dict[str, Any]:
+    """Convert full record to compact dict with alias keys for caching/sorting."""
+    test_item_count = record.get("__test_item_count")
+    if test_item_count is None:
+        test_items = record.get("TestItem", [])
+        test_item_count = len(test_items) if isinstance(test_items, list) else 0
+
+    def _safe_str(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        return str(value)
+
+    return {
+        "Site": _safe_str(record.get("Site")),
+        "Project": _safe_str(record.get("Project")),
+        "station": _safe_str(record.get("station")),
+        "TSP": _safe_str(record.get("TSP")),
+        "Model": _safe_str(record.get("Model")),
+        "MO": _safe_str(record.get("MO")),
+        "Line": _safe_str(record.get("Line")),
+        "ISN": _safe_str(record.get("ISN")),
+        "DeviceId": _safe_str(record.get("DeviceId")),
+        "Test Status": _safe_str(record.get("Test Status")),
+        "Test Start Time": _safe_str(record.get("Test Start Time")),
+        "Test end Time": _safe_str(record.get("Test end Time")),
+        "ErrorCode": _safe_str(record.get("ErrorCode")),
+        "ErrorName": _safe_str(record.get("ErrorName")),
+        "TestItemCount": int(test_item_count) if isinstance(test_item_count, int | str) else 0,
+    }
 
 
 @router.post(
@@ -980,18 +1024,29 @@ async def get_csv_test_items_compact(
         request.end_time,
         request.test_status,
     )
+    compact_cache_key = f"{cache_key}:compact"
 
     cached = False
+    cached_compact = False
     records: list[dict[str, Any]] = []
+    compact_records: list[dict[str, Any]] = []
 
     # Try cache first
     if redis:
         try:
-            cached_data = redis.get(cache_key)
-            if cached_data:
-                records = json_loads(cached_data)
-                cached = True
-                logger.debug(f"Cache HIT (compact): {cache_key}")
+            if not request.test_item_filters:
+                cached_data = redis.get(compact_cache_key)
+                if cached_data:
+                    compact_records = json_loads(cached_data)
+                    cached = True
+                    cached_compact = True
+                    logger.debug(f"Cache HIT (compact): {compact_cache_key}")
+            if not cached_compact:
+                cached_data = redis.get(cache_key)
+                if cached_data:
+                    records = json_loads(cached_data)
+                    cached = True
+                    logger.debug(f"Cache HIT (full for compact): {cache_key}")
         except Exception as e:
             logger.warning(f"Redis GET error: {e}")
 
@@ -1001,7 +1056,7 @@ async def get_csv_test_items_compact(
     used_hybrid_strategy = False
     
     # Fetch from iPLAS if cache miss
-    if not cached:
+    if not cached_compact and not records:
         logger.debug(f"Cache MISS (compact): {cache_key}")
         records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy = await _fetch_chunked_from_iplas(
             request.site,
@@ -1023,12 +1078,30 @@ async def get_csv_test_items_compact(
             except Exception as e:
                 logger.warning(f"Redis SET error: {e}")
 
-    # Apply test item filtering (affects TestItemCount)
+    # If compact cache hit, we already have compact records ready
     filtered = bool(request.test_item_filters)
-    if filtered:
-        records = _filter_test_items(records, request.test_item_filters)
+    if not compact_records:
+        # Apply test item filtering (affects TestItemCount)
+        if filtered:
+            records = _filter_test_items(records, request.test_item_filters)
 
-    total_records = len(records)
+        for record in records:
+            test_items = record.get("TestItem", [])
+            record["__test_item_count"] = len(test_items) if isinstance(test_items, list) else 0
+            record.pop("TestItem", None)
+
+        compact_records = [_convert_to_compact_record_dict(r) for r in records]
+
+        # Cache compact records when unfiltered (safe cache key)
+        if redis and not filtered:
+            try:
+                serialized = json_dumps(compact_records)
+                redis.setex(compact_cache_key, IPLAS_CACHE_TTL, serialized)
+                logger.debug(f"Cached compact: {compact_cache_key} (TTL={IPLAS_CACHE_TTL}s)")
+            except Exception as e:
+                logger.warning(f"Redis SET error (compact): {e}")
+
+    total_records = len(compact_records)
 
     # Apply sorting if specified
     if request.sort_by:
@@ -1048,8 +1121,8 @@ async def get_csv_test_items_compact(
         sort_field = field_mapping.get(request.sort_by, request.sort_by)
         
         try:
-            records = sorted(
-                records,
+            compact_records = sorted(
+                compact_records,
                 key=lambda r: r.get(sort_field, "") or "",
                 reverse=request.sort_desc,
             )
@@ -1058,17 +1131,17 @@ async def get_csv_test_items_compact(
 
     # Apply pagination
     if request.offset:
-        records = records[request.offset :]
+        compact_records = compact_records[request.offset :]
     if request.limit:
-        records = records[: request.limit]
+        compact_records = compact_records[: request.limit]
 
-    # Convert to compact format
-    compact_records = [_convert_to_compact_record(r) for r in records]
+    # Convert to compact format (dicts are validated by FastAPI response_model)
+    compact_models = compact_records
 
     return CompactCsvTestItemResponse(
-        data=compact_records,
+        data=compact_models,
         total_records=total_records,
-        returned_records=len(compact_records),
+        returned_records=len(compact_models),
         filtered=filtered,
         cached=cached,
         possibly_truncated=possibly_truncated,

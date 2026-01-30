@@ -29,6 +29,8 @@ from app.schemas.iplas_schemas import (
     IplasDeviceListResponse,
     IplasDownloadAttachmentRequest,
     IplasDownloadAttachmentResponse,
+    IplasDownloadCsvLogRequest,
+    IplasDownloadCsvLogResponse,
     IplasIsnSearchRequest,
     IplasIsnSearchResponse,
     IplasRecordTestItemsRequest,
@@ -1770,6 +1772,84 @@ async def download_attachment(
             return IplasDownloadAttachmentResponse(
                 content=data["data"]["content"],
                 filename=data["data"].get("filename"),
+            )
+
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"iPLAS v1 API unavailable: {e}") from None
+
+
+# ============================================================================
+# iPLAS v1 Download CSV Test Log Endpoint
+# ============================================================================
+
+
+@router.post(
+    "/v1/download-csv-log",
+    response_model=IplasDownloadCsvLogResponse,
+    summary="Download CSV test logs from iPLAS",
+    description="""        
+    **Important**: The test_end_time field MUST include milliseconds (e.g., '2026/01/22 18:57:05.000')
+    
+    Returns CSV file content as string with optional filename from response header.
+    """,
+)
+async def download_csv_log(
+    request: IplasDownloadCsvLogRequest,
+) -> IplasDownloadCsvLogResponse:
+    """Download CSV test logs from iPLAS."""
+    if not request.query_list:
+        raise HTTPException(status_code=400, detail="query_list cannot be empty")
+
+    # Use the first item to determine site config
+    first_item = request.query_list[0]
+    site_config = _get_site_config(first_item.site, request.token)
+    url = f"{site_config['v1_url']}/raw/get_test_log"
+
+    # Build payload for iPLAS v1 API
+    payload = {
+        "query_list": [
+            {
+                "site": item.site,
+                "project": item.project,
+                "station": item.station,
+                "line": item.line,
+                "model": item.model,
+                "deviceid": item.deviceid,
+                "isn": item.isn,
+                "test_end_time": item.test_end_time,
+                "data_source": item.data_source,
+            }
+            for item in request.query_list
+        ],
+        "token": site_config["token"],
+    }
+
+    logger.info(f"Downloading CSV logs: {len(request.query_list)} items")
+
+    try:
+        async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+            response = await client.post(url, json=payload)
+
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"iPLAS v1 API error: {response.text}",
+                )
+
+            # Get filename from Content-Disposition header if available
+            filename = None
+            content_disposition = response.headers.get("content-disposition", "")
+            if "filename=" in content_disposition:
+                # Extract filename from header
+                import re
+                match = re.search(r'filename="?([^";\n]+)"?', content_disposition)
+                if match:
+                    filename = match.group(1)
+
+            # Return CSV content as string
+            return IplasDownloadCsvLogResponse(
+                content=response.text,
+                filename=filename,
             )
 
     except httpx.RequestError as e:

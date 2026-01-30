@@ -407,6 +407,52 @@ class IplasDownloadAttachmentResponse(BaseModel):
 
 
 # ============================================================================
+# iPLAS v1 Download CSV Test Log Schemas
+# ============================================================================
+
+
+class IplasDownloadCsvLogInfo(BaseModel):
+    """Single CSV log info for download request.
+    
+    Based on iPLAS v1 API: POST /raw/get_test_log
+    """
+
+    site: str = Field(..., description="Site identifier")
+    project: str = Field(..., description="Project identifier")
+    station: str = Field(..., description="Station display name")
+    line: str = Field(..., description="Production line")
+    model: str = Field(default="ALL", description="Model (usually 'ALL')")
+    deviceid: str = Field(..., description="Device ID")
+    isn: str = Field(..., description="Device serial number")
+    test_end_time: str = Field(
+        ..., 
+        description="Test end time in format 'YYYY/MM/DD HH:mm:ss.000' (MUST include .000)"
+    )
+    data_source: int = Field(default=0, description="Data source (usually 0)")
+
+
+class IplasDownloadCsvLogRequest(BaseModel):
+    """Request schema for downloading CSV test logs."""
+
+    query_list: list[IplasDownloadCsvLogInfo] = Field(
+        ..., description="List of test log queries to download"
+    )
+    token: str | None = Field(
+        default=None,
+        description="Optional user-provided token. If not provided, uses backend default.",
+    )
+
+
+class IplasDownloadCsvLogResponse(BaseModel):
+    """Response schema for download CSV log."""
+
+    content: str = Field(..., description="CSV file content as string")
+    filename: str | None = Field(
+        default=None, description="Filename from response header"
+    )
+
+
+# ============================================================================
 # iPLAS v2 Verify Endpoint Schemas
 # ============================================================================
 

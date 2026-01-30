@@ -317,36 +317,36 @@ async def _fetch_from_iplas(
             detail="iPLAS upstream connection failed. Please retry.",
         )
 
-        # Check for 5000 record limit error (HTTP 400 with specific message)
-        if response.status_code == 400:
-            response_text = response.text
-            if "documents count > 5000" in response_text or "5000" in response_text:
-                logger.warning(f"iPLAS 5000 record limit hit for {site}/{project}/{station} device={device_id}, range={begin_time} to {end_time}")
-                if raise_on_limit:
-                    raise IplasRecordLimitError(f"Query exceeds 5000 record limit for {station}")
-                # Fall through to normal error handling if not raise_on_limit
+    # Check for 5000 record limit error (HTTP 400 with specific message)
+    if response.status_code == 400:
+        response_text = response.text
+        if "documents count > 5000" in response_text or "5000" in response_text:
+            logger.warning(f"iPLAS 5000 record limit hit for {site}/{project}/{station} device={device_id}, range={begin_time} to {end_time}")
+            if raise_on_limit:
+                raise IplasRecordLimitError(f"Query exceeds 5000 record limit for {station}")
+            # Fall through to normal error handling if not raise_on_limit
 
-        if response.status_code != 200:
-            logger.error(f"iPLAS API error: {response.status_code} - {response.text}")
-            raise HTTPException(
-                status_code=response.status_code,
-                detail=f"iPLAS API error: {response.text}",
-            )
+    if response.status_code != 200:
+        logger.error(f"iPLAS API error: {response.status_code} - {response.text}")
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=f"iPLAS API error: {response.text}",
+        )
 
-        data = response.json()
+    data = response.json()
 
-        if data.get("statuscode") != 200:
-            raise HTTPException(
-                status_code=500,
-                detail=f"iPLAS API returned status {data.get('statuscode')}",
-            )
+    if data.get("statuscode") != 200:
+        raise HTTPException(
+            status_code=500,
+            detail=f"iPLAS API returned status {data.get('statuscode')}",
+        )
 
-        # Add station field to each record since iPLAS API doesn't include it
-        records = data.get("data", [])
-        for record in records:
-            record["station"] = station
+    # Add station field to each record since iPLAS API doesn't include it
+    records = data.get("data", [])
+    for record in records:
+        record["station"] = station
 
-        return records
+    return records
 
 
 # ============================================================================

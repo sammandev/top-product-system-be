@@ -67,6 +67,12 @@ class IplasTestItemNamesRequest(BaseModel):
         default=None,
         description="Optional user-provided token. If not provided, uses backend default.",
     )
+    # UPDATED: Add option to exclude BIN test items for scoring dialogs
+    exclude_bin: bool = Field(
+        default=False,
+        description="If true, excludes BIN/PASS-FAIL test items (is_bin=True) from results. "
+                    "Useful for scoring dialogs that only need CRITERIA and NON-CRITERIA items.",
+    )
 
 
 class IplasTestItemInfo(BaseModel):

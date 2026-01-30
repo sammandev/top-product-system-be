@@ -1335,6 +1335,11 @@ async def get_test_item_names(
     # Extract unique test item names
     test_items = _extract_unique_test_items(records)
 
+    # UPDATED: Filter out BIN items if requested (for scoring dialogs)
+    if request.exclude_bin:
+        test_items = [item for item in test_items if not item.is_bin]
+        logger.debug(f"Filtered out BIN items, remaining: {len(test_items)} test items")
+
     return IplasTestItemNamesResponse(
         test_items=test_items,
         total_count=len(test_items),
@@ -1850,35 +1855,9 @@ async def stream_csv_test_items(
 
     async def generate():
         """Generator that yields NDJSON records."""
-        redis = get_redis_client()
-        cache_key = _generate_cache_key(
-            request.site,
-            request.project,
-            request.station,
-            request.device_id,
-            request.begin_time,
-            request.end_time,
-            request.test_status,
-        )
-
-        records: list[dict[str, Any]] = []
-        cached = False
-
-        # Try cache first
-        if redis:
-            try:
-                cached_data = redis.get(cache_key)
-                if cached_data:
-                    records = json_loads(cached_data)
-                    cached = True
-                    logger.debug(f"Cache HIT (stream): {cache_key}")
-            except Exception as e:
-                logger.warning(f"Redis GET error in stream: {e}")
-
-        # Fetch from iPLAS if cache miss
-        if not cached:
-            logger.debug(f"Cache MISS (stream): {cache_key}")
-            records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid = await _fetch_chunked_from_iplas(
+        try:
+            redis = get_redis_client()
+            cache_key = _generate_cache_key(
                 request.site,
                 request.project,
                 request.station,
@@ -1886,76 +1865,126 @@ async def stream_csv_test_items(
                 request.begin_time,
                 request.end_time,
                 request.test_status,
-                request.token,
             )
 
-            # Store in cache for subsequent requests
+            records: list[dict[str, Any]] = []
+            cached = False
+
+            # Try cache first
             if redis:
                 try:
-                    serialized = json_dumps(records)
-                    redis.setex(cache_key, IPLAS_CACHE_TTL, serialized)
-                    logger.debug(f"Cached (stream): {cache_key} (TTL={IPLAS_CACHE_TTL}s)")
+                    cached_data = redis.get(cache_key)
+                    if cached_data:
+                        records = json_loads(cached_data)
+                        cached = True
+                        logger.debug(f"Cache HIT (stream): {cache_key}")
                 except Exception as e:
-                    logger.warning(f"Redis SET error in stream: {e}")
-        else:
-            possibly_truncated = False
-            chunks_fetched = 1
-            total_chunks = 1
-            used_hybrid = False
+                    logger.warning(f"Redis GET error in stream: {e}")
 
-        # Apply test item filtering if specified
-        if request.test_item_filters:
-            records = _filter_test_items(records, request.test_item_filters)
-
-        total_records = len(records)
-
-        # Apply sorting if specified
-        if request.sort_by:
-            field_mapping = {
-                "TestStartTime": "Test Start Time",
-                "TestEndTime": "Test end Time",
-                "TestStatus": "Test Status",
-                "ISN": "ISN",
-                "DeviceId": "DeviceId",
-                "ErrorCode": "ErrorCode",
-                "ErrorName": "ErrorName",
-                "station": "station",
-                "Site": "Site",
-                "Project": "Project",
-            }
-            sort_field = field_mapping.get(request.sort_by, request.sort_by)
-
-            try:
-                records = sorted(
-                    records,
-                    key=lambda r: r.get(sort_field, "") or "",
-                    reverse=request.sort_desc,
+            # Fetch from iPLAS if cache miss
+            if not cached:
+                logger.debug(f"Cache MISS (stream): {cache_key}")
+                records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid = await _fetch_chunked_from_iplas(
+                    request.site,
+                    request.project,
+                    request.station,
+                    request.device_id,
+                    request.begin_time,
+                    request.end_time,
+                    request.test_status,
+                    request.token,
                 )
-            except Exception as e:
-                logger.warning(f"Sorting by {sort_field} failed in stream: {e}")
 
-        # Yield metadata header first
-        metadata = {
-            "_metadata": True,
-            "total_records": total_records,
-            "filtered": bool(request.test_item_filters),
-            "cached": cached,
-            "possibly_truncated": possibly_truncated,
-            "chunks_fetched": chunks_fetched,
-            "total_chunks": total_chunks,
-            "used_hybrid_strategy": used_hybrid,
-        }
-        yield json_dumps(metadata) + b"\n"
+                # Store in cache for subsequent requests
+                if redis:
+                    try:
+                        serialized = json_dumps(records)
+                        redis.setex(cache_key, IPLAS_CACHE_TTL, serialized)
+                        logger.debug(f"Cached (stream): {cache_key} (TTL={IPLAS_CACHE_TTL}s)")
+                    except Exception as e:
+                        logger.warning(f"Redis SET error in stream: {e}")
+            else:
+                possibly_truncated = False
+                chunks_fetched = 1
+                total_chunks = 1
+                used_hybrid = False
 
-        # Apply pagination offset
-        start_idx = request.offset or 0
-        end_idx = start_idx + request.limit if request.limit else len(records)
+            # Apply test item filtering if specified
+            if request.test_item_filters:
+                records = _filter_test_items(records, request.test_item_filters)
 
-        # Yield records one by one
-        for record in records[start_idx:end_idx]:
-            # Convert to compact format for streaming (excludes TestItem array)
-            compact = _convert_to_compact_record(record)
-            yield json_dumps(compact.model_dump()) + b"\n"
+            total_records = len(records)
+
+            # Apply sorting if specified
+            if request.sort_by:
+                field_mapping = {
+                    "TestStartTime": "Test Start Time",
+                    "TestEndTime": "Test end Time",
+                    "TestStatus": "Test Status",
+                    "ISN": "ISN",
+                    "DeviceId": "DeviceId",
+                    "ErrorCode": "ErrorCode",
+                    "ErrorName": "ErrorName",
+                    "station": "station",
+                    "Site": "Site",
+                    "Project": "Project",
+                }
+                sort_field = field_mapping.get(request.sort_by, request.sort_by)
+
+                try:
+                    records = sorted(
+                        records,
+                        key=lambda r: r.get(sort_field, "") or "",
+                        reverse=request.sort_desc,
+                    )
+                except Exception as e:
+                    logger.warning(f"Sorting by {sort_field} failed in stream: {e}")
+
+            # Yield metadata header first
+            metadata = {
+                "_metadata": True,
+                "total_records": total_records,
+                "filtered": bool(request.test_item_filters),
+                "cached": cached,
+                "possibly_truncated": possibly_truncated,
+                "chunks_fetched": chunks_fetched,
+                "total_chunks": total_chunks,
+                "used_hybrid_strategy": used_hybrid,
+            }
+            yield json_dumps(metadata) + b"\n"
+
+            # Apply pagination offset
+            start_idx = request.offset or 0
+            end_idx = start_idx + request.limit if request.limit else len(records)
+
+            # Yield records one by one
+            for record in records[start_idx:end_idx]:
+                # Convert to compact format for streaming (excludes TestItem array)
+                compact = _convert_to_compact_record(record)
+                yield json_dumps(compact.model_dump()) + b"\n"
+
+        except HTTPException as e:
+            # Handle expected HTTP errors (e.g., upstream connection failures)
+            logger.error(f"HTTPException in stream generator: {e.status_code} - {e.detail}")
+            error_metadata = {
+                "_metadata": True,
+                "_error": True,
+                "error_code": e.status_code,
+                "error_message": e.detail,
+                "total_records": 0,
+            }
+            yield json_dumps(error_metadata) + b"\n"
+        except Exception as e:
+            # Handle unexpected errors
+            logger.exception(f"Unexpected error in stream generator: {e}")
+            error_metadata = {
+                "_metadata": True,
+                "_error": True,
+                "error_code": 500,
+                "error_message": f"Internal server error: {str(e)}",
+                "total_records": 0,
+            }
+            yield json_dumps(error_metadata) + b"\n"
 
     return StreamingResponse(
         generate(),

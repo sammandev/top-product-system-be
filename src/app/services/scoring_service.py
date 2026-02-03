@@ -251,9 +251,10 @@ def get_default_weight_by_name(item_name: str) -> float:
     """
     upper_name = item_name.upper()
 
-    # UPDATED: Weight 3 for test items matching "TX{number}_POW" pattern
-    # Matches: TX0_POW, TX1_POW, TX2_POW, TX12_POW, etc.
-    if re.search(r'TX\d+_POW', upper_name):
+    # UPDATED: Weight 3 for test items matching TX_POW patterns
+    # Matches: TX_POW, TX0_POW, TX1_POW, TX2_POW, TX12_POW, etc.
+    # Also matches: TX_POW_BLE_1M, TX1_POW_WIFI, etc.
+    if re.search(r"TX\d*_POW", upper_name):
         return 3.0
 
     # Weight 3 for test items containing "POW_OLD"
@@ -272,15 +273,10 @@ def get_default_weight_by_name(item_name: str) -> float:
 # ============================================================================
 
 
-def score_symmetrical(
-    value: float,
-    ucl: float,
-    lcl: float,
-    limit_score: float = DEFAULT_LIMIT_SCORE
-) -> tuple[float, float]:
+def score_symmetrical(value: float, ucl: float, lcl: float, limit_score: float = DEFAULT_LIMIT_SCORE) -> tuple[float, float]:
     """
     Calculate symmetrical score with centered target (UCL + LCL) / 2.
-    
+
     Score range: 0.00 - 10.00
     - Outside limits: 0.00
     - At limit boundary: limit_score (default 1.00)
@@ -299,19 +295,19 @@ def score_symmetrical(
     # Ensure lo < hi
     lo, hi = (lcl, ucl) if lcl <= ucl else (ucl, lcl)
     target = (lo + hi) / 2.0
-    
+
     # Hard fail: outside limits
     if value > hi or value < lo:
         return SCORE_MIN, abs(value - target)
-    
+
     # Exactly at boundary
     if value == lo or value == hi:
         return _round2(limit_score), abs(value - target)
-    
+
     # At target
     if value == target:
         return SCORE_MAX, 0.0
-    
+
     # Linear interpolation between boundary and target
     if value > target:
         # Upper half: target to UCL
@@ -323,20 +319,13 @@ def score_symmetrical(
         if target == lo:
             return _round2(limit_score), target - value
         frac = (value - lo) / (target - lo)
-    
+
     frac = _clamp(frac, 0.0, 1.0)
     score = limit_score + (SCORE_MAX - limit_score) * frac
     return _round2(_clamp(score, SCORE_MIN, SCORE_MAX)), abs(value - target)
 
 
-def score_asymmetrical(
-    value: float,
-    ucl: float,
-    lcl: float,
-    target: float,
-    policy: ScoringPolicy = ScoringPolicy.SYMMETRICAL,
-    limit_score: float = DEFAULT_LIMIT_SCORE
-) -> tuple[float, float]:
+def score_asymmetrical(value: float, ucl: float, lcl: float, target: float, policy: ScoringPolicy = ScoringPolicy.SYMMETRICAL, limit_score: float = DEFAULT_LIMIT_SCORE) -> tuple[float, float]:
     """
     Calculate asymmetrical score with user-defined target and policy.
 
@@ -422,11 +411,7 @@ def score_asymmetrical(
         return _round2(_clamp(score, SCORE_MIN, SCORE_MAX)), abs(value - target)
 
 
-def score_per_mask(
-    value: float,
-    ucl: float,
-    limit_score: float = DEFAULT_LIMIT_SCORE
-) -> tuple[float, float]:
+def score_per_mask(value: float, ucl: float, limit_score: float = DEFAULT_LIMIT_SCORE) -> tuple[float, float]:
     """
     Calculate PER/MASK score (UCL-only, lower is better with best=0).
 
@@ -470,13 +455,7 @@ def score_per_mask(
     return _round2(_clamp(score, SCORE_MIN, SCORE_MAX)), value
 
 
-def score_evm(
-    value: float,
-    ucl: float,
-    limit_score: float = DEFAULT_LIMIT_SCORE,
-    reference_best: float = -35.0,
-    exponent: float = 0.25
-) -> tuple[float, float]:
+def score_evm(value: float, ucl: float, limit_score: float = DEFAULT_LIMIT_SCORE, reference_best: float = -35.0, exponent: float = 0.25) -> tuple[float, float]:
     """
     Calculate EVM score (UCL-only, lower is better with gentle decay).
 
@@ -538,12 +517,7 @@ def score_evm(
 
 
 # UPDATED: Added throughput scoring function
-def score_throughput(
-    value: float,
-    ucl: float,
-    lcl: float | None = None,
-    limit_score: float = DEFAULT_LIMIT_SCORE
-) -> tuple[float, float]:
+def score_throughput(value: float, ucl: float, lcl: float | None = None, limit_score: float = DEFAULT_LIMIT_SCORE) -> tuple[float, float]:
     """
     Calculate Throughput score (higher is better, target = UCL).
 

@@ -1,13 +1,23 @@
 """
 Scoring Service
 
-Business logic for calculating test item scores using various algorithms.
+Business logic for calculating test item scores using the Universal 0-10 Scoring System.
+
+Score Range: 0.00 - 10.00
+- Outside limits: 0.00
+- Exactly at boundary (LCL/UCL): limit_score (default 1.00)
+- At target: 10.00
+- Linear interpolation between boundary and target
+
+Scoring Types:
+- Symmetrical: Target = midpoint of (UCL + LCL) / 2
+- Asymmetrical: User-defined custom target with Policy (symmetrical/higher/lower)
+- PER/MASK: UCL-only scoring, lower is better (best=0)
+- EVM: UCL-only scoring, lower is better (best=-35 dB, gentle decay)
 """
 
 import logging
-import math
 from statistics import mean, median, stdev
-from typing import Optional
 
 from ..schemas.scoring_schemas import (
     CalculateScoresRequest,
@@ -15,6 +25,7 @@ from ..schemas.scoring_schemas import (
     RecordScoreResult,
     ScoreSummary,
     ScoringConfig,
+    ScoringPolicy,
     ScoringType,
     SCORING_TYPE_DEFAULTS,
     TestItemScoreResult,
@@ -22,13 +33,18 @@ from ..schemas.scoring_schemas import (
 
 logger = logging.getLogger(__name__)
 
+# Score scale constants (0-10 scale as per new_scoring_top_product_v2.ipynb)
+SCORE_MAX = 10.0
+SCORE_MIN = 0.0
+DEFAULT_LIMIT_SCORE = 1.0  # Score at UCL/LCL boundaries
+
 
 # ============================================================================
 # Helper Functions
 # ============================================================================
 
 
-def _parse_float(value: str | float | None) -> Optional[float]:
+def _parse_float(value: str | float | None) -> float | None:
     """Safely parse a float value."""
     if value is None or value == "":
         return None
@@ -36,6 +52,16 @@ def _parse_float(value: str | float | None) -> Optional[float]:
         return float(value)
     except (ValueError, TypeError):
         return None
+
+
+def _clamp(x: float, lo: float, hi: float) -> float:
+    """Clamp a value between lo and hi."""
+    return lo if x < lo else hi if x > hi else x
+
+
+def _round2(x: float) -> float:
+    """Round to 2 decimal places."""
+    return round(x, 2)
 
 
 def _has_control_limits(test_item: dict) -> bool:
@@ -100,29 +126,94 @@ def _get_config_param(config: ScoringConfig | None, param: str, scoring_type: Sc
     return defaults.get(param)
 
 
+def _is_per_mask_item(test_item: dict) -> bool:
+    """
+    Check if test item is a PER or MASK item based on name pattern.
+
+    Rules:
+    - Contains "PER" (case insensitive)
+    - Contains "MASK" but NOT "MASK MARGIN" or "MASKING" (strict match)
+    - Must have UCL only (no LCL) for proper PER/MASK scoring
+
+    Args:
+        test_item: Test item dictionary
+
+    Returns:
+        True if this is a PER/MASK item suitable for per_mask scoring
+    """
+    name = str(test_item.get("NAME", "")).upper()
+
+    # Check for PER
+    if "PER" in name:
+        return True
+
+    # Check for MASK but not "MASK MARGIN" or compound words
+    if "MASK" in name:
+        # Exclude "MASK MARGIN", "MASKING", "MASKED", etc.
+        excluded_patterns = ["MASK MARGIN", "MASKING", "MASKED", "MASK_MARGIN"]
+        for pattern in excluded_patterns:
+            if pattern in name:
+                return False
+        return True
+
+    return False
+
+
+def _is_evm_item(test_item: dict) -> bool:
+    """
+    Check if test item is an EVM item based on name pattern.
+
+    Rules:
+    - Contains "EVM" (case insensitive)
+    - Must have UCL only (no LCL) - if LCL exists, use symmetrical scoring
+
+    Args:
+        test_item: Test item dictionary
+
+    Returns:
+        True if this is an EVM item suitable for EVM scoring
+    """
+    name = str(test_item.get("NAME", "")).upper()
+    return "EVM" in name
+
+
 # ============================================================================
 # Auto-Detection
 # ============================================================================
 
 
-def detect_scoring_type_by_name(item_name: str) -> ScoringType | None:
+def detect_scoring_type(test_item: dict) -> ScoringType:
     """
-    Detect scoring type based on test item NAME patterns.
+    Auto-detect the appropriate scoring type based on test item characteristics.
 
-    Returns:
-        ScoringType if a name-based pattern is matched, None otherwise.
+    Detection rules:
+    - BINARY: for PASS/FAIL values without numeric control limits
+    - PER_MASK: for items containing "PER" or "MASK" (strict) with UCL only
+    - EVM: for items containing "EVM" with UCL only (no LCL)
+    - SYMMETRICAL: for all other value items (UCL and/or LCL present)
+
+    User can manually change to ASYMMETRICAL or other types if needed.
     """
-    upper_name = item_name.upper()
+    if not _is_value_item(test_item):
+        return ScoringType.BINARY
 
-    # EVM scoring for test items containing "EVM" in their name
-    if "EVM" in upper_name:
-        return ScoringType.EVM
+    ucl = _parse_float(test_item.get("UCL"))
+    lcl = _parse_float(test_item.get("LCL"))
 
-    # PER/MASK scoring for test items containing "PER" or "MASK" in their name
-    if "PER" in upper_name or "MASK" in upper_name:
-        return ScoringType.PER_MASK
+    # Check for PER/MASK items (UCL-only, lower is better)
+    if _is_per_mask_item(test_item):
+        # PER/MASK typically has UCL only (upper limit for error rate)
+        if ucl is not None and lcl is None:
+            return ScoringType.PER_MASK
 
-    return None  # No name-based detection, use value-based detection
+    # Check for EVM items (UCL-only, lower is better with gentle decay)
+    if _is_evm_item(test_item):
+        # EVM typically has UCL only - if LCL exists, use symmetrical scoring
+        if ucl is not None and lcl is None:
+            return ScoringType.EVM
+
+    # All other value items default to SYMMETRICAL
+    return ScoringType.SYMMETRICAL
 
 
 def get_default_weight_by_name(item_name: str) -> float:
@@ -145,237 +236,286 @@ def get_default_weight_by_name(item_name: str) -> float:
     return 1.0  # Default weight
 
 
-def detect_scoring_type(test_item: dict) -> ScoringType:
-    """
-    Auto-detect the appropriate scoring type based on test item characteristics.
-
-    Rules:
-    1. NAME-based detection (takes precedence):
-       - "EVM" in name -> EVM
-       - "PER" or "MASK" in name -> PER_MASK
-    2. Binary (PASS/FAIL value) -> BINARY
-    3. Only UCL, typically negative values -> EVM
-    4. Only LCL (lower limit only) -> THROUGHPUT
-    5. UCL and LCL, symmetric -> SYMMETRICAL
-    6. Only UCL, values near 0 -> PER_MASK
-    """
-    # UPDATED: First check name-based detection (takes precedence)
-    item_name = test_item.get("NAME", "")
-    if item_name:
-        name_based_type = detect_scoring_type_by_name(item_name)
-        if name_based_type is not None:
-            return name_based_type
-
-    if not _is_value_item(test_item):
-        return ScoringType.BINARY
-
-    ucl = _parse_float(test_item.get("UCL"))
-    lcl = _parse_float(test_item.get("LCL"))
-    value = _parse_float(test_item.get("VALUE"))
-
-    # Only UCL defined (no LCL)
-    if ucl is not None and lcl is None:
-        # Check if values are typically negative (EVM-like)
-        if value is not None and value < 0:
-            return ScoringType.EVM
-        # Check if values are near 0 (PER/MASK-like)
-        if value is not None and abs(value) < ucl * 0.5:
-            return ScoringType.PER_MASK
-        return ScoringType.EVM  # Default for UCL-only
-
-    # Only LCL defined (throughput-like)
-    if ucl is None and lcl is not None:
-        return ScoringType.THROUGHPUT
-
-    # Both limits defined
-    if ucl is not None and lcl is not None:
-        return ScoringType.SYMMETRICAL
-
-    # No limits - treat as binary
-    return ScoringType.BINARY
-
-
 # ============================================================================
-# Scoring Algorithms
+# Scoring Algorithms (Universal 0-10 Scale)
 # ============================================================================
 
 
-def score_symmetrical(value: float, ucl: float, lcl: float, alpha: float = 0.8) -> tuple[float, float]:
+def score_symmetrical(
+    value: float,
+    ucl: float,
+    lcl: float,
+    limit_score: float = DEFAULT_LIMIT_SCORE
+) -> tuple[float, float]:
     """
-    Calculate symmetrical score with centered target.
+    Calculate symmetrical score with centered target (UCL + LCL) / 2.
+    
+    Score range: 0.00 - 10.00
+    - Outside limits: 0.00
+    - At limit boundary: limit_score (default 1.00)
+    - At target (center): 10.00
+    - Linear interpolation between boundary and target
 
     Args:
         value: Measured value
         ucl: Upper Control Limit
         lcl: Lower Control Limit
-        alpha: Minimum score at limit boundary (default: 0.8)
+        limit_score: Score at limit boundary (default: 1.0)
 
     Returns:
-        Tuple of (score, deviation)
+        Tuple of (score, deviation from target)
     """
-    target = (ucl + lcl) / 2
-    limit = (ucl - lcl) / 2
-
-    if limit <= 0:
-        return 1.0, 0.0
-
-    deviation = abs(value - target)
-
-    if deviation >= limit:
-        return alpha, deviation
-
-    score = alpha + (1 - alpha) * (limit - deviation) / limit
-    return min(1.0, max(0.0, score)), deviation
-
-
-def score_symmetrical_nl(value: float, ucl: float, lcl: float, target_score: float = 0.8, target_deviation: float = 2.5) -> tuple[float, float]:
-    """
-    Calculate non-linear (Gaussian) symmetrical score.
-
-    Args:
-        value: Measured value
-        ucl: Upper Control Limit
-        lcl: Lower Control Limit
-        target_score: Score at target_deviation (default: 0.8)
-        target_deviation: Deviation where score = target_score (default: 2.5)
-
-    Returns:
-        Tuple of (score, deviation)
-    """
-    target = (ucl + lcl) / 2
-    deviation = abs(value - target)
-
-    # Calculate lambda for Gaussian decay
-    # score = exp(-λ × dev²), solve for λ: λ = -ln(target_score) / target_dev²
-    if target_deviation <= 0 or target_score <= 0:
-        return 1.0, deviation
-
-    lmbda = -math.log(target_score + 1e-9) / (target_deviation**2)
-    score = math.exp(-lmbda * (deviation**2))
-
-    return min(1.0, max(0.0, score)), deviation
-
-
-def score_evm(value: float, target_evm: float = -30.0, target_score: float = 0.9) -> tuple[float, float]:
-    """
-    Calculate score for EVM-type test items (lower/more negative is better).
-
-    Args:
-        value: Measured EVM value (negative dB)
-        target_evm: Target EVM value for target_score (default: -30.0)
-        target_score: Score at target_evm (default: 0.9)
-
-    Returns:
-        Tuple of (score, deviation_from_0)
-    """
-    # EVM: more negative is better, 0 is worst
-    # score = 1 - exp(-λ × measured²)
-    if target_score >= 1 or target_evm >= 0:
-        return 0.5, abs(value)
-
-    lmbda = -math.log(1 - target_score + 1e-9) / (target_evm**2)
-    score = 1 - math.exp(-lmbda * (value**2))
-
-    return min(1.0, max(0.0, score)), abs(value)
-
-
-def score_throughput(value: float, lcl: float, target: float | None = None, min_score: float = 0.4, target_score: float = 0.9) -> tuple[float, float]:
-    """
-    Calculate score for throughput-type test items (higher is better).
-
-    Args:
-        value: Measured throughput value
-        lcl: Lower Control Limit (minimum acceptable)
-        target: Target throughput (if None, uses 1.5 × LCL)
-        min_score: Score at LCL (default: 0.4)
-        target_score: Score at target (default: 0.9)
-
-    Returns:
-        Tuple of (score, deviation_from_target)
-    """
-    if target is None or target <= lcl:
-        target = lcl * 1.5 if lcl > 0 else lcl + 100
-
-    if value < lcl:
-        return 0.0, target - value
-
-    if value < target:
-        # Linear region: LCL to target
-        m = (target_score - min_score) / (target - lcl)
-        score = m * value + (min_score - m * lcl)
+    # Ensure lo < hi
+    lo, hi = (lcl, ucl) if lcl <= ucl else (ucl, lcl)
+    target = (lo + hi) / 2.0
+    
+    # Hard fail: outside limits
+    if value > hi or value < lo:
+        return SCORE_MIN, abs(value - target)
+    
+    # Exactly at boundary
+    if value == lo or value == hi:
+        return _round2(limit_score), abs(value - target)
+    
+    # At target
+    if value == target:
+        return SCORE_MAX, 0.0
+    
+    # Linear interpolation between boundary and target
+    if value > target:
+        # Upper half: target to UCL
+        if hi == target:
+            return _round2(limit_score), value - target
+        frac = (hi - value) / (hi - target)
     else:
-        # Exponential region: above target
-        lmbda = -math.log(1 - target_score + 1e-9) / (target**2)
-        score = 1 - math.exp(-lmbda * (value**2))
+        # Lower half: LCL to target
+        if target == lo:
+            return _round2(limit_score), target - value
+        frac = (value - lo) / (target - lo)
+    
+    frac = _clamp(frac, 0.0, 1.0)
+    score = limit_score + (SCORE_MAX - limit_score) * frac
+    return _round2(_clamp(score, SCORE_MIN, SCORE_MAX)), abs(value - target)
 
-    return min(1.0, max(0.0, score)), abs(target - value)
 
-
-def score_asymmetrical(value: float, ucl: float, lcl: float, target: float, alpha: float = 0.4) -> tuple[float, float]:
+def score_asymmetrical(
+    value: float,
+    ucl: float,
+    lcl: float,
+    target: float,
+    policy: ScoringPolicy = ScoringPolicy.SYMMETRICAL,
+    limit_score: float = DEFAULT_LIMIT_SCORE
+) -> tuple[float, float]:
     """
-    Calculate asymmetrical score with user-defined target.
+    Calculate asymmetrical score with user-defined target and policy.
+
+    Score range: 0.00 - 10.00
+    - Outside limits: 0.00
+    - At limit boundary: limit_score (default 1.00)
+    - At target: 10.00
+
+    Policy determines scoring behavior:
+    - SYMMETRICAL: Peak at target, linear decay to both limits
+    - HIGHER: Perfect score at/above target, decay below target to LCL
+    - LOWER: Perfect score at/below target, decay above target to UCL
 
     Args:
         value: Measured value
         ucl: Upper Control Limit
         lcl: Lower Control Limit
         target: User-defined target (between LCL and UCL)
-        alpha: Minimum score at limit boundary (default: 0.4)
+        policy: Scoring policy (symmetrical/higher/lower)
+        limit_score: Score at limit boundary (default: 1.0)
 
     Returns:
-        Tuple of (score, deviation)
+        Tuple of (score, deviation from target)
     """
-    if value >= target:
-        limit = ucl - target
-        deviation = value - target
-    else:
-        limit = target - lcl
-        deviation = target - value
+    # Ensure lo < hi
+    lo, hi = (lcl, ucl) if lcl <= ucl else (ucl, lcl)
 
-    if limit <= 0:
-        return 1.0, 0.0
+    # Clamp target within limits
+    target = _clamp(target, lo, hi)
 
-    if deviation >= limit:
-        return alpha, deviation
+    # Hard fail: outside limits
+    if value > hi or value < lo:
+        return SCORE_MIN, abs(value - target)
 
-    score = alpha + (1 - alpha) * (limit - deviation) / limit
-    return min(1.0, max(0.0, score)), deviation
+    # Exactly at boundary
+    if value == lo or value == hi:
+        return _round2(limit_score), abs(value - target)
+
+    # At target
+    if value == target:
+        return SCORE_MAX, 0.0
+
+    # Policy-based scoring
+    if policy == ScoringPolicy.HIGHER:
+        # Perfect score at/above target, decay below
+        if value >= target:
+            return SCORE_MAX, 0.0
+        # Decay from target to LCL
+        if target == lo:
+            return _round2(limit_score), target - value
+        frac = (value - lo) / (target - lo)
+        frac = _clamp(frac, 0.0, 1.0)
+        score = limit_score + (SCORE_MAX - limit_score) * frac
+        return _round2(_clamp(score, SCORE_MIN, SCORE_MAX)), target - value
+
+    elif policy == ScoringPolicy.LOWER:
+        # Perfect score at/below target, decay above
+        if value <= target:
+            return SCORE_MAX, 0.0
+        # Decay from target to UCL
+        if hi == target:
+            return _round2(limit_score), value - target
+        frac = (hi - value) / (hi - target)
+        frac = _clamp(frac, 0.0, 1.0)
+        score = limit_score + (SCORE_MAX - limit_score) * frac
+        return _round2(_clamp(score, SCORE_MIN, SCORE_MAX)), value - target
+
+    else:  # SYMMETRICAL (default)
+        # Linear interpolation with asymmetric slopes (peak at target)
+        if value > target:
+            # Upper half: target to UCL
+            if hi == target:
+                return _round2(limit_score), value - target
+            frac = (hi - value) / (hi - target)
+        else:
+            # Lower half: LCL to target
+            if target == lo:
+                return _round2(limit_score), target - value
+            frac = (value - lo) / (target - lo)
+
+        frac = _clamp(frac, 0.0, 1.0)
+        score = limit_score + (SCORE_MAX - limit_score) * frac
+        return _round2(_clamp(score, SCORE_MIN, SCORE_MAX)), abs(value - target)
 
 
-def score_per_mask(value: float, target: float = 0.0, max_deviation: float = 10.0) -> tuple[float, float]:
+def score_per_mask(
+    value: float,
+    ucl: float,
+    limit_score: float = DEFAULT_LIMIT_SCORE
+) -> tuple[float, float]:
     """
-    Calculate score for PER/MASK test items (0 is best, linear decay).
+    Calculate PER/MASK score (UCL-only, lower is better with best=0).
+
+    Score range: 0.00 - 10.00
+    - Above UCL: 0.00 (fail)
+    - At UCL: limit_score (default 1.00)
+    - At 0 (best): 10.00
+    - Linear interpolation between 0 and UCL
+
+    This scoring is used for Packet Error Rate (PER) and MASK test items
+    where 0 is the ideal value and anything above UCL is a failure.
 
     Args:
-        value: Measured value
-        target: Target value (default: 0)
-        max_deviation: Maximum acceptable deviation (default: 10)
+        value: Measured value (PER/MASK reading)
+        ucl: Upper Control Limit (failure threshold)
+        limit_score: Score at UCL boundary (default: 1.0)
 
     Returns:
-        Tuple of (score, deviation)
+        Tuple of (score, deviation from best=0)
     """
-    deviation = abs(value - target)
+    best = 0.0  # PER/MASK: best value is 0
 
-    if max_deviation <= 0:
-        return 1.0 if deviation == 0 else 0.0, deviation
+    # Hard fail: above UCL
+    if value > ucl:
+        return SCORE_MIN, value
 
-    gradient = 1.0 / max_deviation
-    score = max(0.0, 1.0 - gradient * deviation)
+    # At UCL boundary
+    if value == ucl:
+        return _round2(limit_score), ucl
 
-    return score, deviation
+    # At or below best (perfect score)
+    if value <= best:
+        return SCORE_MAX, 0.0
+
+    # Linear interpolation between best (0) and UCL
+    # frac = 1 at best, 0 at UCL
+    frac = (ucl - value) / (ucl - best)
+    frac = _clamp(frac, 0.0, 1.0)
+    score = limit_score + (SCORE_MAX - limit_score) * frac
+    return _round2(_clamp(score, SCORE_MIN, SCORE_MAX)), value
+
+
+def score_evm(
+    value: float,
+    ucl: float,
+    limit_score: float = DEFAULT_LIMIT_SCORE,
+    reference_best: float = -35.0,
+    exponent: float = 0.25
+) -> tuple[float, float]:
+    """
+    Calculate EVM score (UCL-only, lower is better with gentle decay).
+
+    Score range: 0.00 - 10.00
+    - Above UCL: 0.00 (fail)
+    - At UCL: limit_score (default 1.00)
+    - At reference_best (-35 dB): 10.00
+    - Gentle decay using exponent (default 0.25 = gentler than linear)
+
+    This scoring is used for Error Vector Magnitude (EVM) test items where
+    lower values are better. EVM values are typically in dB (negative).
+    The gentle decay (exponent < 1) means scores stay high for longer as
+    values move away from reference_best.
+
+    Algorithm from new_scoring_top_product_v2.ipynb:
+        dist = (value - reference_best) / (ucl - reference_best)
+        frac = (1.0 - dist) ** exponent
+        score = limit_score + (10.0 - limit_score) * frac
+
+    Args:
+        value: Measured EVM value (typically negative dB)
+        ucl: Upper Control Limit (failure threshold)
+        limit_score: Score at UCL boundary (default: 1.0)
+        reference_best: Best possible EVM value (default: -35.0 dB)
+        exponent: Decay exponent (default: 0.25, gentler than linear)
+
+    Returns:
+        Tuple of (score, deviation from reference_best)
+    """
+    # Hard fail: above UCL
+    if value > ucl:
+        return SCORE_MIN, abs(value - reference_best)
+
+    # At UCL boundary
+    if value == ucl:
+        return _round2(limit_score), abs(ucl - reference_best)
+
+    # At or below reference_best (perfect score)
+    if value <= reference_best:
+        return SCORE_MAX, 0.0
+
+    # Edge case: UCL equals reference_best
+    if ucl == reference_best:
+        return _round2(limit_score), 0.0
+
+    # Gentle decay using exponent (from notebook algorithm)
+    # dist: normalized distance from reference_best to UCL (0 to 1)
+    dist = (value - reference_best) / (ucl - reference_best)
+    dist = _clamp(dist, 0.0, 1.0)
+
+    # frac: decay fraction using exponent (0.25 = gentler than linear)
+    # When dist=0 (at ref), frac=1
+    # When dist=1 (at UCL), frac=0
+    frac = (1.0 - dist) ** exponent
+    frac = _clamp(frac, 0.0, 1.0)
+
+    score = limit_score + (SCORE_MAX - limit_score) * frac
+    return _round2(_clamp(score, SCORE_MIN, SCORE_MAX)), abs(value - reference_best)
 
 
 def score_binary(status: str) -> float:
     """
-    Calculate binary score (PASS = 1.0, FAIL = 0.0).
+    Calculate binary score (PASS = 10.0, FAIL = 0.0).
 
     Args:
         status: Test status ("PASS" or "FAIL")
 
     Returns:
-        Score (1.0 or 0.0)
+        Score (10.0 or 0.0)
     """
-    return 1.0 if status.upper() == "PASS" else 0.0
+    return SCORE_MAX if status.upper() == "PASS" else SCORE_MIN
 
 
 # ============================================================================
@@ -385,14 +525,14 @@ def score_binary(status: str) -> float:
 
 def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> TestItemScoreResult:
     """
-    Calculate score for a single test item.
+    Calculate score for a single test item using the Universal 0-10 Scoring System.
 
     Args:
         test_item: Test item dictionary from iPLAS
         config: Optional scoring configuration
 
     Returns:
-        TestItemScoreResult with score and metadata
+        TestItemScoreResult with score (0-10) and metadata
     """
     name = test_item.get("NAME", "")
     status = test_item.get("STATUS", "FAIL")
@@ -407,43 +547,57 @@ def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> Tes
     # Determine scoring type
     scoring_type = config.scoring_type if config else detect_scoring_type(test_item)
 
+    # Get limit_score parameter (default 1.0 on 0-10 scale)
+    limit_score = _get_config_param(config, "limit_score", scoring_type) or DEFAULT_LIMIT_SCORE
+
+    # Get policy for asymmetrical scoring
+    policy = config.policy if config else ScoringPolicy.SYMMETRICAL
+
     # Calculate score based on type
-    score = 0.0
+    score = SCORE_MIN
     deviation = None
+    result_policy: ScoringPolicy | None = None
 
     if scoring_type == ScoringType.BINARY or value is None:
         score = score_binary(status)
         scoring_type = ScoringType.BINARY
 
-    elif scoring_type == ScoringType.SYMMETRICAL:
-        if ucl is not None and lcl is not None:
-            alpha = _get_config_param(config, "alpha", scoring_type) or 0.8
-            score, deviation = score_symmetrical(value, ucl, lcl, alpha)
+    elif scoring_type == ScoringType.PER_MASK:
+        # PER/MASK scoring: UCL-only, lower is better (best=0)
+        if ucl is not None:
+            score, deviation = score_per_mask(value, ucl, limit_score)
         else:
-            score = score_binary(status)
-            scoring_type = ScoringType.BINARY
-
-    elif scoring_type == ScoringType.SYMMETRICAL_NL:
-        if ucl is not None and lcl is not None:
-            target_score = _get_config_param(config, "target_score", scoring_type) or 0.8
-            target_deviation = _get_config_param(config, "target_deviation", scoring_type) or 2.5
-            score, deviation = score_symmetrical_nl(value, ucl, lcl, target_score, target_deviation)
-        else:
+            # No UCL - fall back to binary
             score = score_binary(status)
             scoring_type = ScoringType.BINARY
 
     elif scoring_type == ScoringType.EVM:
-        target_evm = _get_config_param(config, "target", scoring_type) or -30.0
-        target_score = _get_config_param(config, "target_score", scoring_type) or 0.9
-        score, deviation = score_evm(value, target_evm, target_score)
-
-    elif scoring_type == ScoringType.THROUGHPUT:
-        if lcl is not None:
-            target = _get_config_param(config, "target", scoring_type)
-            min_score = _get_config_param(config, "min_score", scoring_type) or 0.4
-            target_score = _get_config_param(config, "target_score", scoring_type) or 0.9
-            score, deviation = score_throughput(value, lcl, target, min_score, target_score)
+        # EVM scoring: UCL-only, lower is better with gentle decay (best=-35)
+        if ucl is not None:
+            # Get EVM-specific parameters from config or defaults
+            defaults = SCORING_TYPE_DEFAULTS.get(ScoringType.EVM, {})
+            reference_best = defaults.get("reference_best", -35.0)
+            exponent = defaults.get("exponent", 0.25)
+            score, deviation = score_evm(value, ucl, limit_score, reference_best, exponent)
         else:
+            # No UCL - fall back to binary
+            score = score_binary(status)
+            scoring_type = ScoringType.BINARY
+
+    elif scoring_type == ScoringType.SYMMETRICAL:
+        if ucl is not None and lcl is not None:
+            score, deviation = score_symmetrical(value, ucl, lcl, limit_score)
+        elif ucl is not None:
+            # UCL-only: treat as if LCL is far below (value item, higher is better up to UCL)
+            # Use value as lower bound if value < ucl
+            inferred_lcl = min(value - abs(ucl - value), value * 0.5) if value is not None else ucl - 10
+            score, deviation = score_symmetrical(value, ucl, inferred_lcl, limit_score)
+        elif lcl is not None:
+            # LCL-only: treat as if UCL is far above (higher is better)
+            inferred_ucl = max(value + abs(value - lcl), value * 1.5) if value is not None else lcl + 10
+            score, deviation = score_symmetrical(value, inferred_ucl, lcl, limit_score)
+        else:
+            # No limits - binary fallback
             score = score_binary(status)
             scoring_type = ScoringType.BINARY
 
@@ -451,20 +605,28 @@ def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> Tes
         if ucl is not None and lcl is not None:
             target = _get_config_param(config, "target", scoring_type)
             if target is None:
-                target = (ucl + lcl) / 2  # Fall back to center
-            alpha = _get_config_param(config, "alpha", scoring_type) or 0.4
-            score, deviation = score_asymmetrical(value, ucl, lcl, target, alpha)
+                target = (ucl + lcl) / 2  # Fall back to center if no target specified
+            score, deviation = score_asymmetrical(value, ucl, lcl, target, policy, limit_score)
+            result_policy = policy  # Track policy used
         else:
+            # Missing limits - fall back to binary
             score = score_binary(status)
             scoring_type = ScoringType.BINARY
 
-    elif scoring_type == ScoringType.PER_MASK:
-        max_dev = _get_config_param(config, "max_deviation", scoring_type)
-        if max_dev is None:
-            max_dev = ucl if ucl is not None else 10.0
-        score, deviation = score_per_mask(value, 0.0, max_dev)
+    # Normalize score to 0-1 range for storage (divide by 10)
+    normalized_score = score / SCORE_MAX
 
-    return TestItemScoreResult(test_item_name=name, value=value, ucl=ucl, lcl=lcl, status=status, scoring_type=scoring_type, score=score, deviation=deviation)
+    return TestItemScoreResult(
+        test_item_name=name,
+        value=value,
+        ucl=ucl,
+        lcl=lcl,
+        status=status,
+        scoring_type=scoring_type,
+        policy=result_policy,
+        score=normalized_score,  # Store as 0-1, display as 0-10
+        deviation=deviation
+    )
 
 
 def score_record(record: dict, config_map: dict[str, ScoringConfig], include_binary_in_overall: bool = True) -> RecordScoreResult:

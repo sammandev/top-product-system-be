@@ -115,6 +115,8 @@ class TestItemScoreResult(BaseModel):
     policy: ScoringPolicy | None = None  # Only for asymmetrical scoring
     score: float = Field(ge=0, le=1)
     deviation: float | None = None
+    weight: float = Field(default=1.0, description="Weight used for this test item in scoring")
+    target: float | None = Field(default=None, description="Target value used for scoring")
 
 
 class RecordScoreResult(BaseModel):

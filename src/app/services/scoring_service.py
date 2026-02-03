@@ -642,19 +642,25 @@ def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> Tes
     # Get policy for asymmetrical scoring
     policy = config.policy if config else ScoringPolicy.SYMMETRICAL
 
+    # Get weight - use config weight if available, otherwise use name-based default
+    weight = config.weight if config else get_default_weight_by_name(name)
+
     # Calculate score based on type
     score = SCORE_MIN
     deviation = None
     result_policy: ScoringPolicy | None = None
+    target: float | None = None  # Track target for this scoring type
 
     if scoring_type == ScoringType.BINARY or value is None:
         score = score_binary(status)
         scoring_type = ScoringType.BINARY
+        target = None  # Binary has no target
 
     elif scoring_type == ScoringType.PER_MASK:
         # PER/MASK scoring: UCL-only, lower is better (best=0)
         if ucl is not None:
             score, deviation = score_per_mask(value, ucl, limit_score)
+            target = 0.0  # Target is 0 for PER/MASK (lower is better)
         else:
             # No UCL - fall back to binary
             score = score_binary(status)
@@ -668,6 +674,7 @@ def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> Tes
             reference_best = defaults.get("reference_best", -35.0)
             exponent = defaults.get("exponent", 0.25)
             score, deviation = score_evm(value, ucl, limit_score, reference_best, exponent)
+            target = reference_best  # Target is the reference best value (-35 dB)
         else:
             # No UCL - fall back to binary
             score = score_binary(status)
@@ -676,15 +683,18 @@ def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> Tes
     elif scoring_type == ScoringType.SYMMETRICAL:
         if ucl is not None and lcl is not None:
             score, deviation = score_symmetrical(value, ucl, lcl, limit_score)
+            target = (ucl + lcl) / 2  # Target is center for symmetrical
         elif ucl is not None:
             # UCL-only: treat as if LCL is far below (value item, higher is better up to UCL)
             # Use value as lower bound if value < ucl
             inferred_lcl = min(value - abs(ucl - value), value * 0.5) if value is not None else ucl - 10
             score, deviation = score_symmetrical(value, ucl, inferred_lcl, limit_score)
+            target = (ucl + inferred_lcl) / 2  # Target is center
         elif lcl is not None:
             # LCL-only: treat as if UCL is far above (higher is better)
             inferred_ucl = max(value + abs(value - lcl), value * 1.5) if value is not None else lcl + 10
             score, deviation = score_symmetrical(value, inferred_ucl, lcl, limit_score)
+            target = (inferred_ucl + lcl) / 2  # Target is center
         else:
             # No limits - binary fallback
             score = score_binary(status)
@@ -707,6 +717,7 @@ def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> Tes
         # Throughput scoring: higher is better, target=UCL
         if ucl is not None:
             score, deviation = score_throughput(value, ucl, lcl, limit_score)
+            target = ucl  # Target is UCL for throughput (higher is better)
         else:
             # No UCL - fall back to binary
             score = score_binary(status)
@@ -724,7 +735,9 @@ def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> Tes
         scoring_type=scoring_type,
         policy=result_policy,
         score=normalized_score,  # Store as 0-1, display as 0-10
-        deviation=deviation
+        deviation=deviation,
+        weight=weight,
+        target=target,
     )
 
 

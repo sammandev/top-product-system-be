@@ -17,6 +17,7 @@ Scoring Types:
 """
 
 import logging
+import re
 from statistics import mean, median, stdev
 
 from ..schemas.scoring_schemas import (
@@ -177,6 +178,25 @@ def _is_evm_item(test_item: dict) -> bool:
     return "EVM" in name
 
 
+# UPDATED: Added throughput item detection
+def _is_throughput_item(test_item: dict) -> bool:
+    """
+    Check if test item is a Throughput item based on name pattern.
+
+    Rules:
+    - Contains "THROUGHPUT" (case insensitive)
+    - Higher value is better, score increases as value approaches UCL
+
+    Args:
+        test_item: Test item dictionary
+
+    Returns:
+        True if this is a Throughput item suitable for throughput scoring
+    """
+    name = str(test_item.get("NAME", "")).upper()
+    return "THROUGHPUT" in name
+
+
 # ============================================================================
 # Auto-Detection
 # ============================================================================
@@ -212,6 +232,12 @@ def detect_scoring_type(test_item: dict) -> ScoringType:
         if ucl is not None and lcl is None:
             return ScoringType.EVM
 
+    # UPDATED: Check for Throughput items (higher is better, target=UCL)
+    if _is_throughput_item(test_item):
+        # Throughput scoring: higher value is better, target is UCL
+        if ucl is not None:
+            return ScoringType.THROUGHPUT
+
     # All other value items default to SYMMETRICAL
     return ScoringType.SYMMETRICAL
 
@@ -224,6 +250,11 @@ def get_default_weight_by_name(item_name: str) -> float:
         Weight value (default 1.0 if no pattern matches).
     """
     upper_name = item_name.upper()
+
+    # UPDATED: Weight 3 for test items matching "TX{number}_POW" pattern
+    # Matches: TX0_POW, TX1_POW, TX2_POW, TX12_POW, etc.
+    if re.search(r'TX\d+_POW', upper_name):
+        return 3.0
 
     # Weight 3 for test items containing "POW_OLD"
     if "POW_OLD" in upper_name:
@@ -422,13 +453,14 @@ def score_per_mask(
     if value > ucl:
         return SCORE_MIN, value
 
-    # At UCL boundary
-    if value == ucl:
-        return _round2(limit_score), ucl
-
-    # At or below best (perfect score)
+    # UPDATED: Check for perfect score FIRST (at or below best)
+    # This handles edge case where value=0 and UCL=0
     if value <= best:
         return SCORE_MAX, 0.0
+
+    # At UCL boundary (only reached if value > best)
+    if value == ucl:
+        return _round2(limit_score), ucl
 
     # Linear interpolation between best (0) and UCL
     # frac = 1 at best, 0 at UCL
@@ -503,6 +535,63 @@ def score_evm(
 
     score = limit_score + (SCORE_MAX - limit_score) * frac
     return _round2(_clamp(score, SCORE_MIN, SCORE_MAX)), abs(value - reference_best)
+
+
+# UPDATED: Added throughput scoring function
+def score_throughput(
+    value: float,
+    ucl: float,
+    lcl: float | None = None,
+    limit_score: float = DEFAULT_LIMIT_SCORE
+) -> tuple[float, float]:
+    """
+    Calculate Throughput score (higher is better, target = UCL).
+
+    Score range: 0.00 - 10.00
+    - Above UCL (target): 10.00 (perfect, even exceeded target)
+    - At UCL: 10.00 (perfect)
+    - At LCL (or 0 if no LCL): limit_score (default 1.00)
+    - Below LCL: 0.00 (fail)
+    - Linear interpolation between LCL and UCL
+
+    This scoring is used for Throughput test items where higher values
+    are better and the target is the UCL (upper spec limit).
+
+    Args:
+        value: Measured throughput value
+        ucl: Upper Control Limit (target - the ideal value)
+        lcl: Lower Control Limit (optional, defaults to 0)
+        limit_score: Score at LCL boundary (default: 1.0)
+
+    Returns:
+        Tuple of (score, deviation from UCL)
+    """
+    # Use LCL if provided, otherwise default to 0
+    lower = lcl if lcl is not None else 0.0
+    target = ucl  # Target is UCL for throughput
+
+    # At or above UCL (target) - perfect score
+    if value >= ucl:
+        return SCORE_MAX, 0.0
+
+    # Below LCL - fail
+    if value < lower:
+        return SCORE_MIN, abs(value - target)
+
+    # At LCL boundary
+    if value == lower:
+        return _round2(limit_score), abs(target - lower)
+
+    # Edge case: UCL equals LCL
+    if ucl == lower:
+        return _round2(limit_score), 0.0
+
+    # Linear interpolation between LCL (limit_score) and UCL (10.0)
+    # frac = 0 at LCL, 1 at UCL
+    frac = (value - lower) / (ucl - lower)
+    frac = _clamp(frac, 0.0, 1.0)
+    score = limit_score + (SCORE_MAX - limit_score) * frac
+    return _round2(_clamp(score, SCORE_MIN, SCORE_MAX)), abs(value - target)
 
 
 def score_binary(status: str) -> float:
@@ -610,6 +699,16 @@ def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> Tes
             result_policy = policy  # Track policy used
         else:
             # Missing limits - fall back to binary
+            score = score_binary(status)
+            scoring_type = ScoringType.BINARY
+
+    # UPDATED: Added throughput scoring case
+    elif scoring_type == ScoringType.THROUGHPUT:
+        # Throughput scoring: higher is better, target=UCL
+        if ucl is not None:
+            score, deviation = score_throughput(value, ucl, lcl, limit_score)
+        else:
+            # No UCL - fall back to binary
             score = score_binary(status)
             scoring_type = ScoringType.BINARY
 

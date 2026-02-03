@@ -161,7 +161,7 @@ async def _get_or_wait_in_flight(cache_key: str) -> tuple[list[dict[str, Any]], 
     """
     Check if there's already an in-flight request for this cache key.
     If so, wait for it to complete and return its result.
-    
+
     Returns:
         The result tuple if we waited for an in-flight request, None if we should start a new request.
     """
@@ -172,7 +172,7 @@ async def _get_or_wait_in_flight(cache_key: str) -> tuple[list[dict[str, Any]], 
         else:
             # No in-flight request, we'll be the one to make it
             return None
-    
+
     # Wait outside the lock for the in-flight request to complete
     try:
         await asyncio.wait_for(event.wait(), timeout=IPLAS_TIMEOUT + 30)
@@ -182,7 +182,7 @@ async def _get_or_wait_in_flight(cache_key: str) -> tuple[list[dict[str, Any]], 
             return result
     except asyncio.TimeoutError:
         logger.warning(f"Request coalescing: timed out waiting for {cache_key[:50]}")
-    
+
     return None
 
 
@@ -224,7 +224,7 @@ _http_client_lock = asyncio.Lock()
 async def _get_http_client() -> httpx.AsyncClient:
     """Get or create a shared httpx client with connection pooling."""
     global _http_client
-    
+
     if _http_client is None or _http_client.is_closed:
         async with _http_client_lock:
             # Double-check after acquiring lock
@@ -237,7 +237,7 @@ async def _get_http_client() -> httpx.AsyncClient:
                 )
                 _http_client = httpx.AsyncClient(timeout=timeout, limits=limits)
                 logger.info("Created shared httpx client with connection pooling")
-    
+
     return _http_client
 
 
@@ -996,7 +996,7 @@ async def get_csv_test_items(
     # Fetch from iPLAS if cache miss (using chunked fetching for large date ranges)
     if not cached:
         logger.debug(f"Cache MISS: {cache_key}")
-        
+
         # UPDATED: Check for in-flight request first (request deduplication)
         in_flight_result = await _get_or_wait_in_flight(cache_key)
         if in_flight_result is not None:
@@ -1017,7 +1017,7 @@ async def get_csv_test_items(
                     request.test_status,
                     request.token,  # Pass user token if provided
                 )
-                
+
                 # Store in cache
                 if redis:
                     try:
@@ -1026,7 +1026,7 @@ async def get_csv_test_items(
                         logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL}s)")
                     except Exception as e:
                         logger.warning(f"Redis SET error: {e}")
-                
+
                 # Notify waiting requests
                 await _complete_in_flight(cache_key, (records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy))
             except Exception:
@@ -1193,7 +1193,7 @@ async def get_csv_test_items_compact(
     # Fetch from iPLAS if cache miss
     if not cached_compact and not records:
         logger.debug(f"Cache MISS (compact): {cache_key}")
-        
+
         # UPDATED: Check for in-flight request first (request deduplication)
         in_flight_result = await _get_or_wait_in_flight(cache_key)
         if in_flight_result is not None:
@@ -1223,7 +1223,7 @@ async def get_csv_test_items_compact(
                         logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL}s)")
                     except Exception as e:
                         logger.warning(f"Redis SET error: {e}")
-                
+
                 # Notify waiting requests
                 await _complete_in_flight(cache_key, (records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy))
             except Exception:
@@ -1993,6 +1993,7 @@ async def download_csv_log(
             if "filename=" in content_disposition:
                 # Extract filename from header
                 import re
+
                 match = re.search(r'filename="?([^";\n]+)"?', content_disposition)
                 if match:
                     filename = match.group(1)
@@ -2088,7 +2089,7 @@ async def get_test_item_by_isn(
 ) -> IplasTestItemByIsnResponse:
     """Get test items by ISN with cross-station search capability."""
     redis = get_redis_client()
-    
+
     # Build cache key including all parameters
     begin_str = request.begin_time.strftime("%Y%m%d%H%M%S")
     end_str = request.end_time.strftime("%Y%m%d%H%M%S")
@@ -2120,7 +2121,7 @@ async def get_test_item_by_isn(
             "ISN": request.isn,
             "station": request.station or "",
             "model": "",  # Leave empty as per API doc
-            "line": "",   # Leave empty as per API doc
+            "line": "",  # Leave empty as per API doc
             "device": request.device or "",
             "begintime": request.begin_time.strftime("%Y/%m/%d %H:%M:%S"),
             "endtime": request.end_time.strftime("%Y/%m/%d %H:%M:%S"),
@@ -2140,7 +2141,7 @@ async def get_test_item_by_isn(
                     )
 
                 data = response.json()
-                
+
                 # Check for error response
                 if "error_msg" in data:
                     raise HTTPException(
@@ -2154,26 +2155,30 @@ async def get_test_item_by_isn(
                     # Convert test_item format from API to our schema
                     test_items = []
                     for ti in item.get("test_item", []):
-                        test_items.append(IplasTestItemByIsnTestItem(
-                            name=ti.get("name", ""),
-                            Status=ti.get("Status", ""),
-                            LSL=ti.get("LSL", ""),
-                            Value=ti.get("Value", ""),
-                            USL=ti.get("USL", ""),
-                            CYCLE=ti.get("CYCLE", ""),
-                        ))
-                    
-                    results.append(IplasTestItemByIsnRecord(
-                        site=item.get("site", request.site),
-                        project=item.get("project", request.project),
-                        ISN=item.get("ISN", request.isn),
-                        station=item.get("station", ""),
-                        model=item.get("model", ""),
-                        line=item.get("line", ""),
-                        device=item.get("device", ""),
-                        test_end_time=item.get("test_end_time", ""),
-                        test_item=test_items,
-                    ))
+                        test_items.append(
+                            IplasTestItemByIsnTestItem(
+                                name=ti.get("name", ""),
+                                Status=ti.get("Status", ""),
+                                LSL=ti.get("LSL", ""),
+                                Value=ti.get("Value", ""),
+                                USL=ti.get("USL", ""),
+                                CYCLE=ti.get("CYCLE", ""),
+                            )
+                        )
+
+                    results.append(
+                        IplasTestItemByIsnRecord(
+                            site=item.get("site", request.site),
+                            project=item.get("project", request.project),
+                            ISN=item.get("ISN", request.isn),
+                            station=item.get("station", ""),
+                            model=item.get("model", ""),
+                            line=item.get("line", ""),
+                            device=item.get("device", ""),
+                            test_end_time=item.get("test_end_time", ""),
+                            test_item=test_items,
+                        )
+                    )
 
                 logger.info(f"Found {len(results)} records for ISN {request.isn}")
 

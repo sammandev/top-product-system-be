@@ -474,3 +474,71 @@ class IplasVerifyResponse(BaseModel):
     success: bool = Field(..., description="True if token has access")
     message: str = Field(..., description="Verification message")
 
+
+# ============================================================================
+# iPLAS v1 Get Test Item By ISN Schemas
+# ============================================================================
+
+
+class IplasTestItemByIsnRequest(BaseModel):
+    """Request schema for fetching test items by ISN from iPLAS v1 API.
+    
+    This endpoint searches for an ISN across all related stations within a date range.
+    More flexible than the V2 isn_search as it supports date filtering.
+    
+    Based on: POST /{site}/{project}/dut/get_test_item_by_isn
+    """
+
+    site: str = Field(..., description="Site identifier (e.g., 'PTB')")
+    project: str = Field(..., description="Project identifier (e.g., 'HH5K')")
+    isn: str = Field(..., description="Device serial number to search for")
+    station: str = Field(
+        default="",
+        description="Station filter (leave empty to search all related stations)"
+    )
+    device: str = Field(
+        default="",
+        description="Device ID filter (leave empty to search all device IDs)"
+    )
+    begin_time: datetime = Field(..., description="Start time for the search range")
+    end_time: datetime = Field(..., description="End time for the search range")
+    token: str | None = Field(
+        default=None,
+        description="Optional user-provided token. If not provided, uses backend default.",
+    )
+
+
+class IplasTestItemByIsnTestItem(BaseModel):
+    """Test item from get_test_item_by_isn response."""
+
+    name: str
+    Status: str
+    LSL: str = ""  # Lower Spec Limit (same as LCL)
+    Value: str = ""
+    USL: str = ""  # Upper Spec Limit (same as UCL)
+    CYCLE: str = ""
+
+
+class IplasTestItemByIsnRecord(BaseModel):
+    """Single record from get_test_item_by_isn response."""
+
+    site: str
+    project: str
+    ISN: str
+    station: str
+    model: str = ""
+    line: str
+    device: str
+    test_end_time: str
+    test_item: list[IplasTestItemByIsnTestItem] = []
+
+
+class IplasTestItemByIsnResponse(BaseModel):
+    """Response schema for get_test_item_by_isn endpoint."""
+
+    data: list[IplasTestItemByIsnRecord] = Field(
+        ..., description="List of matching records across all related stations"
+    )
+    total_count: int = Field(..., description="Total number of records found")
+    cached: bool = Field(default=False, description="True if data was served from cache")
+

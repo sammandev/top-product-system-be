@@ -4,9 +4,11 @@ iPLAS External API Proxy Router.
 Provides cached proxy endpoints for iPLAS v1 and v2 APIs with:
 - Multi-site support (PTB, PSZ, PXD, PVN, PTY)
 - Redis caching for performance
+- Request deduplication (in-flight coalescing) for concurrent requests
 - Server-side filtering to reduce browser memory usage
 - Automatic time-range chunking to bypass 7-day query limit
 - Aggregation of chunked results for large date ranges
+- Connection pooling for improved throughput
 """
 
 import asyncio
@@ -39,6 +41,10 @@ from app.schemas.iplas_schemas import (
     IplasStation,
     IplasStationListRequest,
     IplasStationListResponse,
+    IplasTestItemByIsnRequest,
+    IplasTestItemByIsnResponse,
+    IplasTestItemByIsnRecord,
+    IplasTestItemByIsnTestItem,
     IplasTestItemInfo,
     IplasTestItemNamesRequest,
     IplasTestItemNamesResponse,
@@ -134,6 +140,114 @@ IPLAS_CACHE_TTL_ISN = int(os.getenv("IPLAS_CACHE_TTL_ISN", "300"))  # 5 minutes
 # Fallback for legacy env vars
 IPLAS_V1_BASE_URL = os.getenv("DUT2_API_BASE_URL", "http://10.176.33.89:32678/api/v1")
 IPLAS_TOKEN = os.getenv("DUT2_API_TOKEN", "")
+
+
+# ============================================================================
+# Request Deduplication (In-Flight Request Coalescing)
+# ============================================================================
+# When multiple users request the same data simultaneously, we only make one
+# upstream request and share the result. This dramatically reduces load on
+# the iPLAS server and improves response times for concurrent requests.
+
+# Dictionary to track in-flight requests: cache_key -> asyncio.Event
+_in_flight_requests: dict[str, asyncio.Event] = {}
+# Lock to safely access _in_flight_requests
+_in_flight_lock = asyncio.Lock()
+# Temporary storage for in-flight results
+_in_flight_results: dict[str, tuple[list[dict[str, Any]], bool, int, int, bool]] = {}
+
+
+async def _get_or_wait_in_flight(cache_key: str) -> tuple[list[dict[str, Any]], bool, int, int, bool] | None:
+    """
+    Check if there's already an in-flight request for this cache key.
+    If so, wait for it to complete and return its result.
+    
+    Returns:
+        The result tuple if we waited for an in-flight request, None if we should start a new request.
+    """
+    async with _in_flight_lock:
+        if cache_key in _in_flight_requests:
+            event = _in_flight_requests[cache_key]
+            logger.info(f"Request coalescing: waiting for in-flight request {cache_key[:50]}...")
+        else:
+            # No in-flight request, we'll be the one to make it
+            return None
+    
+    # Wait outside the lock for the in-flight request to complete
+    try:
+        await asyncio.wait_for(event.wait(), timeout=IPLAS_TIMEOUT + 30)
+        result = _in_flight_results.get(cache_key)
+        if result:
+            logger.info(f"Request coalescing: got result from in-flight request {cache_key[:50]}")
+            return result
+    except asyncio.TimeoutError:
+        logger.warning(f"Request coalescing: timed out waiting for {cache_key[:50]}")
+    
+    return None
+
+
+async def _register_in_flight(cache_key: str) -> asyncio.Event:
+    """Register that we're starting an in-flight request."""
+    async with _in_flight_lock:
+        event = asyncio.Event()
+        _in_flight_requests[cache_key] = event
+        return event
+
+
+async def _complete_in_flight(cache_key: str, result: tuple[list[dict[str, Any]], bool, int, int, bool]) -> None:
+    """Mark an in-flight request as complete and store its result."""
+    async with _in_flight_lock:
+        _in_flight_results[cache_key] = result
+        if cache_key in _in_flight_requests:
+            _in_flight_requests[cache_key].set()
+            # Clean up after a short delay to allow waiting tasks to get the result
+            asyncio.create_task(_cleanup_in_flight(cache_key))
+
+
+async def _cleanup_in_flight(cache_key: str, delay: float = 2.0) -> None:
+    """Clean up in-flight tracking after a delay."""
+    await asyncio.sleep(delay)
+    async with _in_flight_lock:
+        _in_flight_requests.pop(cache_key, None)
+        _in_flight_results.pop(cache_key, None)
+
+
+# ============================================================================
+# Connection Pool Management
+# ============================================================================
+# Reusable httpx client pool for better connection reuse and performance
+
+_http_client: httpx.AsyncClient | None = None
+_http_client_lock = asyncio.Lock()
+
+
+async def _get_http_client() -> httpx.AsyncClient:
+    """Get or create a shared httpx client with connection pooling."""
+    global _http_client
+    
+    if _http_client is None or _http_client.is_closed:
+        async with _http_client_lock:
+            # Double-check after acquiring lock
+            if _http_client is None or _http_client.is_closed:
+                timeout = httpx.Timeout(IPLAS_TIMEOUT, connect=30.0)
+                limits = httpx.Limits(
+                    max_connections=50,  # Total connections across all hosts
+                    max_keepalive_connections=20,  # Keep-alive connections
+                    keepalive_expiry=30.0,  # Keep connections alive for 30s
+                )
+                _http_client = httpx.AsyncClient(timeout=timeout, limits=limits)
+                logger.info("Created shared httpx client with connection pooling")
+    
+    return _http_client
+
+
+async def close_http_client() -> None:
+    """Close the shared httpx client (call on shutdown)."""
+    global _http_client
+    if _http_client is not None:
+        await _http_client.aclose()
+        _http_client = None
+        logger.info("Closed shared httpx client")
 
 
 def get_redis_client() -> Redis | None:
@@ -277,8 +391,6 @@ async def _fetch_from_iplas(
 
     logger.info(f"Fetching iPLAS v1 data: {site}/{project}/{station} device={device_id}")
 
-    timeout = httpx.Timeout(IPLAS_TIMEOUT)
-    limits = httpx.Limits(max_connections=20, max_keepalive_connections=10)
     last_exc: Exception | None = None
 
     async def _do_request(active_client: httpx.AsyncClient) -> httpx.Response:
@@ -289,8 +401,9 @@ async def _fetch_from_iplas(
             if client is not None:
                 response = await _do_request(client)
             else:
-                async with httpx.AsyncClient(timeout=timeout, limits=limits) as new_client:
-                    response = await _do_request(new_client)
+                # UPDATED: Use shared connection pool instead of creating new client
+                shared_client = await _get_http_client()
+                response = await _do_request(shared_client)
             last_exc = None
             break
         except httpx.HTTPError as exc:
@@ -837,17 +950,19 @@ def _extract_unique_test_items(records: list[dict[str, Any]]) -> list[IplasTestI
     
     This endpoint:
     1. Checks Redis cache for existing data
-    2. Fetches from iPLAS API if cache miss
-    3. Applies test_item_filters on server-side (reduces payload to frontend)
-    4. Supports pagination with limit/offset
+    2. Uses request deduplication to coalesce concurrent requests for the same data
+    3. Fetches from iPLAS API if cache miss
+    4. Applies test_item_filters on server-side (reduces payload to frontend)
+    5. Supports pagination with limit/offset
     
     **Cache TTL**: Data is cached for 3 minutes (configurable via IPLAS_CACHE_TTL env var)
+    **Request Deduplication**: Concurrent requests for the same data share a single upstream request.
     """,
 )
 async def get_csv_test_items(
     request: IplasCsvTestItemRequest,
 ) -> IplasCsvTestItemResponse:
-    """Get filtered CSV test items with caching."""
+    """Get filtered CSV test items with caching and request deduplication."""
     redis = get_redis_client()
     cache_key = _generate_cache_key(
         request.site,
@@ -881,25 +996,43 @@ async def get_csv_test_items(
     # Fetch from iPLAS if cache miss (using chunked fetching for large date ranges)
     if not cached:
         logger.debug(f"Cache MISS: {cache_key}")
-        records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy = await _fetch_chunked_from_iplas(
-            request.site,
-            request.project,
-            request.station,
-            request.device_id,
-            request.begin_time,
-            request.end_time,
-            request.test_status,
-            request.token,  # Pass user token if provided
-        )
-
-        # Store in cache
-        if redis:
+        
+        # UPDATED: Check for in-flight request first (request deduplication)
+        in_flight_result = await _get_or_wait_in_flight(cache_key)
+        if in_flight_result is not None:
+            # Another request fetched this data, use their result
+            records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy = in_flight_result
+            logger.info(f"Used coalesced result for {cache_key[:50]}")
+        else:
+            # We're the first request - register and fetch
+            await _register_in_flight(cache_key)
             try:
-                serialized = json_dumps(records)
-                redis.setex(cache_key, IPLAS_CACHE_TTL, serialized)
-                logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL}s)")
-            except Exception as e:
-                logger.warning(f"Redis SET error: {e}")
+                records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy = await _fetch_chunked_from_iplas(
+                    request.site,
+                    request.project,
+                    request.station,
+                    request.device_id,
+                    request.begin_time,
+                    request.end_time,
+                    request.test_status,
+                    request.token,  # Pass user token if provided
+                )
+                
+                # Store in cache
+                if redis:
+                    try:
+                        serialized = json_dumps(records)
+                        redis.setex(cache_key, IPLAS_CACHE_TTL, serialized)
+                        logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL}s)")
+                    except Exception as e:
+                        logger.warning(f"Redis SET error: {e}")
+                
+                # Notify waiting requests
+                await _complete_in_flight(cache_key, (records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy))
+            except Exception:
+                # Clean up in-flight tracking on error
+                await _cleanup_in_flight(cache_key, delay=0)
+                raise
 
     # Apply test item filtering
     filtered = bool(request.test_item_filters)
@@ -1060,25 +1193,43 @@ async def get_csv_test_items_compact(
     # Fetch from iPLAS if cache miss
     if not cached_compact and not records:
         logger.debug(f"Cache MISS (compact): {cache_key}")
-        records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy = await _fetch_chunked_from_iplas(
-            request.site,
-            request.project,
-            request.station,
-            request.device_id,
-            request.begin_time,
-            request.end_time,
-            request.test_status,
-            request.token,
-        )
-
-        # Store full records in cache (benefits both endpoints)
-        if redis:
+        
+        # UPDATED: Check for in-flight request first (request deduplication)
+        in_flight_result = await _get_or_wait_in_flight(cache_key)
+        if in_flight_result is not None:
+            # Another request fetched this data, use their result
+            records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy = in_flight_result
+            logger.info(f"Used coalesced result for compact {cache_key[:50]}")
+        else:
+            # We're the first request - register and fetch
+            await _register_in_flight(cache_key)
             try:
-                serialized = json_dumps(records)
-                redis.setex(cache_key, IPLAS_CACHE_TTL, serialized)
-                logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL}s)")
-            except Exception as e:
-                logger.warning(f"Redis SET error: {e}")
+                records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy = await _fetch_chunked_from_iplas(
+                    request.site,
+                    request.project,
+                    request.station,
+                    request.device_id,
+                    request.begin_time,
+                    request.end_time,
+                    request.test_status,
+                    request.token,
+                )
+
+                # Store full records in cache (benefits both endpoints)
+                if redis:
+                    try:
+                        serialized = json_dumps(records)
+                        redis.setex(cache_key, IPLAS_CACHE_TTL, serialized)
+                        logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL}s)")
+                    except Exception as e:
+                        logger.warning(f"Redis SET error: {e}")
+                
+                # Notify waiting requests
+                await _complete_in_flight(cache_key, (records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy))
+            except Exception:
+                # Clean up in-flight tracking on error
+                await _cleanup_in_flight(cache_key, delay=0)
+                raise
 
     # If compact cache hit, we already have compact records ready
     filtered = bool(request.test_item_filters)
@@ -1903,6 +2054,146 @@ async def verify_access(
             success=False,
             message=f"Connection error: {e}",
         )
+
+
+# ============================================================================
+# iPLAS v1 Get Test Item By ISN Endpoint
+# ============================================================================
+
+
+@router.post(
+    "/v1/test-item-by-isn",
+    response_model=IplasTestItemByIsnResponse,
+    summary="Get test items by ISN from iPLAS v1 (cross-station search)",
+    description="""
+    Searches for an ISN across all related test stations within a date range.
+    
+    This is more flexible than the V2 `/isn_search` endpoint because it:
+    - Supports date range filtering (begin_time/end_time)
+    - Can filter by specific station or device
+    - Returns test items from ALL stations that processed this ISN
+    
+    **Use Cases:**
+    - Track a DUT through the entire production flow
+    - Find all test records for a specific serial number
+    - Compare test results across different stations for the same ISN
+    
+    **Cache TTL**: 5 minutes
+    
+    Based on iPLAS v1 API: POST /{site}/{project}/dut/get_test_item_by_isn
+    """,
+)
+async def get_test_item_by_isn(
+    request: IplasTestItemByIsnRequest,
+) -> IplasTestItemByIsnResponse:
+    """Get test items by ISN with cross-station search capability."""
+    redis = get_redis_client()
+    
+    # Build cache key including all parameters
+    begin_str = request.begin_time.strftime("%Y%m%d%H%M%S")
+    end_str = request.end_time.strftime("%Y%m%d%H%M%S")
+    cache_key = f"iplas:v1:test-item-by-isn:{request.site}:{request.project}:{request.isn}:{request.station}:{request.device}:{begin_str}:{end_str}"
+
+    cached = False
+    results: list[IplasTestItemByIsnRecord] = []
+
+    # Try cache first
+    if redis:
+        try:
+            cached_data = redis.get(cache_key)
+            if cached_data:
+                data = json_loads(cached_data)
+                results = [IplasTestItemByIsnRecord(**item) for item in data]
+                cached = True
+                logger.debug(f"Cache HIT: {cache_key}")
+        except Exception as e:
+            logger.warning(f"Redis GET error: {e}")
+
+    # Fetch from iPLAS if cache miss
+    if not cached:
+        logger.debug(f"Cache MISS: {cache_key}")
+        site_config = _get_site_config(request.site, request.token)
+        url = f"{site_config['v1_url']}/{request.site}/{request.project}/dut/get_test_item_by_isn"
+
+        # Build payload for iPLAS v1 API
+        payload = {
+            "ISN": request.isn,
+            "station": request.station or "",
+            "model": "",  # Leave empty as per API doc
+            "line": "",   # Leave empty as per API doc
+            "device": request.device or "",
+            "begintime": request.begin_time.strftime("%Y/%m/%d %H:%M:%S"),
+            "endtime": request.end_time.strftime("%Y/%m/%d %H:%M:%S"),
+            "token": site_config["token"],
+        }
+
+        logger.info(f"Fetching test items by ISN: {request.isn} from {request.site}/{request.project}")
+
+        try:
+            async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+                response = await client.post(url, json=payload)
+
+                if response.status_code != 200:
+                    raise HTTPException(
+                        status_code=response.status_code,
+                        detail=f"iPLAS v1 API error: {response.text}",
+                    )
+
+                data = response.json()
+                
+                # Check for error response
+                if "error_msg" in data:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=data["error_msg"],
+                    )
+
+                # Parse the response data
+                raw_data = data.get("data", [])
+                for item in raw_data:
+                    # Convert test_item format from API to our schema
+                    test_items = []
+                    for ti in item.get("test_item", []):
+                        test_items.append(IplasTestItemByIsnTestItem(
+                            name=ti.get("name", ""),
+                            Status=ti.get("Status", ""),
+                            LSL=ti.get("LSL", ""),
+                            Value=ti.get("Value", ""),
+                            USL=ti.get("USL", ""),
+                            CYCLE=ti.get("CYCLE", ""),
+                        ))
+                    
+                    results.append(IplasTestItemByIsnRecord(
+                        site=item.get("site", request.site),
+                        project=item.get("project", request.project),
+                        ISN=item.get("ISN", request.isn),
+                        station=item.get("station", ""),
+                        model=item.get("model", ""),
+                        line=item.get("line", ""),
+                        device=item.get("device", ""),
+                        test_end_time=item.get("test_end_time", ""),
+                        test_item=test_items,
+                    ))
+
+                logger.info(f"Found {len(results)} records for ISN {request.isn}")
+
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=503, detail=f"iPLAS v1 API unavailable: {e}") from None
+
+        # Store in cache
+        if redis and results:
+            try:
+                serialized = json_dumps([r.model_dump() for r in results])
+                redis.setex(cache_key, IPLAS_CACHE_TTL_ISN, serialized)
+                logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_ISN}s)")
+            except Exception as e:
+                logger.warning(f"Redis SET error: {e}")
+
+    return IplasTestItemByIsnResponse(
+        data=results,
+        total_count=len(results),
+        cached=cached,
+    )
 
 
 # ============================================================================

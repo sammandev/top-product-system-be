@@ -30,17 +30,13 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 # Default SFISTSP server configuration (loaded from environment)
-SFISTSP_DEFAULT_BASE_URL = os.environ.get(
-    "SFISTSP_API_BASE_URL", "http://10.176.33.13"
-)
+SFISTSP_DEFAULT_BASE_URL = os.environ.get("SFISTSP_API_BASE_URL", "http://10.176.33.13")
 SFISTSP_DEFAULT_SERVER_ADDRESS = os.environ.get(
     "SFISTSP_API_SERVER_ADDRESS",
     "http://10.176.33.13/SFISWebService/SFISTSPWebService.asmx",
 )
 SFISTSP_DEFAULT_PROGRAM_ID = os.environ.get("SFIS_DEFAULT_PROGRAM_ID", "TSP_TDSTB")
-SFISTSP_DEFAULT_PROGRAM_PASSWORD = os.environ.get(
-    "SFIS_DEFAULT_PROGRAM_PASSWORD", "ap_tbsus"
-)
+SFISTSP_DEFAULT_PROGRAM_PASSWORD = os.environ.get("SFIS_DEFAULT_PROGRAM_PASSWORD", "ap_tbsus")
 
 # Endpoint path for WTSP_GETVERSION
 SFISTSP_ENDPOINT_PATH = "/SFISWebService/SFISTSPWebService.asmx/WTSP_GETVERSION"
@@ -85,7 +81,7 @@ class SfistspConfig:
 
 def _clean_reference(ref: str) -> str:
     """
-    Clean a reference string by removing whitespace and invalid characters.
+    Clean a reference string by removing whitespace, MAC: prefixes, and brackets.
 
     Args:
         ref: Raw reference string
@@ -95,8 +91,19 @@ def _clean_reference(ref: str) -> str:
     """
     if not ref:
         return ""
+
     # Remove all whitespace (including internal spaces, newlines, tabs)
     cleaned = "".join(ref.split())
+
+    # Remove trailing "MAC:" if present (malformed data)
+    if cleaned.endswith("MAC:"):
+        cleaned = cleaned[:-4]
+
+    # Remove any trailing brackets and their content
+    bracket_idx = cleaned.find("[")
+    if bracket_idx > 0:
+        cleaned = cleaned[:bracket_idx]
+
     return cleaned.strip()
 
 
@@ -117,21 +124,80 @@ def _deduplicate_string(s: str) -> str:
     if not s or len(s) < 2:
         return s
 
-    # Try to find if the string is composed of a repeated pattern
     length = len(s)
+
+    # Check if the string is exactly doubled (most common case)
+    # This is the primary case we're trying to handle
+    if length % 2 == 0:
+        half = length // 2
+        first_half = s[:half]
+        second_half = s[half:]
+        if first_half == second_half:
+            return first_half
+
+    # Try to find if the string is composed of a repeated pattern
     for pattern_len in range(1, length // 2 + 1):
         if length % pattern_len == 0:
             pattern = s[:pattern_len]
-            if pattern * (length // pattern_len) == s:
+            repetitions = length // pattern_len
+            if pattern * repetitions == s:
                 return pattern
 
-    # Check if the string is exactly doubled (most common case)
-    if length % 2 == 0:
-        half = length // 2
-        if s[:half] == s[half:]:
-            return s[:half]
-
     return s
+
+
+def _extract_mac_addresses(data: str) -> list[str]:
+    """
+    Extract all MAC addresses from the data string.
+
+    MAC addresses are 12 hex characters following "MAC:" prefix.
+
+    Args:
+        data: Raw data string
+
+    Returns:
+        List of unique MAC addresses (uppercase, 12 hex chars)
+    """
+    mac_addresses: list[str] = []
+
+    # Find all MAC: patterns followed by hex characters
+    # Pattern: MAC:XXXXXXXXXXXX where X is hex (exactly 12 chars)
+    pattern = re.compile(r"MAC:([A-Fa-f0-9]{12})")
+
+    for match in pattern.finditer(data):
+        mac = match.group(1).upper()
+        if mac and mac not in mac_addresses:
+            mac_addresses.append(mac)
+
+    return mac_addresses
+
+
+def _remove_mac_patterns(data: str) -> str:
+    """
+    Remove all MAC-related patterns from the data string.
+
+    This handles:
+    - MAC:XXXXXXXXXXXX[...] - full MAC with bracket content
+    - MAC:XXXXXXXXXXXX - full MAC without brackets
+    - MAC: - malformed MAC prefix at end
+
+    Args:
+        data: Raw data string
+
+    Returns:
+        Data with MAC patterns removed
+    """
+    # Remove MAC:12chars[...] patterns
+    cleaned = re.sub(r"MAC:[A-Fa-f0-9]{12}(?:\[[^\]]*\])?", "", data)
+
+    # Remove MAC: followed by any hex chars and optional brackets
+    cleaned = re.sub(r"MAC:[A-Fa-f0-9]*(?:\[[^\]]*\])?", "", cleaned)
+
+    # Remove standalone MAC: at end
+    cleaned = re.sub(r"MAC:\s*$", "", cleaned)
+    cleaned = re.sub(r"MAC:(?=[;,\s]|$)", "", cleaned)
+
+    return cleaned
 
 
 def parse_sfistsp_response(response_text: str, isn: str) -> SfistspIsnReference:
@@ -202,22 +268,15 @@ def parse_sfistsp_response(response_text: str, isn: str) -> SfistspIsnReference:
             # Try alternative: look for ISN followed by semicolon pattern
             data_part = content
 
-        # First, extract all MAC addresses from the data
-        # Pattern: MAC:XXXXXXXXXXXX where X is hex (12 chars), possibly followed by [...]
-        mac_addresses: list[str] = []
-        mac_pattern = re.compile(r"MAC:([A-Fa-f0-9]{12})(?:\[|;|$|[^A-Fa-f0-9])")
-        for mac_match in mac_pattern.finditer(data_part):
-            mac_addr = _clean_reference(mac_match.group(1).upper())
-            if mac_addr and mac_addr not in mac_addresses:
-                mac_addresses.append(mac_addr)
+        # First, extract all MAC addresses from the data using helper function
+        mac_addresses = _extract_mac_addresses(data_part)
 
         # Set the first MAC address as the primary MAC
         if mac_addresses:
             result.mac = mac_addresses[0]
 
-        # Remove all MAC:....[....] patterns from data to get clean references
-        # This handles formats like: MAC:E0C2504EF9C3[NETGM7L]
-        clean_data = re.sub(r"MAC:[A-Fa-f0-9]+(?:\[[^\]]*\])?", "", data_part)
+        # Remove all MAC patterns from data to get clean references
+        clean_data = _remove_mac_patterns(data_part)
 
         # Parse ISN references (separated by semicolons)
         references: list[str] = []
@@ -225,7 +284,7 @@ def parse_sfistsp_response(response_text: str, isn: str) -> SfistspIsnReference:
         if ";" in clean_data:
             parts = clean_data.split(";")
             for part in parts:
-                # Clean the reference
+                # Clean the reference (removes whitespace, trailing MAC:, brackets)
                 cleaned = _clean_reference(part)
                 if cleaned:
                     # Deduplicate (handles cases like "7UG162WC004707UG162WC00470")
@@ -359,11 +418,7 @@ class SfistspApiClient:
             response.raise_for_status()
 
             result = parse_sfistsp_response(response.text, isn)
-            logger.info(
-                f"SFISTSP API: ISN {isn} lookup "
-                f"{'successful' if result.success else 'failed'}"
-                f" - SSN: {result.ssn}, MAC: {result.mac}"
-            )
+            logger.info(f"SFISTSP API: ISN {isn} lookup {'successful' if result.success else 'failed'} - SSN: {result.ssn}, MAC: {result.mac}")
             return result
 
         except httpx.TimeoutException:
@@ -374,9 +429,7 @@ class SfistspApiClient:
                 error_message=f"Request timeout after {self.config.timeout}s",
             )
         except httpx.HTTPStatusError as e:
-            logger.error(
-                f"SFISTSP API: HTTP error {e.response.status_code} for ISN {isn}"
-            )
+            logger.error(f"SFISTSP API: HTTP error {e.response.status_code} for ISN {isn}")
             return SfistspIsnReference(
                 isn=isn,
                 success=False,

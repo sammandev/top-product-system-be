@@ -93,16 +93,28 @@ def _clean_reference(ref: str) -> str:
         return ""
 
     # Remove all whitespace (including internal spaces, newlines, tabs)
-    cleaned = "".join(ref.split())
+    # Also remove any non-printable characters
+    cleaned = "".join(c for c in ref if c.isprintable() and not c.isspace())
 
-    # Remove trailing "MAC:" if present (malformed data)
-    if cleaned.endswith("MAC:"):
+    # Remove MAC:XXXX patterns (MAC followed by hex chars and optional brackets)
+    # Pattern: MAC:12hexchars[...] or MAC:12hexchars
+    cleaned = re.sub(r"MAC:[A-Fa-f0-9]*(?:\[[^\]]*\])?", "", cleaned)
+
+    # Remove trailing "MAC:" if present (malformed data without hex)
+    while cleaned.endswith("MAC:"):
         cleaned = cleaned[:-4]
+
+    # Remove leading "MAC:" if present
+    while cleaned.startswith("MAC:"):
+        cleaned = cleaned[4:]
 
     # Remove any trailing brackets and their content
     bracket_idx = cleaned.find("[")
     if bracket_idx > 0:
         cleaned = cleaned[:bracket_idx]
+
+    # Remove any trailing semicolons
+    cleaned = cleaned.rstrip(";")
 
     return cleaned.strip()
 
@@ -124,7 +136,12 @@ def _deduplicate_string(s: str) -> str:
     if not s or len(s) < 2:
         return s
 
+    # Clean the string first - remove any hidden characters
+    s = "".join(c for c in s if c.isprintable() and not c.isspace())
+
     length = len(s)
+    if length < 2:
+        return s
 
     # Check if the string is exactly doubled (most common case)
     # This is the primary case we're trying to handle
@@ -133,6 +150,7 @@ def _deduplicate_string(s: str) -> str:
         first_half = s[:half]
         second_half = s[half:]
         if first_half == second_half:
+            logger.debug(f"Deduplicated doubled string: '{s}' -> '{first_half}'")
             return first_half
 
     # Try to find if the string is composed of a repeated pattern
@@ -141,6 +159,7 @@ def _deduplicate_string(s: str) -> str:
             pattern = s[:pattern_len]
             repetitions = length // pattern_len
             if pattern * repetitions == s:
+                logger.debug(f"Deduplicated pattern string: '{s}' -> '{pattern}'")
                 return pattern
 
     return s
@@ -165,8 +184,8 @@ def _extract_mac_addresses(data: str) -> list[str]:
     pattern = re.compile(r"MAC:([A-Fa-f0-9]{12})")
 
     for match in pattern.finditer(data):
-        mac = match.group(1).upper()
-        if mac and mac not in mac_addresses:
+        mac = match.group(1).upper().strip()
+        if mac and len(mac) == 12 and mac not in mac_addresses:
             mac_addresses.append(mac)
 
     return mac_addresses
@@ -198,6 +217,34 @@ def _remove_mac_patterns(data: str) -> str:
     cleaned = re.sub(r"MAC:(?=[;,\s]|$)", "", cleaned)
 
     return cleaned
+
+
+def _process_reference(ref: str) -> str | None:
+    """
+    Process a single reference: clean it, deduplicate it, and validate it.
+
+    Args:
+        ref: Raw reference string
+
+    Returns:
+        Processed reference or None if invalid/empty
+    """
+    # Clean the reference
+    cleaned = _clean_reference(ref)
+    if not cleaned:
+        return None
+
+    # Deduplicate
+    deduped = _deduplicate_string(cleaned)
+    if not deduped:
+        return None
+
+    # Validate - should only contain alphanumeric characters
+    # and should be at least 2 characters long
+    if len(deduped) < 2:
+        return None
+
+    return deduped
 
 
 def parse_sfistsp_response(response_text: str, isn: str) -> SfistspIsnReference:
@@ -284,30 +331,28 @@ def parse_sfistsp_response(response_text: str, isn: str) -> SfistspIsnReference:
         if ";" in clean_data:
             parts = clean_data.split(";")
             for part in parts:
-                # Clean the reference (removes whitespace, trailing MAC:, brackets)
-                cleaned = _clean_reference(part)
-                if cleaned:
-                    # Deduplicate (handles cases like "7UG162WC004707UG162WC00470")
-                    deduped = _deduplicate_string(cleaned)
-                    if deduped and deduped not in references:
-                        references.append(deduped)
+                # Use _process_reference to clean, deduplicate, and validate
+                processed = _process_reference(part)
+                if processed and processed not in references:
+                    references.append(processed)
         else:
             # No semicolons, try to extract the single reference
-            cleaned = _clean_reference(clean_data)
-            if cleaned:
-                deduped = _deduplicate_string(cleaned)
-                if deduped:
-                    references.append(deduped)
+            processed = _process_reference(clean_data)
+            if processed:
+                references.append(processed)
 
         # Add MAC addresses to references if not already present
         for mac in mac_addresses:
             if mac not in references:
                 references.append(mac)
 
+        # Final cleanup: remove any empty strings that might have slipped through
+        references = [r for r in references if r and r.strip()]
         result.isn_references = references
 
         # Determine SSN: usually the second reference (after ISN)
         # or if only one non-ISN reference exists, use that
+        ssn_candidate = None
         if len(references) >= 2:
             # Second reference is usually SSN
             ssn_candidate = references[1]
@@ -317,11 +362,17 @@ def parse_sfistsp_response(response_text: str, isn: str) -> SfistspIsnReference:
                     if ref not in mac_addresses:
                         ssn_candidate = ref
                         break
-            result.ssn = ssn_candidate
         elif len(references) == 1 and references[0] != isn:
-            result.ssn = references[0]
+            ssn_candidate = references[0]
+
+        # Apply deduplication and cleaning to SSN
+        if ssn_candidate:
+            ssn_candidate = _process_reference(ssn_candidate)
+        result.ssn = ssn_candidate or ""
 
         result.success = True
+
+        logger.debug(f"Parsed SFISTSP response for ISN {isn}: ssn={result.ssn!r}, mac={result.mac!r}, references={result.isn_references!r}")
 
     except Exception as e:
         logger.error(f"Error parsing SFISTSP response for ISN {isn}: {e}")

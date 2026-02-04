@@ -83,6 +83,57 @@ class SfistspConfig:
 # ============================================================================
 
 
+def _clean_reference(ref: str) -> str:
+    """
+    Clean a reference string by removing whitespace and invalid characters.
+
+    Args:
+        ref: Raw reference string
+
+    Returns:
+        Cleaned reference string
+    """
+    if not ref:
+        return ""
+    # Remove all whitespace (including internal spaces, newlines, tabs)
+    cleaned = "".join(ref.split())
+    return cleaned.strip()
+
+
+def _deduplicate_string(s: str) -> str:
+    """
+    Detect and remove duplicated substrings in a string.
+
+    For example: "7UG162WC004707UG162WC00470" -> "7UG162WC00470"
+
+    This handles cases where the SSN is repeated twice in the response.
+
+    Args:
+        s: Input string that may contain duplicates
+
+    Returns:
+        Deduplicated string
+    """
+    if not s or len(s) < 2:
+        return s
+
+    # Try to find if the string is composed of a repeated pattern
+    length = len(s)
+    for pattern_len in range(1, length // 2 + 1):
+        if length % pattern_len == 0:
+            pattern = s[:pattern_len]
+            if pattern * (length // pattern_len) == s:
+                return pattern
+
+    # Check if the string is exactly doubled (most common case)
+    if length % 2 == 0:
+        half = length // 2
+        if s[:half] == s[half:]:
+            return s[:half]
+
+    return s
+
+
 def parse_sfistsp_response(response_text: str, isn: str) -> SfistspIsnReference:
     """
     Parse SFISTSP WTSP_GETVERSION response to extract ISN references.
@@ -99,9 +150,10 @@ def parse_sfistsp_response(response_text: str, isn: str) -> SfistspIsnReference:
     Parsing rules:
     - The main data follows the closing parenthesis of (TSP_GETVERSION)
     - ISN references are separated by semicolons
-    - MAC address follows "MAC:" prefix and ends at "[" or end of string
+    - MAC address follows "MAC:" prefix and ends at "[" or ";" or end of string
     - First reference before ";" is usually the ISN itself
     - Second reference (after ";") is usually SSN
+    - All references should be cleaned of whitespace and deduplicated
 
     Args:
         response_text: Raw XML response from SFISTSP API
@@ -150,42 +202,65 @@ def parse_sfistsp_response(response_text: str, isn: str) -> SfistspIsnReference:
             # Try alternative: look for ISN followed by semicolon pattern
             data_part = content
 
+        # First, extract all MAC addresses from the data
+        # Pattern: MAC:XXXXXXXXXXXX where X is hex (12 chars), possibly followed by [...]
+        mac_addresses: list[str] = []
+        mac_pattern = re.compile(r"MAC:([A-Fa-f0-9]{12})(?:\[|;|$|[^A-Fa-f0-9])")
+        for mac_match in mac_pattern.finditer(data_part):
+            mac_addr = _clean_reference(mac_match.group(1).upper())
+            if mac_addr and mac_addr not in mac_addresses:
+                mac_addresses.append(mac_addr)
+
+        # Set the first MAC address as the primary MAC
+        if mac_addresses:
+            result.mac = mac_addresses[0]
+
+        # Remove all MAC:....[....] patterns from data to get clean references
+        # This handles formats like: MAC:E0C2504EF9C3[NETGM7L]
+        clean_data = re.sub(r"MAC:[A-Fa-f0-9]+(?:\[[^\]]*\])?", "", data_part)
+
         # Parse ISN references (separated by semicolons)
-        # Format: ISN;SSN...MAC:MACADDRESS[...]
         references: list[str] = []
 
-        # Split by semicolon first
-        if ";" in data_part:
-            parts = data_part.split(";")
+        if ";" in clean_data:
+            parts = clean_data.split(";")
             for part in parts:
-                part = part.strip()
-                if part and not part.startswith("MAC:"):
-                    # Remove any MAC suffix from the part
-                    mac_idx = part.find("MAC:")
-                    if mac_idx > 0:
-                        references.append(part[:mac_idx].strip())
-                    else:
-                        # Remove any trailing bracket content
-                        bracket_idx = part.find("[")
-                        if bracket_idx > 0:
-                            references.append(part[:bracket_idx].strip())
-                        else:
-                            references.append(part)
+                # Clean the reference
+                cleaned = _clean_reference(part)
+                if cleaned:
+                    # Deduplicate (handles cases like "7UG162WC004707UG162WC00470")
+                    deduped = _deduplicate_string(cleaned)
+                    if deduped and deduped not in references:
+                        references.append(deduped)
+        else:
+            # No semicolons, try to extract the single reference
+            cleaned = _clean_reference(clean_data)
+            if cleaned:
+                deduped = _deduplicate_string(cleaned)
+                if deduped:
+                    references.append(deduped)
+
+        # Add MAC addresses to references if not already present
+        for mac in mac_addresses:
+            if mac not in references:
+                references.append(mac)
 
         result.isn_references = references
 
-        # First reference is usually the original ISN
-        # Second reference is usually SSN
+        # Determine SSN: usually the second reference (after ISN)
+        # or if only one non-ISN reference exists, use that
         if len(references) >= 2:
-            result.ssn = references[1]
+            # Second reference is usually SSN
+            ssn_candidate = references[1]
+            # If second reference is a MAC address, look for another
+            if ssn_candidate in mac_addresses and len(references) > 2:
+                for ref in references[2:]:
+                    if ref not in mac_addresses:
+                        ssn_candidate = ref
+                        break
+            result.ssn = ssn_candidate
         elif len(references) == 1 and references[0] != isn:
             result.ssn = references[0]
-
-        # Extract MAC address
-        # Pattern: MAC:XXXXXXXXXXXX[...] or MAC:XXXXXXXXXXXX;...
-        mac_match = re.search(r"MAC:([A-Fa-f0-9]{12})(?:\[|;|$)", data_part)
-        if mac_match:
-            result.mac = mac_match.group(1).upper()
 
         result.success = True
 

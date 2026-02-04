@@ -327,6 +327,7 @@ from .routers import (  # noqa: E402
     parsing,
     rbac,
     scoring,
+    sfistsp,
     test_log,
     top_products,
 )
@@ -349,6 +350,7 @@ app.include_router(multi_dut_analysis.router)
 app.include_router(parsing.router)
 app.include_router(rbac.router)
 app.include_router(scoring.router)
+app.include_router(sfistsp.router)
 app.include_router(test_log.router)
 app.include_router(top_products.router)
 

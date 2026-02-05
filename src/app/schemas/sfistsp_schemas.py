@@ -29,14 +29,15 @@ class SfistspIsnBatchLookupRequest(BaseModel):
 class SfistspIsnReferenceResponse(BaseModel):
     """Response model for a single ISN lookup."""
 
-    isn: str = Field(..., description="The queried ISN")
+    isn_searched: str = Field(..., description="The original ISN that was searched")
+    isn: str = Field(..., description="The primary ISN reference (first from isn_references)")
     ssn: str | None = Field(None, description="The SSN (Serial Number) reference")
     mac: str | None = Field(None, description="The MAC address (12 hex characters)")
     success: bool = Field(..., description="Whether the lookup was successful")
     error_message: str | None = Field(None, description="Error message if lookup failed")
     isn_references: list[str] = Field(
         default_factory=list,
-        description="All ISN references extracted from response",
+        description="All ISN references extracted from response (includes MAC)",
     )
 
 

@@ -952,16 +952,16 @@ def _extract_unique_test_items(records: list[dict[str, Any]]) -> list[IplasTestI
     response_model=IplasCsvTestItemResponse,
     summary="Get filtered CSV test items from iPLAS",
     description="""
-    Fetches test item data from iPLAS v1 API with server-side caching and filtering.
+    Fetches test item data from iPLAS with server-side caching and filtering.
     
     This endpoint:
     1. Checks Redis cache for existing data
     2. Uses request deduplication to coalesce concurrent requests for the same data
-    3. Fetches from iPLAS API if cache miss
+    3. Fetches from iPLAS if cache miss
     4. Applies test_item_filters on server-side (reduces payload to frontend)
     5. Supports pagination with limit/offset
     
-    **Cache TTL**: Data is cached for 3 minutes (configurable via IPLAS_CACHE_TTL env var)
+    **Cache TTL**: Data is cached for 3 minutes
     **Request Deduplication**: Concurrent requests for the same data share a single upstream request.
     """,
 )
@@ -1540,9 +1540,9 @@ async def health_check():
 @router.get(
     "/site-projects",
     response_model=IplasSiteProjectListResponse,
-    summary="Get site/project list from iPLAS v2",
+    summary="Get site/project list from iPLAS",
     description="""
-    Fetches the list of all available site/project pairs from iPLAS v2 API.
+    Fetches the list of all available site/project pairs from iPLAS.
     
     **Cache TTL**: 24 hours (data rarely changes)
     
@@ -1619,9 +1619,9 @@ async def get_site_projects(
 @router.post(
     "/stations",
     response_model=IplasStationListResponse,
-    summary="Get station list for a project from iPLAS v2",
+    summary="Get station list for a project from iPLAS",
     description="""
-    Fetches the list of stations for a specific site/project from iPLAS v2 API.
+    Fetches the list of stations for a specific site/project from iPLAS.
     
     **Cache TTL**: 1 hour
     """,
@@ -1694,7 +1694,7 @@ async def get_stations(
 @router.post(
     "/devices",
     response_model=IplasDeviceListResponse,
-    summary="Get device list for a station from iPLAS v2",
+    summary="Get device list for a station from iPLAS",
     description="""
     Fetches the list of device IDs for a specific station within a time range.
     
@@ -1771,7 +1771,7 @@ async def get_devices(
 @router.post(
     "/isn-search",
     response_model=IplasIsnSearchResponse,
-    summary="Search DUT by ISN from iPLAS v2",
+    summary="Search DUT by ISN from iPLAS",
     description="""
     Searches for DUT test data by ISN across all stations.
     
@@ -2178,11 +2178,11 @@ async def get_stations_from_isn_batch(
 
 
 @router.post(
-    "/v1/download-attachment",
+    "/download-attachment",
     response_model=IplasDownloadAttachmentResponse,
-    summary="Download test log attachments from iPLAS v1",
+    summary="Download test log attachments from iPLAS",
     description="""
-    Downloads test log attachments from iPLAS v1 API.
+    Downloads test log attachments from iPLAS.
     
     Supports multiple downloads in a single request.
     Returns base64-encoded file content.
@@ -2244,7 +2244,7 @@ async def download_attachment(
 
 
 @router.post(
-    "/v1/download-csv-log",
+    "/download-csv-log",
     response_model=IplasDownloadCsvLogResponse,
     summary="Download CSV test logs from iPLAS",
     description="""        
@@ -2372,13 +2372,13 @@ async def verify_access(
 
 
 @router.post(
-    "/v1/test-item-by-isn",
+    "/test-item-by-isn",
     response_model=IplasTestItemByIsnResponse,
-    summary="Get test items by ISN from iPLAS v1 (cross-station search)",
+    summary="Get test items by ISN from iPLAS (cross-station search)",
     description="""
     Searches for an ISN across all related test stations within a date range.
     
-    This is more flexible than the V2 `/isn_search` endpoint because it:
+    This is more flexible than the /isn_search` endpoint because it:
     - Supports date range filtering (begin_time/end_time)
     - Can filter by specific station or device
     - Returns test items from ALL stations that processed this ISN
@@ -2389,8 +2389,6 @@ async def verify_access(
     - Compare test results across different stations for the same ISN
     
     **Cache TTL**: 5 minutes
-    
-    Based on iPLAS v1 API: POST /{site}/{project}/dut/get_test_item_by_isn
     """,
 )
 async def get_test_item_by_isn(

@@ -90,8 +90,11 @@ async def lookup_isn(isn: str) -> SfistspIsnReferenceResponse:
     ) as client:
         result = await client.lookup_isn(isn)
 
+    # UPDATED: isn_searched is the original search term, isn is the first reference (primary ISN)
+    primary_isn = result.isn_references[0] if result.isn_references else result.isn
     return SfistspIsnReferenceResponse(
-        isn=result.isn,
+        isn_searched=result.isn,  # Original search term
+        isn=primary_isn,  # Primary ISN from references
         ssn=result.ssn,
         mac=result.mac,
         success=result.success,
@@ -137,9 +140,11 @@ async def lookup_isns_batch(
         results = await client.lookup_isns_batch(isns)
 
     # Convert to response models
+    # UPDATED: isn_searched is the original search term, isn is the first reference (primary ISN)
     response_results = [
         SfistspIsnReferenceResponse(
-            isn=r.isn,
+            isn_searched=r.isn,  # Original search term
+            isn=r.isn_references[0] if r.isn_references else r.isn,  # Primary ISN
             ssn=r.ssn,
             mac=r.mac,
             success=r.success,

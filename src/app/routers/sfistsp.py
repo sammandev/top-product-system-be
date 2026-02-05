@@ -30,7 +30,7 @@ from ..schemas.sfistsp_schemas import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/sfistsp", tags=["SFISTSP"])
+router = APIRouter(prefix="/api/sfistsp", tags=["SFISTSP"])
 
 
 # ============================================================================

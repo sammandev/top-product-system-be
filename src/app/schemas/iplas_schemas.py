@@ -542,3 +542,97 @@ class IplasTestItemByIsnResponse(BaseModel):
     total_count: int = Field(..., description="Total number of records found")
     cached: bool = Field(default=False, description="True if data was served from cache")
 
+
+# ============================================================================
+# iPLAS v2 Stations From ISN Schemas
+# ============================================================================
+
+
+class IplasStationsFromIsnRequest(BaseModel):
+    """Request schema for getting station list from ISN.
+    
+    This endpoint first looks up the ISN to find its site/project,
+    then fetches the full station list for that project.
+    """
+
+    isn: str = Field(..., description="ISN to look up")
+    token: str | None = Field(
+        default=None,
+        description="Optional user-provided token. If not provided, uses backend default.",
+    )
+
+
+class IplasStationsFromIsnBatchRequest(BaseModel):
+    """Request schema for getting station lists from multiple ISNs.
+    
+    For each unique site/project pair found, the station list is fetched.
+    Results are deduplicated if multiple ISNs belong to the same project.
+    """
+
+    isns: list[str] = Field(
+        ..., 
+        description="List of ISNs to look up",
+        min_length=1,
+        max_length=50,
+    )
+    token: str | None = Field(
+        default=None,
+        description="Optional user-provided token. If not provided, uses backend default.",
+    )
+
+
+class IplasIsnProjectInfo(BaseModel):
+    """Information about an ISN's project discovered from ISN search."""
+
+    isn: str = Field(..., description="The ISN that was searched")
+    site: str = Field(..., description="Site where ISN was found")
+    project: str = Field(..., description="Project where ISN belongs")
+    found: bool = Field(default=True, description="Whether the ISN was found")
+
+
+class IplasStationsFromIsnResponse(BaseModel):
+    """Response schema for stations from ISN lookup.
+    
+    Contains the ISN's site/project info and all stations for that project.
+    """
+
+    isn_info: IplasIsnProjectInfo = Field(
+        ..., description="Information about the ISN's project"
+    )
+    stations: list[IplasStation] = Field(
+        ..., description="List of all stations for the ISN's project"
+    )
+    total_stations: int = Field(..., description="Total number of stations")
+    cached: bool = Field(default=False, description="True if data was served from cache")
+
+
+class IplasStationsFromIsnBatchItem(BaseModel):
+    """Single item in batch stations lookup response."""
+
+    isn_info: IplasIsnProjectInfo = Field(
+        ..., description="Information about the ISN's project"
+    )
+    stations: list[IplasStation] = Field(
+        ..., description="List of all stations for the ISN's project"
+    )
+    total_stations: int = Field(..., description="Total number of stations")
+
+
+class IplasStationsFromIsnBatchResponse(BaseModel):
+    """Response schema for batch stations from ISN lookup.
+    
+    Returns station lists for each unique site/project found.
+    ISNs sharing the same project will have the same station list.
+    """
+
+    results: list[IplasStationsFromIsnBatchItem] = Field(
+        ..., description="Station lists for each ISN"
+    )
+    total_isns: int = Field(..., description="Total number of ISNs processed")
+    unique_projects: int = Field(..., description="Number of unique site/project pairs")
+    not_found_isns: list[str] = Field(
+        default_factory=list,
+        description="ISNs that were not found in any site"
+    )
+    cached: bool = Field(default=False, description="True if any data was served from cache")
+

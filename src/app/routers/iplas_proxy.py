@@ -33,6 +33,7 @@ from app.schemas.iplas_schemas import (
     IplasDownloadAttachmentResponse,
     IplasDownloadCsvLogRequest,
     IplasDownloadCsvLogResponse,
+    IplasIsnProjectInfo,
     IplasIsnSearchRequest,
     IplasIsnSearchResponse,
     IplasRecordTestItemsRequest,
@@ -41,6 +42,11 @@ from app.schemas.iplas_schemas import (
     IplasStation,
     IplasStationListRequest,
     IplasStationListResponse,
+    IplasStationsFromIsnBatchItem,
+    IplasStationsFromIsnBatchRequest,
+    IplasStationsFromIsnBatchResponse,
+    IplasStationsFromIsnRequest,
+    IplasStationsFromIsnResponse,
     IplasTestItemByIsnRequest,
     IplasTestItemByIsnResponse,
     IplasTestItemByIsnRecord,
@@ -1532,7 +1538,7 @@ async def health_check():
 
 
 @router.get(
-    "/v2/site-projects",
+    "/site-projects",
     response_model=IplasSiteProjectListResponse,
     summary="Get site/project list from iPLAS v2",
     description="""
@@ -1611,7 +1617,7 @@ async def get_site_projects(
 
 
 @router.post(
-    "/v2/stations",
+    "/stations",
     response_model=IplasStationListResponse,
     summary="Get station list for a project from iPLAS v2",
     description="""
@@ -1686,7 +1692,7 @@ async def get_stations(
 
 
 @router.post(
-    "/v2/devices",
+    "/devices",
     response_model=IplasDeviceListResponse,
     summary="Get device list for a station from iPLAS v2",
     description="""
@@ -1763,7 +1769,7 @@ async def get_devices(
 
 
 @router.post(
-    "/v2/isn-search",
+    "/isn-search",
     response_model=IplasIsnSearchResponse,
     summary="Search DUT by ISN from iPLAS v2",
     description="""
@@ -1860,6 +1866,309 @@ async def search_by_isn(
         data=results,
         total_count=len(results),
         cached=cached,
+    )
+
+
+# ============================================================================
+# iPLAS v2 Stations From ISN Endpoints
+# ============================================================================
+
+
+async def _search_isn_for_project(
+    isn: str,
+    token: str | None = None,
+) -> tuple[str | None, str | None, bool]:
+    """
+    Search for an ISN and return its site/project.
+
+    Returns:
+        Tuple of (site, project, cached) or (None, None, False) if not found.
+    """
+    redis = get_redis_client()
+    cache_key = f"iplas:v2:isn-project:{isn}"
+
+    # Try cache first
+    if redis:
+        try:
+            cached_data = redis.get(cache_key)
+            if cached_data:
+                data = json_loads(cached_data)
+                logger.debug(f"Cache HIT: {cache_key}")
+                return data.get("site"), data.get("project"), True
+        except Exception as e:
+            logger.warning(f"Redis GET error: {e}")
+
+    logger.debug(f"Cache MISS: {cache_key}")
+
+    site: str | None = None
+    project: str | None = None
+
+    # If user provided a token, use it with PTB as default site
+    if token:
+        site_config = _get_site_config("PTB", token)
+        try:
+            url = f"{site_config['v2_url']}/isn_search"
+            async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+                response = await client.get(
+                    url,
+                    params={"isn": isn},
+                    headers={"Authorization": f"Bearer {site_config['token']}"},
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get("status_code") == 200 and data.get("data"):
+                        first_record = data["data"][0]
+                        site = first_record.get("site")
+                        project = first_record.get("project")
+        except Exception as e:
+            logger.warning(f"Failed to search ISN with user token: {e}")
+    else:
+        # Query all configured sites until we find results
+        for site_name, site_config in IPLAS_SITES.items():
+            if not site_config["token"]:
+                continue
+
+            if site and project:
+                break  # Found results, stop querying
+
+            try:
+                v2_url = f"{site_config['base_url']}:{IPLAS_PORT}{IPLAS_V2_VERSION}"
+                url = f"{v2_url}/isn_search"
+
+                async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+                    response = await client.get(
+                        url,
+                        params={"isn": isn},
+                        headers={"Authorization": f"Bearer {site_config['token']}"},
+                    )
+
+                    if response.status_code == 200:
+                        data = response.json()
+                        if data.get("status_code") == 200 and data.get("data"):
+                            first_record = data["data"][0]
+                            site = first_record.get("site")
+                            project = first_record.get("project")
+                            logger.info(f"Found ISN {isn} in {site_name}: {site}/{project}")
+                    else:
+                        logger.debug(f"ISN not found in {site_name}: {response.status_code}")
+
+            except Exception as e:
+                logger.warning(f"Failed to search ISN in {site_name}: {e}")
+
+    # Cache the result
+    if redis and site and project:
+        try:
+            serialized = json_dumps({"site": site, "project": project})
+            redis.setex(cache_key, IPLAS_CACHE_TTL_ISN, serialized)
+            logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_ISN}s)")
+        except Exception as e:
+            logger.warning(f"Redis SET error: {e}")
+
+    return site, project, False
+
+
+async def _get_stations_for_project(
+    site: str,
+    project: str,
+    token: str | None = None,
+) -> tuple[list[IplasStation], bool]:
+    """
+    Get station list for a site/project.
+
+    Returns:
+        Tuple of (stations, cached)
+    """
+    redis = get_redis_client()
+    cache_key = f"iplas:v2:stations:{site}:{project}"
+
+    stations: list[IplasStation] = []
+
+    # Try cache first
+    if redis:
+        try:
+            cached_data = redis.get(cache_key)
+            if cached_data:
+                data = json_loads(cached_data)
+                stations = [IplasStation(**item) for item in data]
+                stations.sort(key=lambda s: (s.order is None, s.order))
+                logger.debug(f"Cache HIT: {cache_key}")
+                return stations, True
+        except Exception as e:
+            logger.warning(f"Redis GET error: {e}")
+
+    logger.debug(f"Cache MISS: {cache_key}")
+    site_config = _get_site_config(site, token)
+    url = f"{site_config['v2_url']}/{site}/{project}/station_list"
+
+    try:
+        async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+            response = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {site_config['token']}"},
+            )
+
+            if response.status_code != 200:
+                logger.warning(f"Failed to get stations for {site}/{project}: {response.status_code}")
+                return [], False
+
+            data = response.json()
+            stations = [IplasStation(**item) for item in data]
+            stations.sort(key=lambda s: (s.order is None, s.order))
+
+    except httpx.RequestError as e:
+        logger.warning(f"iPLAS v2 API unavailable for station list: {e}")
+        return [], False
+
+    # Store in cache
+    if redis and stations:
+        try:
+            serialized = json_dumps([s.model_dump() for s in stations])
+            redis.setex(cache_key, IPLAS_CACHE_TTL_STATIONS, serialized)
+            logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_STATIONS}s)")
+        except Exception as e:
+            logger.warning(f"Redis SET error: {e}")
+
+    return stations, False
+
+
+@router.post(
+    "/isn/stations",
+    response_model=IplasStationsFromIsnResponse,
+    summary="Get station list from ISN",
+    description="""
+    Looks up an ISN to find its site/project, then returns all stations for that project.
+    
+    This is useful when you only have an ISN and want to know all available test stations.
+    
+    **Flow**:
+    1. Search for the ISN across all configured sites
+    2. Extract the site/project from the first matching record
+    3. Fetch the complete station list for that project
+    
+    **Cache TTL**: 
+    - ISN lookup: 5 minutes
+    - Station list: 1 hour
+    """,
+)
+async def get_stations_from_isn(
+    request: IplasStationsFromIsnRequest,
+) -> IplasStationsFromIsnResponse:
+    """Get station list by looking up ISN's project."""
+
+    # Step 1: Search for ISN to get site/project
+    site, project, isn_cached = await _search_isn_for_project(request.isn, request.token)
+
+    if not site or not project:
+        # ISN not found - return empty result
+        return IplasStationsFromIsnResponse(
+            isn_info=IplasIsnProjectInfo(
+                isn=request.isn,
+                site="",
+                project="",
+                found=False,
+            ),
+            stations=[],
+            total_stations=0,
+            cached=False,
+        )
+
+    # Step 2: Get station list for the project
+    stations, stations_cached = await _get_stations_for_project(site, project, request.token)
+
+    return IplasStationsFromIsnResponse(
+        isn_info=IplasIsnProjectInfo(
+            isn=request.isn,
+            site=site,
+            project=project,
+            found=True,
+        ),
+        stations=stations,
+        total_stations=len(stations),
+        cached=isn_cached and stations_cached,
+    )
+
+
+@router.post(
+    "/isn-batch/stations",
+    response_model=IplasStationsFromIsnBatchResponse,
+    summary="Get station lists from multiple ISNs",
+    description="""
+    Looks up multiple ISNs to find their site/project pairs, then returns station lists.
+    
+    Results are deduplicated - if multiple ISNs belong to the same project, 
+    the station list is only fetched once.
+    
+    **Flow**:
+    1. Search for each ISN across all configured sites
+    2. Group ISNs by unique site/project pairs
+    3. Fetch station lists for each unique project
+    
+    **Limits**:
+    - Maximum 50 ISNs per request
+    
+    **Cache TTL**: 
+    - ISN lookup: 5 minutes
+    - Station list: 1 hour
+    """,
+)
+async def get_stations_from_isn_batch(
+    request: IplasStationsFromIsnBatchRequest,
+) -> IplasStationsFromIsnBatchResponse:
+    """Get station lists for multiple ISNs."""
+
+    results: list[IplasStationsFromIsnBatchItem] = []
+    not_found_isns: list[str] = []
+    project_cache: dict[str, list[IplasStation]] = {}  # site:project -> stations
+    any_cached = False
+
+    # Step 1: Look up each ISN and group by project
+    isn_projects: dict[str, tuple[str, str]] = {}  # isn -> (site, project)
+
+    for isn in request.isns:
+        site, project, cached = await _search_isn_for_project(isn, request.token)
+        if cached:
+            any_cached = True
+
+        if site and project:
+            isn_projects[isn] = (site, project)
+        else:
+            not_found_isns.append(isn)
+
+    # Step 2: Get unique projects and fetch their station lists
+    unique_projects: set[tuple[str, str]] = set(isn_projects.values())
+
+    for site, project in unique_projects:
+        cache_key = f"{site}:{project}"
+        if cache_key not in project_cache:
+            stations, cached = await _get_stations_for_project(site, project, request.token)
+            if cached:
+                any_cached = True
+            project_cache[cache_key] = stations
+
+    # Step 3: Build results for each ISN
+    for isn, (site, project) in isn_projects.items():
+        cache_key = f"{site}:{project}"
+        stations = project_cache.get(cache_key, [])
+
+        results.append(
+            IplasStationsFromIsnBatchItem(
+                isn_info=IplasIsnProjectInfo(
+                    isn=isn,
+                    site=site,
+                    project=project,
+                    found=True,
+                ),
+                stations=stations,
+                total_stations=len(stations),
+            )
+        )
+
+    return IplasStationsFromIsnBatchResponse(
+        results=results,
+        total_isns=len(request.isns),
+        unique_projects=len(unique_projects),
+        not_found_isns=not_found_isns,
+        cached=any_cached,
     )
 
 
@@ -2014,7 +2323,7 @@ async def download_csv_log(
 
 
 @router.post(
-    "/v2/verify",
+    "/verify",
     response_model=IplasVerifyResponse,
     summary="Verify token access for site/project",
     description="""

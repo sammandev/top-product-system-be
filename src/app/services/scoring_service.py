@@ -34,7 +34,7 @@ from ..schemas.scoring_schemas import (
 
 logger = logging.getLogger(__name__)
 
-# Score scale constants (0-10 scale as per new_scoring_top_product_v2.ipynb)
+# Score scale constants (0-10 scale)
 SCORE_MAX = 10.0
 SCORE_MIN = 0.0
 DEFAULT_LIMIT_SCORE = 1.0  # Score at UCL/LCL boundaries

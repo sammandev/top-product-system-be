@@ -731,3 +731,60 @@ class IplasStationsFromIsnBatchResponse(BaseModel):
     )
     cached: bool = Field(default=False, description="True if any data was served from cache")
 
+
+# ============================================================================
+# Export Test Items Schemas
+# ============================================================================
+
+
+class ExportTestItem(BaseModel):
+    """Test item data for export."""
+
+    NAME: str = Field(..., description="Test item name")
+    STATUS: str = Field(..., description="Test item status (PASS/FAIL)")
+    VALUE: str = Field(default="", description="Test item value")
+    UCL: str = Field(default="", description="Upper control limit")
+    LCL: str = Field(default="", description="Lower control limit")
+
+
+class ExportRecord(BaseModel):
+    """Single record for export."""
+
+    ISN: str = Field(..., description="Device ISN")
+    Project: str = Field(default="", description="Project name")
+    Station: str = Field(..., description="Station display name")
+    DeviceId: str = Field(default="", description="Device ID")
+    Line: str = Field(default="", description="Line name")
+    ErrorCode: str = Field(default="", description="Error code")
+    ErrorName: str = Field(default="", description="Error name")
+    Type: str = Field(default="ONLINE", description="Test type")
+    TestStartTime: str = Field(default="", description="Test start time")
+    TestEndTime: str = Field(default="", description="Test end time")
+    TestItems: list[ExportTestItem] = Field(default_factory=list, description="Test item data")
+
+
+class ExportTestItemsRequest(BaseModel):
+    """Request schema for exporting test items to CSV/XLSX."""
+
+    records: list[ExportRecord] = Field(
+        ..., description="List of records to export, grouped by station"
+    )
+    selected_test_items: list[str] | None = Field(
+        default=None,
+        description="List of test item names to include. If None/empty, includes all test items.",
+    )
+    format: Literal["csv", "xlsx"] = Field(
+        default="xlsx", description="Export format (csv or xlsx)"
+    )
+    filename_prefix: str = Field(
+        default="test_items_export",
+        description="Prefix for the generated filename",
+    )
+
+
+class ExportTestItemsResponse(BaseModel):
+    """Response schema for export - returns base64-encoded file content."""
+
+    content: str = Field(..., description="Base64-encoded file content")
+    filename: str = Field(..., description="Generated filename")
+    content_type: str = Field(..., description="MIME content type")

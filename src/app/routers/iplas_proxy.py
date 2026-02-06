@@ -29,6 +29,9 @@ from app.models.cached_test_item import CachedTestItem
 from app.schemas.iplas_schemas import (
     CompactCsvTestItemRecord,
     CompactCsvTestItemResponse,
+    ExportRecord,
+    ExportTestItemsRequest,
+    ExportTestItemsResponse,
     IplasBatchDownloadRequest,
     IplasBatchDownloadResponse,
     IplasCsvTestItemRequest,
@@ -3112,3 +3115,271 @@ async def stream_csv_test_items(
             "Cache-Control": "no-cache",
         },
     )
+
+
+# ============================================================================
+# Export Test Items Endpoint (CSV/XLSX)
+# ============================================================================
+
+
+@router.post(
+    "/export-test-items",
+    response_model=ExportTestItemsResponse,
+    summary="Export selected test items to CSV or XLSX",
+    description="""
+    Export selected test items from multiple records to a CSV or XLSX file.
+    
+    For XLSX format, records are grouped by station into separate sheets.
+    The output format uses a transposed layout where each record is a column:
+    
+    ```
+    TEST,STATUS,UCL,LCL,VALUE
+    ISN,,,,,"Record1_ISN","Record2_ISN",...
+    Project,,,,,"HH5K","HH5K",...
+    ...(metadata rows)...
+    TestItem1,PASS,UCL_VAL,LCL_VAL,Value1,Value2,...
+    TestItem2,FAIL,UCL_VAL,LCL_VAL,Value1,Value2,...
+    ```
+    
+    Returns base64-encoded file content for browser download.
+    """,
+)
+async def export_test_items(
+    request: ExportTestItemsRequest,
+) -> ExportTestItemsResponse:
+    """Export test items to CSV or XLSX format."""
+    import base64
+    import io
+    from collections import defaultdict
+    from datetime import datetime as dt
+
+    if not request.records:
+        raise HTTPException(status_code=400, detail="No records provided for export")
+
+    # Group records by station
+    records_by_station: dict[str, list[ExportRecord]] = defaultdict(list)
+    for record in request.records:
+        records_by_station[record.Station].append(record)
+
+    # Collect all unique test item names across all records
+    all_test_item_names: set[str] = set()
+    for record in request.records:
+        for ti in record.TestItems:
+            all_test_item_names.add(ti.NAME)
+
+    # Filter test items if specified
+    if request.selected_test_items:
+        selected_set = set(request.selected_test_items)
+        filtered_test_items = [name for name in all_test_item_names if name in selected_set]
+    else:
+        filtered_test_items = sorted(all_test_item_names)
+
+    # Generate timestamp for filename
+    timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
+    
+    if request.format == "csv":
+        # CSV format - combine all stations into one file
+        output = io.StringIO()
+        _write_export_csv(output, records_by_station, filtered_test_items)
+        content = base64.b64encode(output.getvalue().encode("utf-8")).decode("utf-8")
+        filename = f"{request.filename_prefix}_{timestamp}.csv"
+        content_type = "text/csv"
+    else:
+        # XLSX format - each station gets a sheet
+        try:
+            from openpyxl import Workbook
+        except ImportError:
+            raise HTTPException(
+                status_code=500,
+                detail="openpyxl is required for XLSX export. Install with: pip install openpyxl",
+            ) from None
+        
+        wb = Workbook()
+        # Remove default sheet
+        wb.remove(wb.active)
+        
+        for station_name, station_records in records_by_station.items():
+            # Create sheet for this station (max 31 chars for sheet name)
+            sheet_name = station_name[:31] if len(station_name) > 31 else station_name
+            ws = wb.create_sheet(title=sheet_name)
+            _write_export_sheet(ws, station_records, filtered_test_items)
+        
+        # Save to bytes
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+        content = base64.b64encode(output.getvalue()).decode("utf-8")
+        filename = f"{request.filename_prefix}_{timestamp}.xlsx"
+        content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    return ExportTestItemsResponse(
+        content=content,
+        filename=filename,
+        content_type=content_type,
+    )
+
+
+def _write_export_csv(
+    output: Any,
+    records_by_station: dict[str, list["ExportRecord"]],
+    test_item_names: list[str],
+) -> None:
+    """Write export data to CSV format."""
+    import csv
+
+    writer = csv.writer(output, quoting=csv.QUOTE_MINIMAL)
+    
+    # Flatten all records for CSV (all stations combined)
+    all_records = []
+    for records in records_by_station.values():
+        all_records.extend(records)
+    
+    if not all_records:
+        return
+    
+    # Header row: TEST, STATUS, UCL, LCL, then one VALUE column per record
+    header = ["TEST", "STATUS", "UCL", "LCL"] + ["VALUE"] * len(all_records)
+    writer.writerow(header)
+    
+    # Metadata rows
+    metadata_fields = [
+        ("ISN", lambda r: r.ISN),
+        ("Project", lambda r: r.Project),
+        ("TSP", lambda r: r.Station),
+        ("DeviceId", lambda r: r.DeviceId),
+        ("Line", lambda r: r.Line),
+        ("ErrorCode", lambda r: r.ErrorCode),
+        ("ErrorName", lambda r: r.ErrorName),
+        ("Type", lambda r: r.Type),
+        ("Test Start Time", lambda r: r.TestStartTime),
+        ("Test end Time", lambda r: r.TestEndTime),
+    ]
+    
+    for field_name, getter in metadata_fields:
+        row = [field_name, "", "", ""] + [getter(r) for r in all_records]
+        writer.writerow(row)
+    
+    # Build test item lookup for each record
+    record_test_items = []
+    for record in all_records:
+        ti_map = {ti.NAME: ti for ti in record.TestItems}
+        record_test_items.append(ti_map)
+    
+    # Test item rows
+    for ti_name in test_item_names:
+        # Get STATUS, UCL, LCL from first record that has this test item
+        status = ucl = lcl = ""
+        for ti_map in record_test_items:
+            if ti_name in ti_map:
+                ti = ti_map[ti_name]
+                status = ti.STATUS
+                ucl = ti.UCL
+                lcl = ti.LCL
+                break
+        
+        # Get VALUE for each record
+        values = []
+        for ti_map in record_test_items:
+            if ti_name in ti_map:
+                values.append(ti_map[ti_name].VALUE)
+            else:
+                values.append("")
+        
+        row = [ti_name, status, ucl, lcl] + values
+        writer.writerow(row)
+
+
+def _write_export_sheet(
+    ws: "Any",
+    records: list["ExportRecord"],
+    test_item_names: list[str],
+) -> None:
+    """Write export data to an Excel worksheet."""
+    from openpyxl.styles import Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    if not records:
+        return
+
+    # Styles
+    header_font = Font(bold=True)
+    header_fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+    thin_border = Border(
+        left=Side(style="thin"),
+        right=Side(style="thin"),
+        top=Side(style="thin"),
+        bottom=Side(style="thin"),
+    )
+
+    # Header row: TEST, STATUS, UCL, LCL, then one VALUE column per record
+    headers = ["TEST", "STATUS", "UCL", "LCL"] + ["VALUE"] * len(records)
+    for col_idx, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.border = thin_border
+
+    row_idx = 2
+
+    # Metadata rows
+    metadata_fields = [
+        ("ISN", lambda r: r.ISN),
+        ("Project", lambda r: r.Project),
+        ("TSP", lambda r: r.Station),
+        ("DeviceId", lambda r: r.DeviceId),
+        ("Line", lambda r: r.Line),
+        ("ErrorCode", lambda r: r.ErrorCode),
+        ("ErrorName", lambda r: r.ErrorName),
+        ("Type", lambda r: r.Type),
+        ("Test Start Time", lambda r: r.TestStartTime),
+        ("Test end Time", lambda r: r.TestEndTime),
+    ]
+
+    for field_name, getter in metadata_fields:
+        ws.cell(row=row_idx, column=1, value=field_name).border = thin_border
+        ws.cell(row=row_idx, column=2, value="").border = thin_border
+        ws.cell(row=row_idx, column=3, value="").border = thin_border
+        ws.cell(row=row_idx, column=4, value="").border = thin_border
+        for col_idx, record in enumerate(records, 5):
+            ws.cell(row=row_idx, column=col_idx, value=getter(record)).border = thin_border
+        row_idx += 1
+
+    # Build test item lookup for each record
+    record_test_items = []
+    for record in records:
+        ti_map = {ti.NAME: ti for ti in record.TestItems}
+        record_test_items.append(ti_map)
+
+    # Test item rows
+    for ti_name in test_item_names:
+        # Get STATUS, UCL, LCL from first record that has this test item
+        status = ucl = lcl = ""
+        for ti_map in record_test_items:
+            if ti_name in ti_map:
+                ti = ti_map[ti_name]
+                status = ti.STATUS
+                ucl = ti.UCL
+                lcl = ti.LCL
+                break
+
+        ws.cell(row=row_idx, column=1, value=ti_name).border = thin_border
+        ws.cell(row=row_idx, column=2, value=status).border = thin_border
+        ws.cell(row=row_idx, column=3, value=ucl).border = thin_border
+        ws.cell(row=row_idx, column=4, value=lcl).border = thin_border
+
+        # Get VALUE for each record
+        for col_idx, ti_map in enumerate(record_test_items, 5):
+            value = ti_map[ti_name].VALUE if ti_name in ti_map else ""
+            ws.cell(row=row_idx, column=col_idx, value=value).border = thin_border
+
+        row_idx += 1
+
+    # Auto-adjust column widths
+    for col_idx in range(1, len(headers) + 1):
+        col_letter = get_column_letter(col_idx)
+        max_length = 0
+        for row in range(1, row_idx):
+            cell = ws.cell(row=row, column=col_idx)
+            if cell.value:
+                max_length = max(max_length, len(str(cell.value)))
+        ws.column_dimensions[col_letter].width = min(max_length + 2, 50)

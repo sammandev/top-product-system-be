@@ -464,6 +464,15 @@ async def _fetch_from_iplas(
 
     data = response.json()
 
+    # UPDATED: Check for error_msg in response body (time interval error, etc.)
+    if "error_msg" in data:
+        error_msg = data.get("error_msg", "Unknown error")
+        logger.error(f"iPLAS API error_msg: {error_msg}")
+        raise HTTPException(
+            status_code=400,
+            detail=f"iPLAS API error: {error_msg}",
+        )
+
     if data.get("statuscode") != 200:
         raise HTTPException(
             status_code=500,
@@ -1600,30 +1609,58 @@ async def get_test_item_names_cached(
                     f"({cache_age_hours:.1f}h > {CACHED_TEST_ITEMS_TTL_HOURS}h TTL)"
                 )
 
-    # Cache miss or force refresh - fetch from iPLAS with 7-day window
+    # Cache miss or force refresh - fetch from iPLAS with progressive time windows
     logger.info(f"DB cache MISS: {site}/{project}/{station} - fetching from iPLAS")
 
-    # Use a 7-day window ending now (short range to avoid timeout)
-    end_time = datetime.now()
-    begin_time = datetime.now() - timedelta(days=7)
+    # UPDATED: Try progressively larger time windows to find data
+    # Start with 3 days, then try 5 days, then 7 days max
+    time_windows_days = [3, 5, 7]
+    records = []
+    last_error = None
 
-    try:
-        records, _, _, _, _ = await _fetch_chunked_from_iplas(
-            site=site,
-            project=project,
-            station=station,
-            device_id="ALL",
-            begin_time=begin_time,
-            end_time=end_time,
-            test_status="ALL",
-            user_token=request.token,
-        )
-    except Exception as e:
-        logger.error(f"Failed to fetch from iPLAS: {e}")
-        raise HTTPException(
-            status_code=502,
-            detail=f"Failed to fetch test items from iPLAS: {str(e)}",
-        ) from e
+    for days in time_windows_days:
+        end_time = datetime.now()
+        begin_time = end_time - timedelta(days=days)
+        
+        logger.info(f"Trying {days}-day window for {site}/{project}/{station}")
+        
+        try:
+            records, _, _, _, _ = await _fetch_chunked_from_iplas(
+                site=site,
+                project=project,
+                station=station,
+                device_id="ALL",
+                begin_time=begin_time,
+                end_time=end_time,
+                test_status="ALL",
+                user_token=request.token,
+            )
+            
+            if records:
+                logger.info(f"Found {len(records)} records with {days}-day window")
+                break
+            else:
+                logger.info(f"No records found with {days}-day window, trying larger")
+                
+        except HTTPException as e:
+            last_error = e
+            # If this is a time interval error, try smaller window
+            if "time interval" in str(e.detail).lower():
+                logger.warning(f"Time interval error with {days}-day window, trying smaller")
+                continue
+            # For other errors, try next window
+            logger.warning(f"Error with {days}-day window: {e.detail}")
+            continue
+        except Exception as e:
+            last_error = HTTPException(
+                status_code=502,
+                detail=f"Failed to fetch test items from iPLAS: {str(e)}",
+            )
+            logger.error(f"Failed to fetch from iPLAS: {e}")
+            continue
+
+    if not records and last_error:
+        raise last_error
 
     if not records:
         logger.warning(f"No records found from iPLAS for {site}/{project}/{station}")

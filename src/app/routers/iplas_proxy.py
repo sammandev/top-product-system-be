@@ -3473,12 +3473,35 @@ def _write_export_sheet(
     header_font = Font(bold=True)
     bold_font = Font(bold=True)  # For ISN row
     header_fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
+    # Soft green fill for ISN row values
+    isn_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+    # Soft red fill for fail records
+    fail_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
     thin_border = Border(
         left=Side(style="thin"),
         right=Side(style="thin"),
         top=Side(style="thin"),
         bottom=Side(style="thin"),
     )
+
+    # Determine which records are passes vs fails
+    # Pass: ErrorCode = "PASS" (or empty/N/A)
+    # Fail: ErrorCode is not empty, not "PASS", not "N/A", not "0"
+    pass_columns: set[int] = set()
+    fail_columns: set[int] = set()
+    for col_idx, record in enumerate(records, 4):
+        error_code = (record.ErrorCode.strip() if record.ErrorCode else "").upper()
+        error_name = (record.ErrorName.strip() if record.ErrorName else "").upper()
+        
+        # Check for pass: ErrorCode is "PASS" or empty, ErrorName is "N/A" or empty
+        is_pass = error_code in ("", "PASS", "0") or (error_code == "N/A" and error_name in ("", "N/A"))
+        # Check for fail: ErrorCode is not empty, not "PASS", not "N/A", not "0"
+        is_fail = error_code and error_code not in ("", "PASS", "N/A", "0")
+        
+        if is_fail:
+            fail_columns.add(col_idx)
+        elif is_pass:
+            pass_columns.add(col_idx)
 
     # Header row: TEST, UCL, LCL, then one VALUE column per record (STATUS removed)
     headers = ["TEST", "UCL", "LCL"] + ["VALUE"] * len(records)
@@ -3523,6 +3546,12 @@ def _write_export_sheet(
             cell.border = thin_border
             if is_isn_row:
                 cell.font = bold_font
+                # Apply color fills only to ISN row cells
+                # Soft red for fail records, soft green for pass records
+                if col_idx in fail_columns:
+                    cell.fill = fail_fill
+                elif col_idx in pass_columns:
+                    cell.fill = isn_fill
         row_idx += 1
 
     # Build test item lookup for each record
@@ -3549,7 +3578,8 @@ def _write_export_sheet(
         # Get VALUE for each record
         for col_idx, ti_map in enumerate(record_test_items, 4):
             value = ti_map[ti_name].VALUE if ti_name in ti_map else ""
-            ws.cell(row=row_idx, column=col_idx, value=value).border = thin_border
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.border = thin_border
 
         row_idx += 1
 

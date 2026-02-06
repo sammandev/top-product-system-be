@@ -1604,15 +1604,15 @@ async def get_test_item_names_cached(
     logger.info(f"DB cache MISS: {site}/{project}/{station} - fetching from iPLAS")
 
     # Use a 7-day window ending now (short range to avoid timeout)
-    end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    begin_time = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+    end_time = datetime.now()
+    begin_time = datetime.now() - timedelta(days=7)
 
     try:
         records, _, _, _, _ = await _fetch_chunked_from_iplas(
             site=site,
             project=project,
             station=station,
-            device_id=None,
+            device_id="ALL",
             begin_time=begin_time,
             end_time=end_time,
             test_status="ALL",

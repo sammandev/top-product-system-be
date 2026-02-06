@@ -3319,31 +3319,41 @@ async def export_test_items(
     for record in request.records:
         records_by_station[record.Station].append(record)
 
-    # Collect all unique test item names across all records
-    all_test_item_names: set[str] = set()
-    for record in request.records:
-        for ti in record.TestItems:
-            all_test_item_names.add(ti.NAME)
-
-    # Filter test items if specified
-    if request.selected_test_items:
-        selected_set = set(request.selected_test_items)
-        filtered_test_items = [name for name in all_test_item_names if name in selected_set]
-    else:
-        filtered_test_items = sorted(all_test_item_names)
+    # Collect test items PER STATION (not globally) to avoid mixing test items between stations
+    test_items_by_station: dict[str, list[str]] = {}
+    for station_name, station_records in records_by_station.items():
+        station_test_item_names: set[str] = set()
+        for record in station_records:
+            for ti in record.TestItems:
+                station_test_item_names.add(ti.NAME)
+        
+        # Filter test items if specified
+        if request.selected_test_items:
+            selected_set = set(request.selected_test_items)
+            test_items_by_station[station_name] = sorted(
+                [name for name in station_test_item_names if name in selected_set]
+            )
+        else:
+            test_items_by_station[station_name] = sorted(station_test_item_names)
 
     # Generate timestamp for filename
     timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
     
     if request.format == "csv":
         # CSV format - combine all stations into one file
+        # For CSV, we need all unique test items across all stations
+        all_test_items_for_csv: set[str] = set()
+        for test_items in test_items_by_station.values():
+            all_test_items_for_csv.update(test_items)
+        csv_test_items = sorted(all_test_items_for_csv)
+        
         output = io.StringIO()
-        _write_export_csv(output, records_by_station, filtered_test_items)
+        _write_export_csv(output, records_by_station, csv_test_items)
         content = base64.b64encode(output.getvalue().encode("utf-8")).decode("utf-8")
         filename = f"{request.filename_prefix}_{timestamp}.csv"
         content_type = "text/csv"
     else:
-        # XLSX format - each station gets a sheet
+        # XLSX format - each station gets a sheet with only its test items
         try:
             from openpyxl import Workbook
         except ImportError:
@@ -3360,7 +3370,9 @@ async def export_test_items(
             # Create sheet for this station (max 31 chars for sheet name)
             sheet_name = station_name[:31] if len(station_name) > 31 else station_name
             ws = wb.create_sheet(title=sheet_name)
-            _write_export_sheet(ws, station_records, filtered_test_items)
+            # Use only the test items that belong to this station
+            station_test_items = test_items_by_station.get(station_name, [])
+            _write_export_sheet(ws, station_records, station_test_items)
         
         # Save to bytes
         output = io.BytesIO()

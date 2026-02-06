@@ -1616,7 +1616,7 @@ async def get_test_item_names_cached(
             begin_time=begin_time,
             end_time=end_time,
             test_status="ALL",
-            token=request.token,
+            user_token=request.token,
         )
     except Exception as e:
         logger.error(f"Failed to fetch from iPLAS: {e}")

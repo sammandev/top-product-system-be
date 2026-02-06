@@ -102,6 +102,49 @@ class IplasTestItemNamesResponse(BaseModel):
     total_count: int = Field(..., description="Total number of unique test items")
 
 
+# ============================================================================
+# Cached Test Item Names - Database-backed caching for faster loading
+# ============================================================================
+
+
+class IplasCachedTestItemNamesRequest(BaseModel):
+    """Request schema for fetching cached test item names.
+    
+    This endpoint uses database caching to avoid iPLAS API calls when possible.
+    Date range is intentionally NOT part of the cache key since test items rarely change.
+    """
+
+    site: str = Field(..., description="Site identifier")
+    project: str = Field(..., description="Project identifier")
+    station: str = Field(..., description="Station display name")
+    exclude_bin: bool = Field(
+        default=False,
+        description="If true, excludes BIN/PASS-FAIL test items from results.",
+    )
+    force_refresh: bool = Field(
+        default=False,
+        description="If true, bypasses cache and fetches fresh data from iPLAS.",
+    )
+    token: str | None = Field(
+        default=None,
+        description="Optional user-provided token for iPLAS access.",
+    )
+
+
+class IplasCachedTestItemNamesResponse(BaseModel):
+    """Response schema for cached test item names."""
+
+    test_items: list[IplasTestItemInfo] = Field(
+        ..., description="List of unique test item names with type info"
+    )
+    total_count: int = Field(..., description="Total number of unique test items")
+    cached: bool = Field(default=False, description="True if data was served from database cache")
+    cache_age_hours: float | None = Field(
+        default=None,
+        description="Age of cached data in hours (None if freshly fetched)",
+    )
+
+
 class IplasRecordTestItemsRequest(BaseModel):
     """Request schema for fetching test items for a specific record."""
 
@@ -450,6 +493,45 @@ class IplasDownloadCsvLogResponse(BaseModel):
     filename: str | None = Field(
         default=None, description="Filename from response header"
     )
+
+
+# ============================================================================
+# iPLAS Batch Download Schemas
+# ============================================================================
+
+
+class IplasBatchDownloadRequest(BaseModel):
+    """Request schema for batch downloading logs (TXT, CSV, or both).
+    
+    This endpoint handles batch downloads efficiently by:
+    - Making parallel requests to iPLAS for each item
+    - Packaging multiple files into a zip archive
+    - Returning base64-encoded content
+    """
+
+    site: str = Field(..., description="Site identifier")
+    project: str = Field(..., description="Project identifier")
+    items: list[IplasDownloadCsvLogInfo] = Field(
+        ..., description="List of test log items to download"
+    )
+    download_type: str = Field(
+        default="all",
+        description="Type of download: 'txt' for attachments only, 'csv' for CSV logs only, 'all' for both"
+    )
+    token: str | None = Field(
+        default=None,
+        description="Optional user-provided token. If not provided, uses backend default.",
+    )
+
+
+class IplasBatchDownloadResponse(BaseModel):
+    """Response schema for batch download."""
+
+    content: str = Field(..., description="Base64 encoded zip file content")
+    filename: str = Field(..., description="Suggested filename for the download")
+    file_count: int = Field(..., description="Number of files in the archive")
+    txt_count: int = Field(default=0, description="Number of TXT log files")
+    csv_count: int = Field(default=0, description="Number of CSV log files")
 
 
 # ============================================================================

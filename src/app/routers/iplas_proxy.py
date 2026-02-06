@@ -18,13 +18,19 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from redis import Redis
+from sqlalchemy.orm import Session
+
+from app.db import get_db
+from app.models.cached_test_item import CachedTestItem
 
 from app.schemas.iplas_schemas import (
     CompactCsvTestItemRecord,
     CompactCsvTestItemResponse,
+    IplasBatchDownloadRequest,
+    IplasBatchDownloadResponse,
     IplasCsvTestItemRequest,
     IplasCsvTestItemResponse,
     IplasDeviceListRequest,
@@ -54,6 +60,8 @@ from app.schemas.iplas_schemas import (
     IplasTestItemInfo,
     IplasTestItemNamesRequest,
     IplasTestItemNamesResponse,
+    IplasCachedTestItemNamesRequest,
+    IplasCachedTestItemNamesResponse,
     IplasVerifyRequest,
     IplasVerifyResponse,
     SiteProject,
@@ -1505,6 +1513,171 @@ async def get_test_item_names(
     )
 
 
+# Cache TTL for database-backed test item names (7 days in seconds)
+CACHED_TEST_ITEMS_TTL_HOURS = 168  # 7 days
+
+
+@router.post(
+    "/test-item-names-cached",
+    response_model=IplasCachedTestItemNamesResponse,
+    summary="Get cached test item names from database",
+    description="""
+    Fetches test item names for a station from the database cache.
+    
+    This is optimized for the "Configure Station" dialog where loading test items
+    for long date ranges (30+ days) often times out. The cache key is:
+    site + project + station (date range NOT included since test items rarely change).
+    
+    **Cache TTL**: 7 days in database
+    
+    On cache miss, fetches from iPLAS using a 7-day window and saves to database.
+    Use `force_refresh=true` to manually refresh the cache.
+    """,
+)
+async def get_test_item_names_cached(
+    request: IplasCachedTestItemNamesRequest,
+    db: Session = Depends(get_db),
+) -> IplasCachedTestItemNamesResponse:
+    """Get cached test item names from database."""
+    from datetime import timezone
+
+    site = request.site.upper()
+    project = request.project
+    station = request.station
+
+    # Check database cache first (unless force_refresh)
+    if not request.force_refresh:
+        cached_items = (
+            db.query(CachedTestItem)
+            .filter(
+                CachedTestItem.site == site,
+                CachedTestItem.project == project,
+                CachedTestItem.station == station,
+            )
+            .all()
+        )
+
+        if cached_items:
+            # Check cache age
+            oldest_item = min(cached_items, key=lambda x: x.created_at)
+            cache_age = datetime.now(timezone.utc) - oldest_item.created_at.replace(
+                tzinfo=timezone.utc
+            )
+            cache_age_hours = cache_age.total_seconds() / 3600
+
+            # If cache is still valid (within TTL)
+            if cache_age_hours < CACHED_TEST_ITEMS_TTL_HOURS:
+                logger.info(
+                    f"DB cache HIT: {site}/{project}/{station} "
+                    f"({len(cached_items)} items, {cache_age_hours:.1f}h old)"
+                )
+
+                # Convert to response format
+                test_items = [
+                    IplasTestItemInfo(
+                        name=item.test_item_name,
+                        is_value=item.is_value,
+                        is_bin=item.is_bin,
+                        has_ucl=item.has_ucl,
+                        has_lcl=item.has_lcl,
+                    )
+                    for item in cached_items
+                ]
+
+                # Filter out BIN items if requested
+                if request.exclude_bin:
+                    test_items = [item for item in test_items if not item.is_bin]
+
+                return IplasCachedTestItemNamesResponse(
+                    test_items=test_items,
+                    total_count=len(test_items),
+                    cached=True,
+                    cache_age_hours=round(cache_age_hours, 1),
+                )
+            else:
+                logger.info(
+                    f"DB cache EXPIRED: {site}/{project}/{station} "
+                    f"({cache_age_hours:.1f}h > {CACHED_TEST_ITEMS_TTL_HOURS}h TTL)"
+                )
+
+    # Cache miss or force refresh - fetch from iPLAS with 7-day window
+    logger.info(f"DB cache MISS: {site}/{project}/{station} - fetching from iPLAS")
+
+    # Use a 7-day window ending now (short range to avoid timeout)
+    end_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    begin_time = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+
+    try:
+        records, _, _, _, _ = await _fetch_chunked_from_iplas(
+            site=site,
+            project=project,
+            station=station,
+            device_id=None,
+            begin_time=begin_time,
+            end_time=end_time,
+            test_status="ALL",
+            token=request.token,
+        )
+    except Exception as e:
+        logger.error(f"Failed to fetch from iPLAS: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch test items from iPLAS: {str(e)}",
+        ) from e
+
+    if not records:
+        logger.warning(f"No records found from iPLAS for {site}/{project}/{station}")
+        return IplasCachedTestItemNamesResponse(
+            test_items=[],
+            total_count=0,
+            cached=False,
+            cache_age_hours=None,
+        )
+
+    # Extract unique test item names
+    test_items = _extract_unique_test_items(records)
+
+    # Clear old cache entries for this station
+    db.query(CachedTestItem).filter(
+        CachedTestItem.site == site,
+        CachedTestItem.project == project,
+        CachedTestItem.station == station,
+    ).delete()
+
+    # Save new entries to database
+    now = datetime.now(timezone.utc)
+    for item in test_items:
+        cached_item = CachedTestItem(
+            site=site,
+            project=project,
+            station=station,
+            test_item_name=item.name,
+            is_value=item.is_value,
+            is_bin=item.is_bin,
+            has_ucl=item.has_ucl,
+            has_lcl=item.has_lcl,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(cached_item)
+
+    db.commit()
+    logger.info(
+        f"DB cache STORED: {site}/{project}/{station} ({len(test_items)} items)"
+    )
+
+    # Filter out BIN items if requested
+    if request.exclude_bin:
+        test_items = [item for item in test_items if not item.is_bin]
+
+    return IplasCachedTestItemNamesResponse(
+        test_items=test_items,
+        total_count=len(test_items),
+        cached=False,
+        cache_age_hours=None,
+    )
+
+
 @router.get(
     "/health",
     summary="Check iPLAS proxy health",
@@ -2315,6 +2488,216 @@ async def download_csv_log(
 
     except httpx.RequestError as e:
         raise HTTPException(status_code=503, detail=f"iPLAS v1 API unavailable: {e}") from None
+
+
+# ============================================================================
+# iPLAS Batch Download Endpoint (TXT + CSV combined)
+# ============================================================================
+
+
+async def _download_single_csv_log(
+    client: httpx.AsyncClient,
+    site_config: dict,
+    item: dict,
+) -> tuple[str, str | None]:
+    """Download a single CSV log file from iPLAS.
+    
+    Returns (csv_content, filename) or raises exception.
+    """
+    url = f"{site_config['v1_url']}/raw/get_test_log"
+    payload = {
+        "query_list": [item],
+        "token": site_config["token"],
+    }
+    
+    response = await client.post(url, json=payload)
+    if response.status_code != 200:
+        logger.warning(f"CSV download failed for {item.get('isn')}: {response.status_code}")
+        return "", None
+    
+    # Get filename from header
+    filename = None
+    content_disposition = response.headers.get("content-disposition", "")
+    if "filename=" in content_disposition:
+        import re
+        match = re.search(r'filename="?([^";\n]+)"?', content_disposition)
+        if match:
+            filename = match.group(1)
+    
+    return response.text, filename
+
+
+async def _download_single_attachment(
+    client: httpx.AsyncClient,
+    site_config: dict,
+    site: str,
+    project: str,
+    item: dict,
+) -> tuple[bytes, str | None]:
+    """Download a single TXT attachment from iPLAS.
+    
+    Returns (file_bytes, filename) or raises exception.
+    """
+    url = f"{site_config['v1_url']}/file/{site}/{project}/download_attachment"
+    payload = {
+        "info": [item],
+        "token": site_config["token"],
+    }
+    
+    response = await client.post(url, json=payload)
+    if response.status_code != 200:
+        logger.warning(f"TXT download failed for {item.get('isn')}: {response.status_code}")
+        return b"", None
+    
+    data = response.json()
+    if data.get("statuscode") != 200:
+        logger.warning(f"TXT download failed for {item.get('isn')}: status {data.get('statuscode')}")
+        return b"", None
+    
+    import base64
+    content = base64.b64decode(data["data"]["content"])
+    filename = data["data"].get("filename")
+    
+    return content, filename
+
+
+@router.post(
+    "/batch-download",
+    response_model=IplasBatchDownloadResponse,
+    summary="Batch download test logs (TXT, CSV, or both)",
+    description="""
+    Downloads multiple test logs in a single request, packaging them into a zip archive.
+    
+    **Download Types**:
+    - `txt`: Download TXT attachments only
+    - `csv`: Download CSV test logs only  
+    - `all`: Download both TXT and CSV logs (default)
+    
+    **Performance**: Uses parallel requests for faster downloads.
+    
+    **Returns**: Base64-encoded zip file containing all requested logs.
+    """,
+)
+async def batch_download(
+    request: IplasBatchDownloadRequest,
+) -> IplasBatchDownloadResponse:
+    """Batch download test logs with proper zip packaging."""
+    import base64
+    import io
+    import zipfile
+    
+    if not request.items:
+        raise HTTPException(status_code=400, detail="items cannot be empty")
+    
+    site_config = _get_site_config(request.site, request.token)
+    download_type = request.download_type.lower()
+    
+    if download_type not in ("txt", "csv", "all"):
+        raise HTTPException(status_code=400, detail="download_type must be 'txt', 'csv', or 'all'")
+    
+    logger.info(f"Batch download: {len(request.items)} items, type={download_type}")
+    
+    # Create in-memory zip file
+    zip_buffer = io.BytesIO()
+    txt_count = 0
+    csv_count = 0
+    
+    async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            # Process each item
+            for item in request.items:
+                item_dict = {
+                    "site": item.site,
+                    "project": item.project,
+                    "station": item.station,
+                    "line": item.line,
+                    "model": item.model,
+                    "deviceid": item.deviceid,
+                    "isn": item.isn,
+                    "test_end_time": item.test_end_time,
+                    "data_source": item.data_source,
+                }
+                
+                # Base filename for this item
+                safe_time = item.test_end_time.replace("/", "_").replace(":", "_").replace(" ", "_").replace(".", "_")
+                base_filename = f"{item.isn}_{safe_time}"
+                
+                # Download TXT attachment if requested
+                if download_type in ("txt", "all"):
+                    try:
+                        # Convert test_end_time format for attachment API
+                        # From "2026/01/22 18:57:05.000" to "2026/01/22 18:57:05"
+                        attachment_time = item.test_end_time.split(".")[0]
+                        
+                        attachment_item = {
+                            "isn": item.isn,
+                            "time": attachment_time,
+                            "deviceid": item.deviceid,
+                            "station": item.station,
+                        }
+                        
+                        content, filename = await _download_single_attachment(
+                            client, site_config, request.site, request.project, attachment_item
+                        )
+                        
+                        if content:
+                            # Use original filename or generate one
+                            zip_filename = filename or f"{base_filename}.zip"
+                            # Add to zip - the content is already a zip, so add its contents
+                            try:
+                                inner_zip = zipfile.ZipFile(io.BytesIO(content))
+                                for inner_name in inner_zip.namelist():
+                                    inner_data = inner_zip.read(inner_name)
+                                    # Prefix with txt/ folder
+                                    zip_file.writestr(f"txt/{inner_name}", inner_data)
+                                txt_count += 1
+                            except zipfile.BadZipFile:
+                                # Not a zip, add as-is
+                                zip_file.writestr(f"txt/{zip_filename}", content)
+                                txt_count += 1
+                    except Exception as e:
+                        logger.warning(f"Failed to download TXT for {item.isn}: {e}")
+                
+                # Download CSV log if requested
+                if download_type in ("csv", "all"):
+                    try:
+                        csv_content, csv_filename = await _download_single_csv_log(
+                            client, site_config, item_dict
+                        )
+                        
+                        if csv_content:
+                            filename = csv_filename or f"{base_filename}.csv"
+                            # Prefix with csv/ folder
+                            zip_file.writestr(f"csv/{filename}", csv_content.encode("utf-8"))
+                            csv_count += 1
+                    except Exception as e:
+                        logger.warning(f"Failed to download CSV for {item.isn}: {e}")
+    
+    # Get zip content
+    zip_buffer.seek(0)
+    zip_content = zip_buffer.read()
+    
+    if not zip_content or (txt_count == 0 and csv_count == 0):
+        raise HTTPException(status_code=404, detail="No files were downloaded successfully")
+    
+    # Generate filename
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if download_type == "txt":
+        filename = f"test_logs_txt_{timestamp}.zip"
+    elif download_type == "csv":
+        filename = f"test_logs_csv_{timestamp}.zip"
+    else:
+        filename = f"test_logs_all_{timestamp}.zip"
+    
+    logger.info(f"Batch download complete: {txt_count} TXT + {csv_count} CSV files")
+    
+    return IplasBatchDownloadResponse(
+        content=base64.b64encode(zip_content).decode("utf-8"),
+        filename=filename,
+        file_count=txt_count + csv_count,
+        txt_count=txt_count,
+        csv_count=csv_count,
+    )
 
 
 # ============================================================================

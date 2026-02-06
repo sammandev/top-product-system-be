@@ -112,6 +112,11 @@ class IplasCachedTestItemNamesRequest(BaseModel):
     
     This endpoint uses database caching to avoid iPLAS API calls when possible.
     Date range is intentionally NOT part of the cache key since test items rarely change.
+    
+    When `begin_time` and `end_time` are provided, they will be used when fetching
+    fresh data from iPLAS (on cache miss). This is useful for the Station Search
+    where users have already selected a time range. If not provided, a default
+    7-day window is used.
     """
 
     site: str = Field(..., description="Site identifier")
@@ -128,6 +133,14 @@ class IplasCachedTestItemNamesRequest(BaseModel):
     token: str | None = Field(
         default=None,
         description="Optional user-provided token for iPLAS access.",
+    )
+    begin_time: datetime | None = Field(
+        default=None,
+        description="Optional start time for fetching fresh data (used on cache miss).",
+    )
+    end_time: datetime | None = Field(
+        default=None,
+        description="Optional end time for fetching fresh data (used on cache miss).",
     )
 
 

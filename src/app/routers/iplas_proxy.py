@@ -1569,17 +1569,12 @@ async def get_test_item_names_cached(
         if cached_items:
             # Check cache age
             oldest_item = min(cached_items, key=lambda x: x.created_at)
-            cache_age = datetime.now(timezone.utc) - oldest_item.created_at.replace(
-                tzinfo=timezone.utc
-            )
+            cache_age = datetime.now(timezone.utc) - oldest_item.created_at.replace(tzinfo=timezone.utc)
             cache_age_hours = cache_age.total_seconds() / 3600
 
             # If cache is still valid (within TTL)
             if cache_age_hours < CACHED_TEST_ITEMS_TTL_HOURS:
-                logger.info(
-                    f"DB cache HIT: {site}/{project}/{station} "
-                    f"({len(cached_items)} items, {cache_age_hours:.1f}h old)"
-                )
+                logger.info(f"DB cache HIT: {site}/{project}/{station} ({len(cached_items)} items, {cache_age_hours:.1f}h old)")
 
                 # Convert to response format
                 test_items = [
@@ -1604,60 +1599,84 @@ async def get_test_item_names_cached(
                     cache_age_hours=round(cache_age_hours, 1),
                 )
             else:
-                logger.info(
-                    f"DB cache EXPIRED: {site}/{project}/{station} "
-                    f"({cache_age_hours:.1f}h > {CACHED_TEST_ITEMS_TTL_HOURS}h TTL)"
-                )
+                logger.info(f"DB cache EXPIRED: {site}/{project}/{station} ({cache_age_hours:.1f}h > {CACHED_TEST_ITEMS_TTL_HOURS}h TTL)")
 
-    # Cache miss or force refresh - fetch from iPLAS with progressive time windows
+    # Cache miss or force refresh - fetch from iPLAS
     logger.info(f"DB cache MISS: {site}/{project}/{station} - fetching from iPLAS")
 
-    # UPDATED: Try progressively larger time windows to find data
-    # Start with 3 days, then try 5 days, then 7 days max
-    time_windows_days = [3, 5, 7]
     records = []
     last_error = None
 
-    for days in time_windows_days:
-        end_time = datetime.now()
-        begin_time = end_time - timedelta(days=days)
-        
-        logger.info(f"Trying {days}-day window for {site}/{project}/{station}")
-        
+    # UPDATED: If user provides time range, use it directly (single attempt)
+    if request.begin_time and request.end_time:
+        logger.info(f"Using user-provided time range for {site}/{project}/{station}")
         try:
             records, _, _, _, _ = await _fetch_chunked_from_iplas(
                 site=site,
                 project=project,
                 station=station,
                 device_id="ALL",
-                begin_time=begin_time,
-                end_time=end_time,
+                begin_time=request.begin_time,
+                end_time=request.end_time,
                 test_status="ALL",
                 user_token=request.token,
             )
-            
             if records:
-                logger.info(f"Found {len(records)} records with {days}-day window")
-                break
-            else:
-                logger.info(f"No records found with {days}-day window, trying larger")
-                
+                logger.info(f"Found {len(records)} records with user-provided time range")
         except HTTPException as e:
             last_error = e
-            # If this is a time interval error, try smaller window
-            if "time interval" in str(e.detail).lower():
-                logger.warning(f"Time interval error with {days}-day window, trying smaller")
-                continue
-            # For other errors, try next window
-            logger.warning(f"Error with {days}-day window: {e.detail}")
-            continue
+            logger.warning(f"Failed with user-provided time range: {e.detail}")
         except Exception as e:
             last_error = HTTPException(
                 status_code=502,
                 detail=f"Failed to fetch test items from iPLAS: {str(e)}",
             )
             logger.error(f"Failed to fetch from iPLAS: {e}")
-            continue
+
+    # Fallback: Try progressively larger time windows if no user-provided range
+    # or if user-provided range failed
+    if not records:
+        time_windows_days = [3, 5, 7]
+        for days in time_windows_days:
+            end_time = datetime.now()
+            begin_time = end_time - timedelta(days=days)
+
+            logger.info(f"Trying {days}-day window for {site}/{project}/{station}")
+
+            try:
+                records, _, _, _, _ = await _fetch_chunked_from_iplas(
+                    site=site,
+                    project=project,
+                    station=station,
+                    device_id="ALL",
+                    begin_time=begin_time,
+                    end_time=end_time,
+                    test_status="ALL",
+                    user_token=request.token,
+                )
+
+                if records:
+                    logger.info(f"Found {len(records)} records with {days}-day window")
+                    break
+                else:
+                    logger.info(f"No records found with {days}-day window, trying larger")
+
+            except HTTPException as e:
+                last_error = e
+                # If this is a time interval error, try smaller window
+                if "time interval" in str(e.detail).lower():
+                    logger.warning(f"Time interval error with {days}-day window, trying smaller")
+                    continue
+                # For other errors, try next window
+                logger.warning(f"Error with {days}-day window: {e.detail}")
+                continue
+            except Exception as e:
+                last_error = HTTPException(
+                    status_code=502,
+                    detail=f"Failed to fetch test items from iPLAS: {str(e)}",
+                )
+                logger.error(f"Failed to fetch from iPLAS: {e}")
+                continue
 
     if not records and last_error:
         raise last_error
@@ -1699,9 +1718,7 @@ async def get_test_item_names_cached(
         db.add(cached_item)
 
     db.commit()
-    logger.info(
-        f"DB cache STORED: {site}/{project}/{station} ({len(test_items)} items)"
-    )
+    logger.info(f"DB cache STORED: {site}/{project}/{station} ({len(test_items)} items)")
 
     # Filter out BIN items if requested
     if request.exclude_bin:
@@ -2538,7 +2555,7 @@ async def _download_single_csv_log(
     item: dict,
 ) -> tuple[str, str | None]:
     """Download a single CSV log file from iPLAS.
-    
+
     Returns (csv_content, filename) or raises exception.
     """
     url = f"{site_config['v1_url']}/raw/get_test_log"
@@ -2546,21 +2563,22 @@ async def _download_single_csv_log(
         "query_list": [item],
         "token": site_config["token"],
     }
-    
+
     response = await client.post(url, json=payload)
     if response.status_code != 200:
         logger.warning(f"CSV download failed for {item.get('isn')}: {response.status_code}")
         return "", None
-    
+
     # Get filename from header
     filename = None
     content_disposition = response.headers.get("content-disposition", "")
     if "filename=" in content_disposition:
         import re
+
         match = re.search(r'filename="?([^";\n]+)"?', content_disposition)
         if match:
             filename = match.group(1)
-    
+
     return response.text, filename
 
 
@@ -2572,7 +2590,7 @@ async def _download_single_attachment(
     item: dict,
 ) -> tuple[bytes, str | None]:
     """Download a single TXT attachment from iPLAS.
-    
+
     Returns (file_bytes, filename) or raises exception.
     """
     url = f"{site_config['v1_url']}/file/{site}/{project}/download_attachment"
@@ -2580,21 +2598,22 @@ async def _download_single_attachment(
         "info": [item],
         "token": site_config["token"],
     }
-    
+
     response = await client.post(url, json=payload)
     if response.status_code != 200:
         logger.warning(f"TXT download failed for {item.get('isn')}: {response.status_code}")
         return b"", None
-    
+
     data = response.json()
     if data.get("statuscode") != 200:
         logger.warning(f"TXT download failed for {item.get('isn')}: status {data.get('statuscode')}")
         return b"", None
-    
+
     import base64
+
     content = base64.b64decode(data["data"]["content"])
     filename = data["data"].get("filename")
-    
+
     return content, filename
 
 
@@ -2622,23 +2641,23 @@ async def batch_download(
     import base64
     import io
     import zipfile
-    
+
     if not request.items:
         raise HTTPException(status_code=400, detail="items cannot be empty")
-    
+
     site_config = _get_site_config(request.site, request.token)
     download_type = request.download_type.lower()
-    
+
     if download_type not in ("txt", "csv", "all"):
         raise HTTPException(status_code=400, detail="download_type must be 'txt', 'csv', or 'all'")
-    
+
     logger.info(f"Batch download: {len(request.items)} items, type={download_type}")
-    
+
     # Create in-memory zip file
     zip_buffer = io.BytesIO()
     txt_count = 0
     csv_count = 0
-    
+
     async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
             # Process each item
@@ -2654,29 +2673,27 @@ async def batch_download(
                     "test_end_time": item.test_end_time,
                     "data_source": item.data_source,
                 }
-                
+
                 # Base filename for this item
                 safe_time = item.test_end_time.replace("/", "_").replace(":", "_").replace(" ", "_").replace(".", "_")
                 base_filename = f"{item.isn}_{safe_time}"
-                
+
                 # Download TXT attachment if requested
                 if download_type in ("txt", "all"):
                     try:
                         # Convert test_end_time format for attachment API
                         # From "2026/01/22 18:57:05.000" to "2026/01/22 18:57:05"
                         attachment_time = item.test_end_time.split(".")[0]
-                        
+
                         attachment_item = {
                             "isn": item.isn,
                             "time": attachment_time,
                             "deviceid": item.deviceid,
                             "station": item.station,
                         }
-                        
-                        content, filename = await _download_single_attachment(
-                            client, site_config, request.site, request.project, attachment_item
-                        )
-                        
+
+                        content, filename = await _download_single_attachment(client, site_config, request.site, request.project, attachment_item)
+
                         if content:
                             # Use original filename or generate one
                             zip_filename = filename or f"{base_filename}.zip"
@@ -2694,14 +2711,12 @@ async def batch_download(
                                 txt_count += 1
                     except Exception as e:
                         logger.warning(f"Failed to download TXT for {item.isn}: {e}")
-                
+
                 # Download CSV log if requested
                 if download_type in ("csv", "all"):
                     try:
-                        csv_content, csv_filename = await _download_single_csv_log(
-                            client, site_config, item_dict
-                        )
-                        
+                        csv_content, csv_filename = await _download_single_csv_log(client, site_config, item_dict)
+
                         if csv_content:
                             filename = csv_filename or f"{base_filename}.csv"
                             # Prefix with csv/ folder
@@ -2709,14 +2724,14 @@ async def batch_download(
                             csv_count += 1
                     except Exception as e:
                         logger.warning(f"Failed to download CSV for {item.isn}: {e}")
-    
+
     # Get zip content
     zip_buffer.seek(0)
     zip_content = zip_buffer.read()
-    
+
     if not zip_content or (txt_count == 0 and csv_count == 0):
         raise HTTPException(status_code=404, detail="No files were downloaded successfully")
-    
+
     # Generate filename
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if download_type == "txt":
@@ -2725,9 +2740,9 @@ async def batch_download(
         filename = f"test_logs_csv_{timestamp}.zip"
     else:
         filename = f"test_logs_all_{timestamp}.zip"
-    
+
     logger.info(f"Batch download complete: {txt_count} TXT + {csv_count} CSV files")
-    
+
     return IplasBatchDownloadResponse(
         content=base64.b64encode(zip_content).decode("utf-8"),
         filename=filename,

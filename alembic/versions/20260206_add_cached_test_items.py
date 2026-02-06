@@ -1,7 +1,7 @@
 """add_cached_test_items
 
 Revision ID: 20260206a
-Revises: 20260124_add_menu_access_tables
+Revises: 20260124_menu
 Create Date: 2026-02-06
 
 """
@@ -11,7 +11,8 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = '20260206a'
-down_revision = '20260124_add_menu_access_tables'
+# UPDATED: Fixed down_revision to match actual revision ID in 20260124_add_menu_access_tables.py
+down_revision = '20260124_menu'
 branch_labels = None
 depends_on = None
 

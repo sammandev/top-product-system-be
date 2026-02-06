@@ -3471,6 +3471,7 @@ def _write_export_sheet(
 
     # Styles
     header_font = Font(bold=True)
+    bold_font = Font(bold=True)  # For ISN row
     header_fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
     thin_border = Border(
         left=Side(style="thin"),
@@ -3503,11 +3504,25 @@ def _write_export_sheet(
     ]
 
     for field_name, getter in metadata_fields:
-        ws.cell(row=row_idx, column=1, value=field_name).border = thin_border
-        ws.cell(row=row_idx, column=2, value="").border = thin_border
-        ws.cell(row=row_idx, column=3, value="").border = thin_border
+        # Apply bold font to ISN row
+        is_isn_row = field_name == "ISN"
+        cell = ws.cell(row=row_idx, column=1, value=field_name)
+        cell.border = thin_border
+        if is_isn_row:
+            cell.font = bold_font
+        cell = ws.cell(row=row_idx, column=2, value="")
+        cell.border = thin_border
+        if is_isn_row:
+            cell.font = bold_font
+        cell = ws.cell(row=row_idx, column=3, value="")
+        cell.border = thin_border
+        if is_isn_row:
+            cell.font = bold_font
         for col_idx, record in enumerate(records, 4):
-            ws.cell(row=row_idx, column=col_idx, value=getter(record)).border = thin_border
+            cell = ws.cell(row=row_idx, column=col_idx, value=getter(record))
+            cell.border = thin_border
+            if is_isn_row:
+                cell.font = bold_font
         row_idx += 1
 
     # Build test item lookup for each record

@@ -3319,36 +3319,46 @@ async def export_test_items(
     for record in request.records:
         records_by_station[record.Station].append(record)
 
-    # Collect test items PER STATION (not globally) to avoid mixing test items between stations
+    # UPDATED: Collect test items PER STATION preserving original order from iPLAS API
+    # Use the order from the first record that has test items, then add any missing items
     test_items_by_station: dict[str, list[str]] = {}
     for station_name, station_records in records_by_station.items():
-        station_test_item_names: set[str] = set()
+        # Use a list to preserve order and a set to track seen items
+        ordered_test_items: list[str] = []
+        seen_items: set[str] = set()
+
         for record in station_records:
             for ti in record.TestItems:
-                station_test_item_names.add(ti.NAME)
-        
-        # Filter test items if specified
+                if ti.NAME not in seen_items:
+                    seen_items.add(ti.NAME)
+                    ordered_test_items.append(ti.NAME)
+
+        # Filter test items if specified (preserve order)
         if request.selected_test_items:
             selected_set = set(request.selected_test_items)
-            test_items_by_station[station_name] = sorted(
-                [name for name in station_test_item_names if name in selected_set]
-            )
+            test_items_by_station[station_name] = [
+                name for name in ordered_test_items if name in selected_set
+            ]
         else:
-            test_items_by_station[station_name] = sorted(station_test_item_names)
+            test_items_by_station[station_name] = ordered_test_items
 
     # Generate timestamp for filename
     timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
-    
+
     if request.format == "csv":
         # CSV format - combine all stations into one file
-        # For CSV, we need all unique test items across all stations
-        all_test_items_for_csv: set[str] = set()
+        # UPDATED: Preserve original order of test items from station records
+        # Collect in order from all stations, deduplicating as we go
+        csv_test_items_ordered: list[str] = []
+        seen_csv_items: set[str] = set()
         for test_items in test_items_by_station.values():
-            all_test_items_for_csv.update(test_items)
-        csv_test_items = sorted(all_test_items_for_csv)
-        
+            for item in test_items:
+                if item not in seen_csv_items:
+                    seen_csv_items.add(item)
+                    csv_test_items_ordered.append(item)
+
         output = io.StringIO()
-        _write_export_csv(output, records_by_station, csv_test_items)
+        _write_export_csv(output, records_by_station, csv_test_items_ordered)
         content = base64.b64encode(output.getvalue().encode("utf-8")).decode("utf-8")
         filename = f"{request.filename_prefix}_{timestamp}.csv"
         content_type = "text/csv"

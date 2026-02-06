@@ -43,6 +43,9 @@ from app.schemas.iplas_schemas import (
     IplasDownloadCsvLogRequest,
     IplasDownloadCsvLogResponse,
     IplasIsnProjectInfo,
+    IplasIsnSearchBatchItem,
+    IplasIsnSearchBatchRequest,
+    IplasIsnSearchBatchResponse,
     IplasIsnSearchRequest,
     IplasIsnSearchResponse,
     IplasRecordTestItemsRequest,
@@ -2099,6 +2102,161 @@ async def search_by_isn(
     )
 
 
+@router.post(
+    "/isn-search-batch",
+    response_model=IplasIsnSearchBatchResponse,
+    summary="Batch search DUT by multiple ISNs from iPLAS",
+    description="""
+    Searches for DUT test data by multiple ISNs in parallel.
+    
+    **Performance**: Uses parallel HTTP requests to search up to 100 ISNs simultaneously.
+    This is significantly faster than making individual ISN search requests.
+    
+    **Cache TTL**: 5 minutes per ISN
+    
+    **Limits**: Maximum 100 ISNs per request.
+    """,
+)
+async def search_by_isn_batch(
+    request: IplasIsnSearchBatchRequest,
+) -> IplasIsnSearchBatchResponse:
+    """Search for DUT data by multiple ISNs with parallel execution."""
+    redis = get_redis_client()
+    max_concurrent = 10  # Limit concurrent connections to iPLAS
+
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    async def search_single_isn(isn: str) -> IplasIsnSearchBatchItem:
+        """Search a single ISN with semaphore control."""
+        cache_key = f"iplas:v2:isn-search:{isn}"
+        cached = False
+        results: list[dict] = []
+        error_msg: str | None = None
+
+        async with semaphore:
+            # Try cache first
+            if redis:
+                try:
+                    cached_data = redis.get(cache_key)
+                    if cached_data:
+                        results = json_loads(cached_data)
+                        cached = True
+                        logger.debug(f"Cache HIT: {cache_key}")
+                except Exception as e:
+                    logger.warning(f"Redis GET error: {e}")
+
+            # Fetch from iPLAS if cache miss
+            if not cached:
+                logger.debug(f"Cache MISS: {cache_key}")
+
+                # If user provided a token, use it with PTB as default site
+                if request.token:
+                    site_config = _get_site_config("PTB", request.token)
+                    try:
+                        url = f"{site_config['v2_url']}/isn_search"
+                        async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+                            response = await client.get(
+                                url,
+                                params={"isn": isn},
+                                headers={"Authorization": f"Bearer {site_config['token']}"},
+                            )
+                            if response.status_code == 200:
+                                data = response.json()
+                                if data.get("status_code") == 200 and data.get("data"):
+                                    results = data["data"]
+                    except Exception as e:
+                        error_msg = str(e)
+                        logger.warning(f"Failed to search ISN {isn} with user token: {e}")
+                else:
+                    # Query all configured sites until we find results
+                    for site_name, site_config in IPLAS_SITES.items():
+                        if not site_config["token"]:
+                            continue
+
+                        if results:
+                            break  # Found results, stop querying
+
+                        try:
+                            v2_url = f"{site_config['base_url']}:{IPLAS_PORT}{IPLAS_V2_VERSION}"
+                            url = f"{v2_url}/isn_search"
+
+                            async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+                                response = await client.get(
+                                    url,
+                                    params={"isn": isn},
+                                    headers={"Authorization": f"Bearer {site_config['token']}"},
+                                )
+
+                                if response.status_code == 200:
+                                    data = response.json()
+                                    if data.get("status_code") == 200 and data.get("data"):
+                                        results = data["data"]
+                                        logger.debug(f"Found ISN {isn} in {site_name}")
+                                else:
+                                    logger.debug(f"ISN not found in {site_name}: {response.status_code}")
+
+                        except Exception as e:
+                            error_msg = str(e)
+                            logger.warning(f"Failed to search ISN {isn} in {site_name}: {e}")
+
+                # Store in cache
+                if redis and results:
+                    try:
+                        serialized = json_dumps(results)
+                        redis.setex(cache_key, IPLAS_CACHE_TTL_ISN, serialized)
+                        logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_ISN}s)")
+                    except Exception as e:
+                        logger.warning(f"Redis SET error: {e}")
+
+        return IplasIsnSearchBatchItem(
+            isn=isn,
+            data=results,
+            cached=cached,
+            error=error_msg if not results and error_msg else None,
+        )
+
+    # Execute all ISN searches in parallel
+    tasks = [search_single_isn(isn) for isn in request.isns]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Process results
+    batch_results: list[IplasIsnSearchBatchItem] = []
+    total_records = 0
+    successful_count = 0
+    failed_count = 0
+
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            batch_results.append(IplasIsnSearchBatchItem(
+                isn=request.isns[i],
+                data=[],
+                cached=False,
+                error=str(result),
+            ))
+            failed_count += 1
+        else:
+            batch_results.append(result)
+            if result.data:
+                total_records += len(result.data)
+                successful_count += 1
+            else:
+                failed_count += 1
+
+    logger.info(
+        f"Batch ISN search: {len(request.isns)} ISNs, "
+        f"{successful_count} successful, {failed_count} failed, "
+        f"{total_records} total records"
+    )
+
+    return IplasIsnSearchBatchResponse(
+        results=batch_results,
+        total_isns=len(request.isns),
+        total_records=total_records,
+        successful_count=successful_count,
+        failed_count=failed_count,
+    )
+
+
 # ============================================================================
 # iPLAS v2 Stations From ISN Endpoints
 # ============================================================================
@@ -3228,55 +3386,53 @@ def _write_export_csv(
     import csv
 
     writer = csv.writer(output, quoting=csv.QUOTE_MINIMAL)
-    
+
     # Flatten all records for CSV (all stations combined)
     all_records = []
     for records in records_by_station.values():
         all_records.extend(records)
-    
+
     if not all_records:
         return
-    
-    # Header row: TEST, STATUS, UCL, LCL, then one VALUE column per record
-    header = ["TEST", "STATUS", "UCL", "LCL"] + ["VALUE"] * len(all_records)
+
+    # Header row: TEST, UCL, LCL, then one VALUE column per record (STATUS removed)
+    header = ["TEST", "UCL", "LCL"] + ["VALUE"] * len(all_records)
     writer.writerow(header)
-    
-    # Metadata rows
+
+    # Metadata rows (Line row removed)
     metadata_fields = [
         ("ISN", lambda r: r.ISN),
         ("Project", lambda r: r.Project),
         ("TSP", lambda r: r.Station),
         ("DeviceId", lambda r: r.DeviceId),
-        ("Line", lambda r: r.Line),
         ("ErrorCode", lambda r: r.ErrorCode),
         ("ErrorName", lambda r: r.ErrorName),
         ("Type", lambda r: r.Type),
         ("Test Start Time", lambda r: r.TestStartTime),
         ("Test end Time", lambda r: r.TestEndTime),
     ]
-    
+
     for field_name, getter in metadata_fields:
-        row = [field_name, "", "", ""] + [getter(r) for r in all_records]
+        row = [field_name, "", ""] + [getter(r) for r in all_records]
         writer.writerow(row)
-    
+
     # Build test item lookup for each record
     record_test_items = []
     for record in all_records:
         ti_map = {ti.NAME: ti for ti in record.TestItems}
         record_test_items.append(ti_map)
-    
-    # Test item rows
+
+    # Test item rows (STATUS column removed)
     for ti_name in test_item_names:
-        # Get STATUS, UCL, LCL from first record that has this test item
-        status = ucl = lcl = ""
+        # Get UCL, LCL from first record that has this test item
+        ucl = lcl = ""
         for ti_map in record_test_items:
             if ti_name in ti_map:
                 ti = ti_map[ti_name]
-                status = ti.STATUS
                 ucl = ti.UCL
                 lcl = ti.LCL
                 break
-        
+
         # Get VALUE for each record
         values = []
         for ti_map in record_test_items:
@@ -3284,8 +3440,8 @@ def _write_export_csv(
                 values.append(ti_map[ti_name].VALUE)
             else:
                 values.append("")
-        
-        row = [ti_name, status, ucl, lcl] + values
+
+        row = [ti_name, ucl, lcl] + values
         writer.writerow(row)
 
 
@@ -3311,8 +3467,8 @@ def _write_export_sheet(
         bottom=Side(style="thin"),
     )
 
-    # Header row: TEST, STATUS, UCL, LCL, then one VALUE column per record
-    headers = ["TEST", "STATUS", "UCL", "LCL"] + ["VALUE"] * len(records)
+    # Header row: TEST, UCL, LCL, then one VALUE column per record (STATUS removed)
+    headers = ["TEST", "UCL", "LCL"] + ["VALUE"] * len(records)
     for col_idx, header in enumerate(headers, 1):
         cell = ws.cell(row=1, column=col_idx, value=header)
         cell.font = header_font
@@ -3321,13 +3477,12 @@ def _write_export_sheet(
 
     row_idx = 2
 
-    # Metadata rows
+    # Metadata rows (Line row removed)
     metadata_fields = [
         ("ISN", lambda r: r.ISN),
         ("Project", lambda r: r.Project),
         ("TSP", lambda r: r.Station),
         ("DeviceId", lambda r: r.DeviceId),
-        ("Line", lambda r: r.Line),
         ("ErrorCode", lambda r: r.ErrorCode),
         ("ErrorName", lambda r: r.ErrorName),
         ("Type", lambda r: r.Type),
@@ -3339,8 +3494,7 @@ def _write_export_sheet(
         ws.cell(row=row_idx, column=1, value=field_name).border = thin_border
         ws.cell(row=row_idx, column=2, value="").border = thin_border
         ws.cell(row=row_idx, column=3, value="").border = thin_border
-        ws.cell(row=row_idx, column=4, value="").border = thin_border
-        for col_idx, record in enumerate(records, 5):
+        for col_idx, record in enumerate(records, 4):
             ws.cell(row=row_idx, column=col_idx, value=getter(record)).border = thin_border
         row_idx += 1
 
@@ -3350,25 +3504,23 @@ def _write_export_sheet(
         ti_map = {ti.NAME: ti for ti in record.TestItems}
         record_test_items.append(ti_map)
 
-    # Test item rows
+    # Test item rows (STATUS column removed)
     for ti_name in test_item_names:
-        # Get STATUS, UCL, LCL from first record that has this test item
-        status = ucl = lcl = ""
+        # Get UCL, LCL from first record that has this test item
+        ucl = lcl = ""
         for ti_map in record_test_items:
             if ti_name in ti_map:
                 ti = ti_map[ti_name]
-                status = ti.STATUS
                 ucl = ti.UCL
                 lcl = ti.LCL
                 break
 
         ws.cell(row=row_idx, column=1, value=ti_name).border = thin_border
-        ws.cell(row=row_idx, column=2, value=status).border = thin_border
-        ws.cell(row=row_idx, column=3, value=ucl).border = thin_border
-        ws.cell(row=row_idx, column=4, value=lcl).border = thin_border
+        ws.cell(row=row_idx, column=2, value=ucl).border = thin_border
+        ws.cell(row=row_idx, column=3, value=lcl).border = thin_border
 
         # Get VALUE for each record
-        for col_idx, ti_map in enumerate(record_test_items, 5):
+        for col_idx, ti_map in enumerate(record_test_items, 4):
             value = ti_map[ti_name].VALUE if ti_name in ti_map else ""
             ws.cell(row=row_idx, column=col_idx, value=value).border = thin_border
 
@@ -3383,3 +3535,6 @@ def _write_export_sheet(
             if cell.value:
                 max_length = max(max_length, len(str(cell.value)))
         ws.column_dimensions[col_letter].width = min(max_length + 2, 50)
+
+    # Freeze panes at D3 (freezes columns A-C and rows 1-2)
+    ws.freeze_panes = "D3"

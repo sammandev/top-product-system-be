@@ -14,6 +14,7 @@ This implementation uses HTTP GET for simplicity.
 Reference: external-api/sfistsp-http-soap.md
 """
 
+import asyncio
 import logging
 import os
 import re
@@ -494,24 +495,52 @@ class SfistspApiClient:
                 error_message=str(e),
             )
 
-    async def lookup_isns_batch(self, isns: list[str]) -> list[SfistspIsnReference]:
+    async def lookup_isns_batch(
+        self,
+        isns: list[str],
+        max_concurrent: int = 10,
+    ) -> list[SfistspIsnReference]:
         """
-        Look up multiple ISNs in batch.
+        Look up multiple ISNs in batch using parallel requests.
 
-        Note: SFISTSP doesn't support true batch lookup, so we iterate.
-        For better performance, consider using asyncio.gather for parallel requests.
+        Uses asyncio.gather with a semaphore to limit concurrent connections.
+        This significantly improves performance for bulk ISN lookups.
 
         Args:
             isns: List of ISNs to look up
+            max_concurrent: Maximum number of concurrent requests (default: 10)
 
         Returns:
-            List of SfistspIsnReference results
+            List of SfistspIsnReference results in the same order as input
         """
-        results = []
-        for isn in isns:
-            result = await self.lookup_isn(isn)
-            results.append(result)
-        return results
+        if not isns:
+            return []
+
+        # Use semaphore to limit concurrent requests
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def lookup_with_semaphore(isn: str) -> SfistspIsnReference:
+            async with semaphore:
+                return await self.lookup_isn(isn)
+
+        # Execute all lookups in parallel
+        tasks = [lookup_with_semaphore(isn) for isn in isns]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Convert exceptions to error responses
+        final_results: list[SfistspIsnReference] = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                final_results.append(SfistspIsnReference(
+                    isn=isns[i],
+                    success=False,
+                    error_message=str(result),
+                ))
+            else:
+                final_results.append(result)
+
+        logger.info(f"SFISTSP batch lookup: {len(isns)} ISNs, {sum(1 for r in final_results if r.success)} successful")
+        return final_results
 
 
 # ============================================================================

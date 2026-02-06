@@ -425,6 +425,40 @@ class IplasIsnSearchResponse(BaseModel):
     cached: bool = Field(..., description="True if data was served from cache")
 
 
+class IplasIsnSearchBatchRequest(BaseModel):
+    """Request schema for batch ISN search."""
+
+    isns: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="List of ISNs to search for (max 100)",
+    )
+    token: str | None = Field(
+        default=None,
+        description="Optional user-provided token. If not provided, uses backend default.",
+    )
+
+
+class IplasIsnSearchBatchItem(BaseModel):
+    """Single ISN search result in batch response."""
+
+    isn: str = Field(..., description="ISN that was searched")
+    data: list[IplasIsnSearchRecord] = Field(default_factory=list, description="Search results for this ISN")
+    cached: bool = Field(default=False, description="True if data was served from cache")
+    error: str | None = Field(default=None, description="Error message if search failed")
+
+
+class IplasIsnSearchBatchResponse(BaseModel):
+    """Response schema for batch ISN search."""
+
+    results: list[IplasIsnSearchBatchItem] = Field(..., description="Results for each ISN")
+    total_isns: int = Field(..., description="Number of ISNs searched")
+    total_records: int = Field(..., description="Total number of records found across all ISNs")
+    successful_count: int = Field(..., description="Number of ISNs with successful results")
+    failed_count: int = Field(..., description="Number of ISNs that failed")
+
+
 # ============================================================================
 # iPLAS v1 Download Attachment Schemas
 # ============================================================================

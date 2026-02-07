@@ -2010,13 +2010,16 @@ async def get_devices(
     
     **Cache TTL**: 5 minutes
     
+    **Performance**: Uses parallel HTTP requests to query all sites simultaneously.
+    This is significantly faster than querying sites sequentially.
+    
     Note: This queries all configured sites to find the ISN.
     """,
 )
 async def search_by_isn(
     request: IplasIsnSearchRequest,
 ) -> IplasIsnSearchResponse:
-    """Search for DUT data by ISN with caching."""
+    """Search for DUT data by ISN with caching and parallel site querying."""
     redis = get_redis_client()
     cache_key = f"iplas:v2:isn-search:{request.isn}"
 
@@ -2056,35 +2059,48 @@ async def search_by_isn(
             except Exception as e:
                 logger.warning(f"Failed to search ISN with user token: {e}")
         else:
-            # Query all configured sites until we find results
-            for site_name, site_config in IPLAS_SITES.items():
-                if not site_config["token"]:
-                    continue
-
-                if results:
-                    break  # Found results, stop querying
-
+            # UPDATED: Query all configured sites in PARALLEL instead of sequentially
+            # This dramatically reduces search time from O(N * timeout) to O(timeout)
+            async def search_site(site_name: str, site_cfg: dict) -> tuple[str, list[dict]]:
+                """Search a single site for the ISN."""
+                if not site_cfg.get("token"):
+                    return site_name, []
                 try:
-                    v2_url = f"{site_config['base_url']}:{IPLAS_PORT}{IPLAS_V2_VERSION}"
+                    v2_url = f"{site_cfg['base_url']}:{IPLAS_PORT}{IPLAS_V2_VERSION}"
                     url = f"{v2_url}/isn_search"
-
-                    async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+                    # Use shorter timeout for parallel requests (30s per site)
+                    async with httpx.AsyncClient(timeout=30.0) as client:
                         response = await client.get(
                             url,
                             params={"isn": request.isn},
-                            headers={"Authorization": f"Bearer {site_config['token']}"},
+                            headers={"Authorization": f"Bearer {site_cfg['token']}"},
                         )
-
                         if response.status_code == 200:
                             data = response.json()
                             if data.get("status_code") == 200 and data.get("data"):
-                                results = data["data"]
                                 logger.info(f"Found ISN {request.isn} in {site_name}")
+                                return site_name, data["data"]
                         else:
                             logger.debug(f"ISN not found in {site_name}: {response.status_code}")
-
                 except Exception as e:
                     logger.warning(f"Failed to search ISN in {site_name}: {e}")
+                return site_name, []
+
+            # Execute all site searches in parallel
+            tasks = [
+                search_site(site_name, site_cfg)
+                for site_name, site_cfg in IPLAS_SITES.items()
+            ]
+            site_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Collect results from first site that has data
+            for result in site_results:
+                if isinstance(result, Exception):
+                    continue
+                site_name, site_data = result
+                if site_data:
+                    results = site_data
+                    break  # Use first site with results
 
         # Store in cache
         if redis and results:
@@ -2127,7 +2143,7 @@ async def search_by_isn_batch(
     semaphore = asyncio.Semaphore(max_concurrent)
 
     async def search_single_isn(isn: str) -> IplasIsnSearchBatchItem:
-        """Search a single ISN with semaphore control."""
+        """Search a single ISN with semaphore control and parallel site querying."""
         cache_key = f"iplas:v2:isn-search:{isn}"
         cached = False
         results: list[dict] = []
@@ -2154,7 +2170,7 @@ async def search_by_isn_batch(
                     site_config = _get_site_config("PTB", request.token)
                     try:
                         url = f"{site_config['v2_url']}/isn_search"
-                        async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+                        async with httpx.AsyncClient(timeout=30.0) as client:
                             response = await client.get(
                                 url,
                                 params={"isn": isn},
@@ -2168,36 +2184,48 @@ async def search_by_isn_batch(
                         error_msg = str(e)
                         logger.warning(f"Failed to search ISN {isn} with user token: {e}")
                 else:
-                    # Query all configured sites until we find results
-                    for site_name, site_config in IPLAS_SITES.items():
-                        if not site_config["token"]:
-                            continue
-
-                        if results:
-                            break  # Found results, stop querying
-
+                    # UPDATED: Query all configured sites in PARALLEL instead of sequentially
+                    async def search_site_for_isn(site_name: str, site_cfg: dict) -> tuple[str, list[dict]]:
+                        """Search a single site for the ISN."""
+                        if not site_cfg.get("token"):
+                            return site_name, []
                         try:
-                            v2_url = f"{site_config['base_url']}:{IPLAS_PORT}{IPLAS_V2_VERSION}"
+                            v2_url = f"{site_cfg['base_url']}:{IPLAS_PORT}{IPLAS_V2_VERSION}"
                             url = f"{v2_url}/isn_search"
-
-                            async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+                            # Use shorter timeout for parallel requests (30s per site)
+                            async with httpx.AsyncClient(timeout=30.0) as client:
                                 response = await client.get(
                                     url,
                                     params={"isn": isn},
-                                    headers={"Authorization": f"Bearer {site_config['token']}"},
+                                    headers={"Authorization": f"Bearer {site_cfg['token']}"},
                                 )
-
                                 if response.status_code == 200:
                                     data = response.json()
                                     if data.get("status_code") == 200 and data.get("data"):
-                                        results = data["data"]
                                         logger.debug(f"Found ISN {isn} in {site_name}")
+                                        return site_name, data["data"]
                                 else:
                                     logger.debug(f"ISN not found in {site_name}: {response.status_code}")
-
                         except Exception as e:
-                            error_msg = str(e)
                             logger.warning(f"Failed to search ISN {isn} in {site_name}: {e}")
+                        return site_name, []
+
+                    # Execute all site searches in parallel
+                    site_tasks = [
+                        search_site_for_isn(site_name, site_cfg)
+                        for site_name, site_cfg in IPLAS_SITES.items()
+                    ]
+                    site_results = await asyncio.gather(*site_tasks, return_exceptions=True)
+
+                    # Collect results from first site that has data
+                    for site_result in site_results:
+                        if isinstance(site_result, Exception):
+                            error_msg = str(site_result)
+                            continue
+                        site_name, site_data = site_result
+                        if site_data:
+                            results = site_data
+                            break  # Use first site with results
 
                 # Store in cache
                 if redis and results:

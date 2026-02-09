@@ -1,13 +1,20 @@
 """
 Router for test log parsing and comparison endpoints.
+
+UPDATED: All scoring now uses the Universal 0-10 Scoring System from scoring_service.py.
+Scoring types: symmetrical, asymmetrical, per_mask, evm, binary, throughput.
+The old category-based scoring (EVM/Frequency/PER/PA Power formulas) is removed.
 """
 
+import logging
 import shutil
 from pathlib import Path
+from statistics import mean
 from typing import Annotated
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from ..models.test_log import (
     CompareResponse,
@@ -15,11 +22,11 @@ from ..models.test_log import (
     TestLogParseResponse,
     TestLogParseResponseEnhanced,
 )
+from ..schemas.scoring_schemas import ScoringConfig, ScoringPolicy, ScoringType
+from ..services.scoring_service import score_test_item
 from ..services.test_log_parser import TestLogParser, parse_test_log_criteria_file
 
-from pydantic import BaseModel, Field
-from ..services.scoring_service import score_test_item, detect_scoring_type
-from ..schemas.scoring_schemas import ScoringConfig, ScoringType, ScoringPolicy
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/test-log", tags=["Test_Log_Processing"])
 
@@ -59,6 +66,190 @@ UPLOAD_DIR = Path("data/uploads/test_logs")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
+# ============================================================================
+# Universal Scoring Post-Processing
+# ============================================================================
+
+
+def _build_scoring_config_map(scoring_configs_json: str | None) -> dict[str, ScoringConfig]:
+    """
+    Parse scoring configs JSON string and build a name-to-config map.
+
+    Args:
+        scoring_configs_json: Optional JSON string of scoring configurations
+
+    Returns:
+        Dictionary mapping test item names to ScoringConfig objects
+    """
+    import json
+
+    config_map: dict[str, ScoringConfig] = {}
+    if not scoring_configs_json:
+        return config_map
+
+    try:
+        configs = json.loads(scoring_configs_json)
+        for cfg in configs:
+            name = cfg.get("test_item_name", "")
+            if name:
+                config_map[name] = ScoringConfig(
+                    test_item_name=name,
+                    scoring_type=ScoringType(cfg.get("scoring_type", "symmetrical")),
+                    enabled=cfg.get("enabled", True),
+                    weight=cfg.get("weight", 1.0),
+                    target=cfg.get("target"),
+                    policy=ScoringPolicy(cfg.get("policy", "symmetrical")) if cfg.get("policy") else ScoringPolicy.SYMMETRICAL,
+                    limit_score=cfg.get("limit_score"),
+                )
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning(f"Failed to parse scoring_configs JSON: {e}")
+
+    return config_map
+
+
+def _score_test_item_universal(
+    test_item_name: str,
+    value_str: str | None,
+    usl: float | None,
+    lsl: float | None,
+    config_map: dict[str, ScoringConfig],
+) -> dict:
+    """
+    Score a single test item using the universal scoring system.
+
+    Returns a dict with {score, score_breakdown} fields.
+    """
+    iplas_format = {
+        "NAME": test_item_name,
+        "VALUE": str(value_str) if value_str is not None else "",
+        "UCL": str(usl) if usl is not None else "",
+        "LCL": str(lsl) if lsl is not None else "",
+        "STATUS": "PASS",
+    }
+
+    config = config_map.get(test_item_name)
+    result = score_test_item(iplas_format, config)
+
+    # Convert score from 0-1 internal to 0-10 display
+    score_0_10 = round(result.score * 10.0, 2)
+
+    breakdown = {
+        "scoring_type": result.scoring_type.value,
+        "score": score_0_10,
+        "target": result.target,
+        "deviation": result.deviation,
+        "weight": result.weight,
+        "policy": result.policy.value if result.policy else None,
+        "ucl": result.ucl,
+        "lcl": result.lcl,
+        "actual": result.value,
+    }
+
+    return {"score": score_0_10, "score_breakdown": breakdown}
+
+
+def _apply_universal_scoring_to_parse_result(result: dict, config_map: dict[str, ScoringConfig]) -> dict:
+    """
+    Post-process a parse result dict to replace old scoring with universal scoring.
+
+    Modifies the result dict in-place and returns it.
+    """
+    scored_values: list[float] = []
+
+    for item in result.get("parsed_items_enhanced", []):
+        # Only score value-type items (not binary)
+        if item.get("is_value_type") and item.get("numeric_value") is not None:
+            scoring_result = _score_test_item_universal(
+                item["test_item"],
+                item.get("value"),
+                item.get("usl"),
+                item.get("lsl"),
+                config_map,
+            )
+            item["score"] = scoring_result["score"]
+            item["score_breakdown"] = scoring_result["score_breakdown"]
+            scored_values.append(scoring_result["score"])
+        else:
+            # Non-value items: binary scoring (PASS=10, FAIL=0)
+            item["score"] = None
+            item["score_breakdown"] = None
+
+    # Recalculate aggregate scores
+    if scored_values:
+        result["avg_score"] = round(mean(scored_values), 2)
+        sorted_scores = sorted(scored_values)
+        n = len(sorted_scores)
+        result["median_score"] = round(
+            sorted_scores[n // 2] if n % 2 else (sorted_scores[n // 2 - 1] + sorted_scores[n // 2]) / 2,
+            2,
+        )
+    else:
+        result["avg_score"] = None
+        result["median_score"] = None
+
+    return result
+
+
+def _apply_universal_scoring_to_compare_result(result: dict, config_map: dict[str, ScoringConfig]) -> dict:
+    """
+    Post-process a compare result dict to replace old scoring with universal scoring.
+
+    Modifies the result dict in-place and returns it.
+    """
+    # Score each item in comparison_value_items and comparison_non_value_items
+    for item_list_key in ("comparison_value_items", "comparison_non_value_items"):
+        for compare_item in result.get(item_list_key, []):
+            item_scored_values: list[float] = []
+
+            for per_isn in compare_item.get("per_isn_data", []):
+                # Try to score if we have a numeric value
+                if per_isn.get("is_value_type") and per_isn.get("numeric_value") is not None:
+                    scoring_result = _score_test_item_universal(
+                        compare_item["test_item"],
+                        per_isn.get("value"),
+                        compare_item.get("usl"),
+                        compare_item.get("lsl"),
+                        config_map,
+                    )
+                    per_isn["score"] = scoring_result["score"]
+                    per_isn["score_breakdown"] = scoring_result["score_breakdown"]
+                    item_scored_values.append(scoring_result["score"])
+                else:
+                    per_isn["score"] = None
+                    per_isn["score_breakdown"] = None
+
+            # Recalculate aggregate scores for this compare item
+            if item_scored_values:
+                compare_item["avg_score"] = round(mean(item_scored_values), 2)
+                sorted_scores = sorted(item_scored_values)
+                n = len(sorted_scores)
+                compare_item["median_score"] = round(
+                    sorted_scores[n // 2] if n % 2 else (sorted_scores[n // 2 - 1] + sorted_scores[n // 2]) / 2,
+                    2,
+                )
+            else:
+                compare_item["avg_score"] = None
+                compare_item["median_score"] = None
+
+    # Recalculate per-file avg_score in file_summaries
+    for file_summary in result.get("file_summaries", []):
+        isn = file_summary.get("isn")
+        if isn is None:
+            continue
+
+        # Collect all scores for this ISN
+        isn_scores: list[float] = []
+        for item_list_key in ("comparison_value_items", "comparison_non_value_items"):
+            for compare_item in result.get(item_list_key, []):
+                for per_isn in compare_item.get("per_isn_data", []):
+                    if per_isn.get("isn") == isn and per_isn.get("score") is not None:
+                        isn_scores.append(per_isn["score"])
+
+        file_summary["avg_score"] = round(mean(isn_scores), 2) if isn_scores else None
+
+    return result
+
+
 @router.post(
     "/parse",
     response_model=None,
@@ -83,6 +274,7 @@ async def parse_test_log(
     file: Annotated[UploadFile, File(description="Test log file (.txt) or archive (.zip, .rar, .7z) to parse")],
     criteria_file: Annotated[UploadFile | None, File(description="Optional .ini or .json criteria file for filtering")] = None,
     show_only_criteria: Annotated[bool, Form(description="If true, only show items matching criteria")] = False,
+    scoring_configs: Annotated[str | None, Form(description="Optional JSON string of scoring configurations")] = None,
 ) -> TestLogParseResponse | TestLogParseResponseEnhanced | JSONResponse:
     """
     Parse a test log file or archive and extract test items.
@@ -161,8 +353,13 @@ async def parse_test_log(
 
             # If criteria provided, use enhanced parsing on first valid file
             # (archive mode with criteria currently processes first file only)
+            # Build scoring config map from user-provided configs
+            config_map = _build_scoring_config_map(scoring_configs)
+
             if criteria_rules:
                 result = TestLogParser.parse_file_enhanced(valid_files[0], criteria_rules=criteria_rules, show_only_criteria=show_only_criteria)
+                # Apply universal scoring post-processing
+                _apply_universal_scoring_to_parse_result(result, config_map)
                 response = TestLogParseResponseEnhanced(**result)
                 return response
             else:
@@ -184,8 +381,13 @@ async def parse_test_log(
                         detail="File does not contain valid test log format. Files must contain one of the required patterns: '<< START TESTING >>' (repeated 4 times), '=========[Start SFIS Test Result]======', or '*** Test flow ***'",
                     )
 
+            # Build scoring config map from user-provided configs
+            config_map = _build_scoring_config_map(scoring_configs)
+
             # Always use enhanced parsing (with or without criteria)
             result = TestLogParser.parse_file_enhanced(str(temp_file_path), criteria_rules=criteria_rules, show_only_criteria=show_only_criteria)
+            # Apply universal scoring post-processing
+            _apply_universal_scoring_to_parse_result(result, config_map)
             response = TestLogParseResponseEnhanced(**result)
             return response
 
@@ -226,6 +428,7 @@ async def compare_test_logs(
     files: Annotated[list[UploadFile], File(description="Test log files (.txt) or archives (.zip, .rar, .7z) to compare")],
     criteria_file: Annotated[UploadFile | None, File(description="Optional .json criteria file for filtering")] = None,
     show_only_criteria: Annotated[bool, Form(description="If true, only show items matching criteria")] = False,
+    scoring_configs: Annotated[str | None, Form(description="Optional JSON string of scoring configurations")] = None,
 ) -> CompareResponse | CompareResponseEnhanced:
     """
     Compare test items across multiple test log files or archives.
@@ -314,6 +517,11 @@ async def compare_test_logs(
 
         # Always use enhanced comparison for BY UPLOAD LOG feature
         result = TestLogParser.compare_files_enhanced(txt_file_paths, criteria_rules=criteria_rules, show_only_criteria=show_only_criteria)
+
+        # Apply universal scoring post-processing
+        config_map = _build_scoring_config_map(scoring_configs)
+        _apply_universal_scoring_to_compare_result(result, config_map)
+
         response = CompareResponseEnhanced(**result)
 
         return response

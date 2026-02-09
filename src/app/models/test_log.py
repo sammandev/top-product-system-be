@@ -86,18 +86,18 @@ class TestLogMetadata(BaseModel):
 
 
 class ScoreBreakdown(BaseModel):
-    """Detailed score calculation breakdown."""
+    """Detailed score calculation breakdown using the Universal 0-10 Scoring System."""
 
-    category: str = Field(..., description="Measurement category (EVM, Frequency, PER, etc.)")
-    method: str = Field(..., description="Scoring method used")
-    usl: float | None = Field(None, description="Upper Spec Limit used in calculation")
-    lsl: float | None = Field(None, description="Lower Spec Limit used in calculation")
-    target_used: float | None = Field(None, description="Target value used in calculation")
-    actual: float = Field(..., description="Actual measured value")
-    deviation: float = Field(..., description="Deviation from target")
-    raw_score: float = Field(..., description="Raw score before scaling")
-    final_score: float = Field(..., description="Final score (0-10 scale)")
-    formula_latex: str = Field(..., description="LaTeX formula used for calculation")
+    # UPDATED: New universal scoring fields (matches iPLAS Proxy API scoring)
+    scoring_type: str = Field(..., description="Scoring algorithm: symmetrical, asymmetrical, per_mask, evm, binary, throughput")
+    score: float = Field(..., description="Score on 0-10 scale")
+    target: float | None = Field(None, description="Target value used for scoring")
+    deviation: float | None = Field(None, description="Deviation from target")
+    weight: float = Field(default=1.0, description="Weight for aggregate scoring")
+    policy: str | None = Field(None, description="Policy for asymmetrical scoring: symmetrical, higher, lower")
+    ucl: float | None = Field(None, description="Upper Control Limit")
+    lcl: float | None = Field(None, description="Lower Control Limit")
+    actual: float | None = Field(None, description="Actual numeric value")
 
 
 class ParsedTestItemEnhanced(BaseModel):

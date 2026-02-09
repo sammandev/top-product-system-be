@@ -159,6 +159,15 @@ def _apply_universal_scoring_to_parse_result(result: dict, config_map: dict[str,
     for item in result.get("parsed_items_enhanced", []):
         # Only score value-type items (not binary)
         if item.get("is_value_type") and item.get("numeric_value") is not None:
+            # UPDATED: By default, only score Criteria items (those with UCL or LCL).
+            # Non-Criteria items (no limits) are skipped unless user explicitly configured them.
+            has_limits = item.get("usl") is not None or item.get("lsl") is not None
+            has_explicit_config = item["test_item"] in config_map
+            if not has_limits and not has_explicit_config:
+                item["score"] = None
+                item["score_breakdown"] = None
+                continue
+
             scoring_result = _score_test_item_universal(
                 item["test_item"],
                 item.get("value"),
@@ -204,6 +213,15 @@ def _apply_universal_scoring_to_compare_result(result: dict, config_map: dict[st
             for per_isn in compare_item.get("per_isn_data", []):
                 # Try to score if we have a numeric value
                 if per_isn.get("is_value_type") and per_isn.get("numeric_value") is not None:
+                    # UPDATED: By default, only score Criteria items (those with UCL or LCL).
+                    # Non-Criteria items (no limits) are skipped unless user explicitly configured them.
+                    has_limits = compare_item.get("usl") is not None or compare_item.get("lsl") is not None
+                    has_explicit_config = compare_item["test_item"] in config_map
+                    if not has_limits and not has_explicit_config:
+                        per_isn["score"] = None
+                        per_isn["score_breakdown"] = None
+                        continue
+
                     scoring_result = _score_test_item_universal(
                         compare_item["test_item"],
                         per_isn.get("value"),

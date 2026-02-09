@@ -15,7 +15,7 @@ from ..models.test_log import (
     TestLogParseResponse,
     TestLogParseResponseEnhanced,
 )
-from ..services.test_log_parser import TestLogParser, _parse_test_log_criteria_file, parse_test_log_criteria_file
+from ..services.test_log_parser import TestLogParser, parse_test_log_criteria_file
 
 router = APIRouter(prefix="/api/test-log", tags=["Test_Log_Processing"])
 
@@ -62,8 +62,7 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     Upload and parse test log file (.txt) or archive (.zip, .rar, .7z).
 
     **Optional criteria filtering:**
-    - Upload .ini or .json criteria file to filter and score test items
-    - INI format: [Test_Items] section with "TEST" <USL,LSL> ===> "Target"
+    - Upload .json criteria file to filter and score test items
     - JSON format: {"criteria": [{"test_item": "...", "ucl": 20, "lcl": 10, "target": 15}]}
     - Enhanced response includes metadata, classification, scoring with LaTeX formulas
 
@@ -108,15 +107,15 @@ async def parse_test_log(
     if not is_archive and not is_txt:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid file type. Only .txt, .zip, .rar, and .7z files are accepted.")
 
-    # Parse criteria file if provided (supports .ini and .json formats)
+    # Parse criteria file if provided (JSON format only)
     criteria_rules = None
     if criteria_file:
         if not criteria_file.filename:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Criteria file must have a filename.")
         
         criteria_filename_lower = criteria_file.filename.lower()
-        if not criteria_filename_lower.endswith((".ini", ".json")):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Criteria file must be .ini or .json format.")
+        if not criteria_filename_lower.endswith(".json"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Criteria file must be .json format.")
 
         try:
             criteria_content = await criteria_file.read()
@@ -211,8 +210,7 @@ async def parse_test_log(
     Compare multiple test log files (.txt) or archives (.zip, .rar, .7z).
 
     **Enhanced with criteria support:**
-    - Upload .ini or .json criteria file for filtering and scoring
-    - INI format: [Test_Items] section with "TEST" <USL,LSL> ===> "Target"
+    - Upload .json criteria file for filtering and scoring
     - JSON format: {"criteria": [{"test_item": "...", "ucl": 20, "lcl": 10, "target": 15}]}
     - Per-ISN deviation from median baseline (or criteria target)
     - Separated value-type items (numeric) from non-value items
@@ -227,7 +225,7 @@ async def parse_test_log(
 )
 async def compare_test_logs(
     files: Annotated[list[UploadFile], File(description="Test log files (.txt) or archives (.zip, .rar, .7z) to compare")],
-    criteria_file: Annotated[UploadFile | None, File(description="Optional .ini or .json criteria file for filtering")] = None,
+    criteria_file: Annotated[UploadFile | None, File(description="Optional .json criteria file for filtering")] = None,
     show_only_criteria: Annotated[bool, Form(description="If true, only show items matching criteria")] = False,
 ) -> CompareResponse | CompareResponseEnhanced:
     """
@@ -235,7 +233,7 @@ async def compare_test_logs(
 
     Args:
         files: List of uploaded files (minimum 1 archive or 2 .txt files)
-        criteria_file: Optional .ini criteria file for filtering
+        criteria_file: Optional .json criteria file for filtering
         show_only_criteria: If True, only return items matching criteria
 
     Returns:
@@ -256,15 +254,15 @@ async def compare_test_logs(
         if not filename_lower.endswith((".txt", ".zip", ".rar", ".7z")):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid file type for {file.filename}. Only .txt, .zip, .rar, and .7z files are accepted.")
 
-    # Parse criteria file if provided (supports .ini and .json formats)
+    # Parse criteria file if provided (JSON format only)
     criteria_rules = None
     if criteria_file:
         if not criteria_file.filename:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Criteria file must have a filename.")
         
         criteria_filename_lower = criteria_file.filename.lower()
-        if not criteria_filename_lower.endswith((".ini", ".json")):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Criteria file must be .ini or .json format.")
+        if not criteria_filename_lower.endswith(".json"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Criteria file must be .json format.")
 
         try:
             criteria_content = await criteria_file.read()

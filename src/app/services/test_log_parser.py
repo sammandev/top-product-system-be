@@ -1498,26 +1498,24 @@ def _parse_test_log_criteria_json(content: bytes) -> dict[str, TestLogCriteriaRu
 
 def parse_test_log_criteria_file(content: bytes, filename: str) -> dict[str, TestLogCriteriaRule]:
     """
-    Parse criteria file based on extension (.ini or .json).
+    Parse JSON criteria file.
 
     Args:
         content: Bytes content of criteria file
-        filename: Original filename to determine format
+        filename: Original filename (must be .json)
 
     Returns:
         Dict mapping lowercase test_item names to TestLogCriteriaRule objects
 
     Raises:
-        ValueError: If file format is not supported or parsing fails
+        ValueError: If file format is not .json or parsing fails
     """
     filename_lower = filename.lower()
 
     if filename_lower.endswith(".json"):
         return _parse_test_log_criteria_json(content)
-    elif filename_lower.endswith(".ini"):
-        return _parse_test_log_criteria_file(content)
     else:
-        raise ValueError(f"Unsupported criteria file format: {filename}. Use .ini or .json")
+        raise ValueError(f"Unsupported criteria file format: {filename}. Only .json is supported.")
 
 
 def _classify_test_item_value(value: str) -> tuple[bool, float | None, bool, int | None]:

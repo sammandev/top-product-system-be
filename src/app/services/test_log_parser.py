@@ -1408,6 +1408,118 @@ def _parse_test_log_criteria_file(content: bytes) -> dict[str, TestLogCriteriaRu
     return rules
 
 
+def _parse_test_log_criteria_json(content: bytes) -> dict[str, TestLogCriteriaRule]:
+    """
+    Parse criteria JSON file for test log filtering and scoring.
+
+    JSON Format:
+        {
+            "criteria": [
+                {
+                    "test_item": "TEST_ITEM_PATTERN",
+                    "ucl": 20.0,
+                    "lcl": 10.0,
+                    "target": 15.0
+                },
+                ...
+            ]
+        }
+
+    Args:
+        content: Bytes content of .json file
+
+    Returns:
+        Dict mapping lowercase test_item names to TestLogCriteriaRule objects
+    """
+    import json
+
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        text = content.decode("utf-8", errors="ignore")
+
+    rules: dict[str, TestLogCriteriaRule] = {}
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON format: {e}") from e
+
+    # Support both "criteria" array and direct array format
+    criteria_list = data.get("criteria", data) if isinstance(data, dict) else data
+
+    if not isinstance(criteria_list, list):
+        raise ValueError("JSON criteria must be an array or an object with 'criteria' array")
+
+    for item in criteria_list:
+        if not isinstance(item, dict):
+            continue
+
+        test_pattern = item.get("test_item", "")
+        if not test_pattern:
+            continue
+
+        usl = _to_float(str(item.get("ucl", ""))) if item.get("ucl") is not None else None
+        lsl = _to_float(str(item.get("lcl", ""))) if item.get("lcl") is not None else None
+        target = _to_float(str(item.get("target", ""))) if item.get("target") is not None else None
+
+        # Auto-expand patterns (same logic as INI parser)
+        regex_pattern = test_pattern
+        regex_special_chars = r".*+?[]{}()^$|\\"
+        has_regex_chars = any(char in test_pattern for char in regex_special_chars)
+
+        if not has_regex_chars:
+            expansions = [
+                (r"_TX_", r"_TX\\d?_"),
+                (r"_RX_", r"_RX\\d?_"),
+                (r"_PA_", r"_PA\\d?_"),
+                (r"_ANT_", r"_ANT\\d?_"),
+                (r"_RSSI_", r"_RSSI\\d?_"),
+                (r"_CHAIN_", r"_CHAIN\\d?_"),
+            ]
+            for pattern, replacement in expansions:
+                regex_pattern = re.sub(pattern, replacement, regex_pattern)
+
+        try:
+            compiled = re.compile(regex_pattern, re.IGNORECASE)
+        except re.error:
+            continue
+
+        key = test_pattern.lower()
+        rules[key] = TestLogCriteriaRule(
+            pattern=compiled,
+            usl=usl,
+            lsl=lsl,
+            target=target,
+        )
+
+    return rules
+
+
+def parse_test_log_criteria_file(content: bytes, filename: str) -> dict[str, TestLogCriteriaRule]:
+    """
+    Parse criteria file based on extension (.ini or .json).
+
+    Args:
+        content: Bytes content of criteria file
+        filename: Original filename to determine format
+
+    Returns:
+        Dict mapping lowercase test_item names to TestLogCriteriaRule objects
+
+    Raises:
+        ValueError: If file format is not supported or parsing fails
+    """
+    filename_lower = filename.lower()
+
+    if filename_lower.endswith(".json"):
+        return _parse_test_log_criteria_json(content)
+    elif filename_lower.endswith(".ini"):
+        return _parse_test_log_criteria_file(content)
+    else:
+        raise ValueError(f"Unsupported criteria file format: {filename}. Use .ini or .json")
+
+
 def _classify_test_item_value(value: str) -> tuple[bool, float | None, bool, int | None]:
     """
     Classify test item value as numeric (value) or non-numeric (non-value).

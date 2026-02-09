@@ -17,37 +17,42 @@ from ..models.test_log import (
 )
 from ..services.test_log_parser import TestLogParser, parse_test_log_criteria_file
 
+from pydantic import BaseModel, Field
+from ..services.scoring_service import score_test_item, detect_scoring_type
+from ..schemas.scoring_schemas import ScoringConfig, ScoringType, ScoringPolicy
+
 router = APIRouter(prefix="/api/test-log", tags=["Test_Log_Processing"])
 
 
 def validate_test_log_pattern(content: str) -> bool:
     """
     Check if file content contains valid test log patterns.
-    
+
     Valid patterns:
     1. << START TESTING >> repeated 4 times
     2. =========[Start SFIS Test Result]====== format with TEST/UCL/LCL/VALUE
     3. *** Test flow *** format with Duration/Status/Result/Counter
-    
+
     Args:
         content: File content as string
-        
+
     Returns:
         True if file contains at least one valid pattern, False otherwise
     """
     # Pattern 1: << START TESTING >> repeated 4 times
     if "<< START TESTING >>  << START TESTING >>  << START TESTING >>  << START TESTING >>" in content:
         return True
-    
+
     # Pattern 2: SFIS Test Result format
     if "=========[Start SFIS Test Result]======" in content and '"TEST" <"UCL","LCL">  ===> "VALUE"' in content:
         return True
-    
+
     # Pattern 3: Test flow format
     if "*** Test flow ***" in content and "[Result]=" in content:
         return True
-    
+
     return False
+
 
 # Directory for temporary file storage
 UPLOAD_DIR = Path("data/uploads/test_logs")
@@ -112,7 +117,7 @@ async def parse_test_log(
     if criteria_file:
         if not criteria_file.filename:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Criteria file must have a filename.")
-        
+
         criteria_filename_lower = criteria_file.filename.lower()
         if not criteria_filename_lower.endswith(".json"):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Criteria file must be .json format.")
@@ -140,21 +145,18 @@ async def parse_test_log(
             valid_files = []
             for txt_file in extracted_files:
                 try:
-                    with open(txt_file, 'r', encoding='utf-8', errors='ignore') as f:
+                    with open(txt_file, "r", encoding="utf-8", errors="ignore") as f:
                         content = f.read()
                         if validate_test_log_pattern(content):
                             valid_files.append(txt_file)
                 except Exception:
                     # Skip files that can't be read
                     continue
-            
+
             if len(valid_files) == 0:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="No valid test log files found in archive. Files must contain one of the required patterns: "
-                           "'<< START TESTING >>' (repeated 4 times), "
-                           "'=========[Start SFIS Test Result]======', or "
-                           "'*** Test flow ***'"
+                    detail="No valid test log files found in archive. Files must contain one of the required patterns: '<< START TESTING >>' (repeated 4 times), '=========[Start SFIS Test Result]======', or '*** Test flow ***'",
                 )
 
             # If criteria provided, use enhanced parsing on first valid file
@@ -168,23 +170,20 @@ async def parse_test_log(
                 # Note: We need to filter the archive parser to only process valid files
                 result = TestLogParser.parse_archive(str(temp_file_path))
                 # Filter results to only include valid files
-                if isinstance(result, dict) and 'files' in result:
+                if isinstance(result, dict) and "files" in result:
                     valid_file_names = [Path(f).name for f in valid_files]
-                    result['files'] = [f for f in result['files'] if f.get('filename') in valid_file_names]
+                    result["files"] = [f for f in result["files"] if f.get("filename") in valid_file_names]
                 return JSONResponse(content=result)
         else:
             # Parse single .txt file - validate pattern first
-            with open(temp_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            with open(temp_file_path, "r", encoding="utf-8", errors="ignore") as f:
                 content = f.read()
                 if not validate_test_log_pattern(content):
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="File does not contain valid test log format. Files must contain one of the required patterns: "
-                               "'<< START TESTING >>' (repeated 4 times), "
-                               "'=========[Start SFIS Test Result]======', or "
-                               "'*** Test flow ***'"
+                        detail="File does not contain valid test log format. Files must contain one of the required patterns: '<< START TESTING >>' (repeated 4 times), '=========[Start SFIS Test Result]======', or '*** Test flow ***'",
                     )
-            
+
             # Always use enhanced parsing (with or without criteria)
             result = TestLogParser.parse_file_enhanced(str(temp_file_path), criteria_rules=criteria_rules, show_only_criteria=show_only_criteria)
             response = TestLogParseResponseEnhanced(**result)
@@ -259,7 +258,7 @@ async def compare_test_logs(
     if criteria_file:
         if not criteria_file.filename:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Criteria file must have a filename.")
-        
+
         criteria_filename_lower = criteria_file.filename.lower()
         if not criteria_filename_lower.endswith(".json"):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Criteria file must be .json format.")
@@ -285,11 +284,11 @@ async def compare_test_logs(
             if file.filename.lower().endswith((".zip", ".rar", ".7z")):
                 # Extract archive and get .txt files
                 extracted_files = TestLogParser.extract_archive(str(temp_path))
-                
+
                 # Validate patterns in extracted files
                 for txt_file in extracted_files:
                     try:
-                        with open(txt_file, 'r', encoding='utf-8', errors='ignore') as f:
+                        with open(txt_file, "r", encoding="utf-8", errors="ignore") as f:
                             content = f.read()
                             if validate_test_log_pattern(content):
                                 txt_file_paths.append(txt_file)
@@ -299,7 +298,7 @@ async def compare_test_logs(
             else:
                 # Validate .txt file pattern before adding
                 try:
-                    with open(temp_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    with open(temp_path, "r", encoding="utf-8", errors="ignore") as f:
                         content = f.read()
                         if validate_test_log_pattern(content):
                             txt_file_paths.append(str(temp_path))
@@ -309,11 +308,8 @@ async def compare_test_logs(
 
         if len(txt_file_paths) < 1:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, 
-                detail=f"No valid test log files found for comparison. Files must contain one of the required patterns: "
-                       "'<< START TESTING >>' (repeated 4 times), "
-                       "'=========[Start SFIS Test Result]======', or "
-                       "'*** Test flow ***'"
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"No valid test log files found for comparison. Files must contain one of the required patterns: '<< START TESTING >>' (repeated 4 times), '=========[Start SFIS Test Result]======', or '*** Test flow ***'",
             )
 
         # Always use enhanced comparison for BY UPLOAD LOG feature
@@ -340,6 +336,158 @@ async def compare_test_logs(
 
         if criteria_file:
             await criteria_file.close()
+
+
+# ============================================================================
+# Rescoring endpoint - uses universal scoring system like iPLAS API
+# ============================================================================
+
+
+class TestLogRescoreRequest(BaseModel):
+    """Request model for rescoring test log items."""
+
+    test_items: list[dict] = Field(..., description="List of test items in format: {test_item, value, usl, lsl, status}")
+    scoring_configs: list[dict] = Field(default=[], description="List of scoring configurations per test item")
+    include_binary_in_overall: bool = Field(default=True, description="Include binary (PASS/FAIL) items in overall score")
+
+
+class TestLogRescoreItemResult(BaseModel):
+    """Score result for a single test item."""
+
+    test_item: str
+    value: float | None = None
+    usl: float | None = None
+    lsl: float | None = None
+    status: str
+    scoring_type: str
+    policy: str | None = None
+    score: float = Field(description="Score on 0-10 scale")
+    deviation: float | None = None
+    weight: float = 1.0
+    target: float | None = None
+
+
+class TestLogRescoreResponse(BaseModel):
+    """Response model for rescoring test log items."""
+
+    test_item_scores: list[TestLogRescoreItemResult]
+    overall_score: float = Field(description="Overall score on 0-10 scale")
+    value_items_score: float | None = None
+    total_items: int
+    scored_items: int
+
+
+def _convert_test_log_item_to_iplas_format(item: dict) -> dict:
+    """Convert test log item format to iPLAS format for scoring."""
+    return {
+        "NAME": item.get("test_item", ""),
+        "VALUE": item.get("value", ""),
+        "UCL": str(item.get("usl", "")) if item.get("usl") is not None else "",
+        "LCL": str(item.get("lsl", "")) if item.get("lsl") is not None else "",
+        "STATUS": item.get("status", "PASS"),
+    }
+
+
+@router.post(
+    "/rescore",
+    response_model=TestLogRescoreResponse,
+    summary="Rescore test log items using universal scoring system",
+    description="""
+    Rescore test log items using the same scoring algorithms as the iPLAS API.
+    
+    This endpoint accepts parsed test log items and scoring configurations,
+    then applies the universal 0-10 scoring system with support for:
+    - **symmetrical**: Linear scoring with centered target (UCL + LCL / 2)
+    - **asymmetrical**: User-defined custom target with Policy (symmetrical/higher/lower)
+    - **evm**: UCL-only scoring for EVM measurements (lower is better)
+    - **per_mask**: UCL-only scoring for PER/MASK items (zero is best)
+    - **binary**: Simple PASS/FAIL scoring
+    - **throughput**: LCL-only scoring (higher is better)
+    """,
+)
+async def rescore_test_log_items(request: TestLogRescoreRequest) -> TestLogRescoreResponse:
+    """Rescore test log items using the universal scoring system."""
+
+    # Build config map
+    config_map: dict[str, ScoringConfig] = {}
+    for cfg in request.scoring_configs:
+        name = cfg.get("test_item_name", "")
+        if name:
+            config_map[name] = ScoringConfig(
+                test_item_name=name,
+                scoring_type=ScoringType(cfg.get("scoring_type", "symmetrical")),
+                enabled=cfg.get("enabled", True),
+                weight=cfg.get("weight", 1.0),
+                target=cfg.get("target"),
+                policy=ScoringPolicy(cfg.get("policy", "symmetrical")) if cfg.get("policy") else ScoringPolicy.SYMMETRICAL,
+                limit_score=cfg.get("limit_score"),
+                alpha=cfg.get("alpha"),
+            )
+
+    # Score each test item
+    item_scores: list[TestLogRescoreItemResult] = []
+    value_weighted_scores: list[tuple[float, float]] = []  # (score * weight^2, weight^2)
+    all_weighted_scores: list[tuple[float, float]] = []
+
+    for item in request.test_items:
+        # Convert to iPLAS format
+        iplas_item = _convert_test_log_item_to_iplas_format(item)
+        name = iplas_item["NAME"]
+
+        # Get config or use auto-detection
+        config = config_map.get(name)
+
+        # Score the item
+        result = score_test_item(iplas_item, config)
+
+        # Convert score from 0-1 to 0-10 for response
+        score_0_10 = result.score * 10.0
+
+        item_scores.append(
+            TestLogRescoreItemResult(
+                test_item=result.test_item_name,
+                value=result.value,
+                usl=result.ucl,
+                lsl=result.lcl,
+                status=result.status,
+                scoring_type=result.scoring_type.value,
+                policy=result.policy.value if result.policy else None,
+                score=score_0_10,
+                deviation=result.deviation,
+                weight=result.weight,
+                target=result.target,
+            )
+        )
+
+        # Accumulate weighted scores
+        weight = result.weight
+        effective_weight = weight * weight
+        weighted_score = result.score * effective_weight
+
+        if result.scoring_type != ScoringType.BINARY:
+            value_weighted_scores.append((weighted_score, effective_weight))
+
+        if result.scoring_type != ScoringType.BINARY or request.include_binary_in_overall:
+            all_weighted_scores.append((weighted_score, effective_weight))
+
+    # Calculate aggregate scores
+    def weighted_average(scores: list[tuple[float, float]]) -> float:
+        if not scores:
+            return 0.0
+        total_weighted = sum(ws for ws, _ in scores)
+        total_weight = sum(w for _, w in scores)
+        return (total_weighted / total_weight) * 10.0 if total_weight > 0 else 0.0
+
+    overall_score = weighted_average(all_weighted_scores)
+    value_items_score = weighted_average(value_weighted_scores) if value_weighted_scores else None
+
+    return TestLogRescoreResponse(
+        test_item_scores=item_scores,
+        overall_score=overall_score,
+        value_items_score=value_items_score,
+        total_items=len(request.test_items),
+        scored_items=len(item_scores),
+    )
 
 
 @router.get("/health", summary="Health check for test log parser", description="Check if the test log parsing service is operational.", operation_id="health_check_test_log")

@@ -95,6 +95,64 @@ class TopProductStatsResponse(BaseModel):
 
 
 # ============================================================================
+# Request Models for Creating Top Products
+# ============================================================================
+
+
+class TopProductMeasurementCreate(BaseModel):
+    """Measurement data for creating a top product."""
+
+    test_item: str = Field(..., description="Name of the test item")
+    usl: float | None = Field(None, description="Upper Spec Limit")
+    lsl: float | None = Field(None, description="Lower Spec Limit")
+    target_value: float | None = Field(None, description="Target value")
+    actual_value: float | None = Field(None, description="Actual measured value")
+    deviation: float | None = Field(None, description="Deviation from target")
+
+
+class TopProductCreate(BaseModel):
+    """Request body for creating a top product."""
+
+    dut_isn: str = Field(..., description="DUT ISN")
+    dut_id: int | None = Field(None, description="DUT ID from database")
+    site_name: str | None = Field(None, description="Site name")
+    project_name: str | None = Field(None, description="Project name")
+    model_name: str | None = Field(None, description="Model name")
+    station_name: str = Field(..., description="Test station name")
+    device_name: str | None = Field(None, description="Device name")
+    test_date: datetime | None = Field(None, description="Test date and time")
+    test_duration: float | None = Field(None, description="Test duration in seconds")
+    pass_count: int = Field(0, description="Number of passed tests")
+    fail_count: int = Field(0, description="Number of failed tests")
+    retest_count: int = Field(0, description="Number of retests")
+    score: float = Field(..., description="Overall score (0-10)")
+    measurements: list[TopProductMeasurementCreate] = Field(default=[], description="Test measurements")
+
+
+class TopProductBulkCreate(BaseModel):
+    """Request body for bulk creating top products."""
+
+    products: list[TopProductCreate] = Field(..., description="List of top products to create")
+
+
+class TopProductCreateResponse(BaseModel):
+    """Response for creating a top product."""
+
+    success: bool = Field(..., description="Whether the operation was successful")
+    id: int = Field(..., description="ID of the created top product")
+    message: str = Field(..., description="Result message")
+
+
+class TopProductBulkCreateResponse(BaseModel):
+    """Response for bulk creating top products."""
+
+    success: bool = Field(..., description="Whether the operation was successful")
+    created_count: int = Field(..., description="Number of top products created")
+    created_ids: list[int] = Field(..., description="IDs of created top products")
+    message: str = Field(..., description="Result message")
+
+
+# ============================================================================
 # Endpoints
 # ============================================================================
 
@@ -404,6 +462,161 @@ async def get_unique_stations(
     except Exception as e:
         logger.error(f"Error fetching stations: {e}", exc_info=True)
         raise
+
+
+# ============================================================================
+# Create Endpoints
+# ============================================================================
+
+
+@router.post(
+    "/create",
+    response_model=TopProductCreateResponse,
+    summary="Create a new top product",
+    description="Create a new top product entry with measurements from analyzed test log data",
+)
+async def create_top_product(
+    product_data: TopProductCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Create a new top product entry.
+
+    Args:
+        product_data: Top product data to create
+        current_user: Authenticated user
+        db: Database session
+
+    Returns:
+        TopProductCreateResponse with the created product ID
+    """
+    try:
+        # Create the top product
+        new_product = TopProduct(
+            dut_isn=product_data.dut_isn,
+            dut_id=product_data.dut_id,
+            site_name=product_data.site_name,
+            project_name=product_data.project_name,
+            model_name=product_data.model_name,
+            station_name=product_data.station_name,
+            device_name=product_data.device_name,
+            test_date=product_data.test_date,
+            test_duration=product_data.test_duration,
+            pass_count=product_data.pass_count,
+            fail_count=product_data.fail_count,
+            retest_count=product_data.retest_count,
+            score=product_data.score,
+        )
+        db.add(new_product)
+        db.flush()  # Get the ID without committing
+
+        # Create measurements
+        for measurement in product_data.measurements:
+            new_measurement = TopProductMeasurement(
+                top_product_id=new_product.id,
+                test_item=measurement.test_item,
+                usl=measurement.usl,
+                lsl=measurement.lsl,
+                target_value=measurement.target_value,
+                actual_value=measurement.actual_value,
+                deviation=measurement.deviation,
+            )
+            db.add(new_measurement)
+
+        db.commit()
+
+        logger.info(f"Top product created with ID {new_product.id} by user {current_user.username}")
+        return TopProductCreateResponse(
+            success=True,
+            id=new_product.id,
+            message=f"Top product created successfully for ISN {product_data.dut_isn}",
+        )
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error creating top product: {e}", exc_info=True)
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=500, detail=f"Failed to create top product: {str(e)}")
+
+
+@router.post(
+    "/create-bulk",
+    response_model=TopProductBulkCreateResponse,
+    summary="Create multiple top products",
+    description="Create multiple top product entries in a single request",
+)
+async def create_top_products_bulk(
+    bulk_data: TopProductBulkCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Create multiple top product entries in bulk.
+
+    Args:
+        bulk_data: List of top products to create
+        current_user: Authenticated user
+        db: Database session
+
+    Returns:
+        TopProductBulkCreateResponse with created product IDs
+    """
+    try:
+        created_ids = []
+
+        for product_data in bulk_data.products:
+            # Create the top product
+            new_product = TopProduct(
+                dut_isn=product_data.dut_isn,
+                dut_id=product_data.dut_id,
+                site_name=product_data.site_name,
+                project_name=product_data.project_name,
+                model_name=product_data.model_name,
+                station_name=product_data.station_name,
+                device_name=product_data.device_name,
+                test_date=product_data.test_date,
+                test_duration=product_data.test_duration,
+                pass_count=product_data.pass_count,
+                fail_count=product_data.fail_count,
+                retest_count=product_data.retest_count,
+                score=product_data.score,
+            )
+            db.add(new_product)
+            db.flush()  # Get the ID without committing
+
+            # Create measurements
+            for measurement in product_data.measurements:
+                new_measurement = TopProductMeasurement(
+                    top_product_id=new_product.id,
+                    test_item=measurement.test_item,
+                    usl=measurement.usl,
+                    lsl=measurement.lsl,
+                    target_value=measurement.target_value,
+                    actual_value=measurement.actual_value,
+                    deviation=measurement.deviation,
+                )
+                db.add(new_measurement)
+
+            created_ids.append(new_product.id)
+
+        db.commit()
+
+        logger.info(f"{len(created_ids)} top products created by user {current_user.username}")
+        return TopProductBulkCreateResponse(
+            success=True,
+            created_count=len(created_ids),
+            created_ids=created_ids,
+            message=f"Successfully created {len(created_ids)} top product(s)",
+        )
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error creating top products in bulk: {e}", exc_info=True)
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=500, detail=f"Failed to create top products: {str(e)}")
 
 
 @router.delete(

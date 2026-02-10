@@ -587,7 +587,7 @@ class TestLogRescoreItemResult(BaseModel):
     status: str
     scoring_type: str
     policy: str | None = None
-    score: float = Field(description="Score on 0-10 scale")
+    score: float | None = Field(default=None, description="Score on 0-10 scale (null for non-criteria items)")
     deviation: float | None = None
     weight: float = 1.0
     target: float | None = None
@@ -665,17 +665,17 @@ async def rescore_test_log_items(request: TestLogRescoreRequest) -> TestLogResco
 
         # UPDATED: By default, only score Criteria items (those with UCL or LCL).
         # Non-Criteria items (no limits) are skipped unless user explicitly configured them.
-        has_limits = item.usl is not None or item.lsl is not None
+        has_limits = item.get("usl") is not None or item.get("lsl") is not None
         has_explicit_config = name in config_map
         if not has_limits and not has_explicit_config:
             # Return null score for non-criteria items without explicit config
             item_scores.append(
                 TestLogRescoreItemResult(
                     test_item=name,
-                    value=item.value,
-                    usl=item.usl,
-                    lsl=item.lsl,
-                    status=item.status or "PASS",
+                    value=item.get("value"),
+                    usl=item.get("usl"),
+                    lsl=item.get("lsl"),
+                    status=item.get("status") or "PASS",
                     scoring_type="binary",
                     policy=None,
                     score=None,

@@ -574,7 +574,7 @@ class TestLogRescoreRequest(BaseModel):
 
     test_items: list[dict] = Field(..., description="List of test items in format: {test_item, value, usl, lsl, status}")
     scoring_configs: list[dict] = Field(default=[], description="List of scoring configurations per test item")
-    include_binary_in_overall: bool = Field(default=True, description="Include binary (PASS/FAIL) items in overall score")
+    include_binary_in_overall: bool = Field(default=False, description="Include binary (PASS/FAIL) items in overall score")
 
 
 class TestLogRescoreItemResult(BaseModel):
@@ -662,6 +662,29 @@ async def rescore_test_log_items(request: TestLogRescoreRequest) -> TestLogResco
 
         # Get config or use auto-detection
         config = config_map.get(name)
+
+        # UPDATED: By default, only score Criteria items (those with UCL or LCL).
+        # Non-Criteria items (no limits) are skipped unless user explicitly configured them.
+        has_limits = item.usl is not None or item.lsl is not None
+        has_explicit_config = name in config_map
+        if not has_limits and not has_explicit_config:
+            # Return null score for non-criteria items without explicit config
+            item_scores.append(
+                TestLogRescoreItemResult(
+                    test_item=name,
+                    value=item.value,
+                    usl=item.usl,
+                    lsl=item.lsl,
+                    status=item.status or "PASS",
+                    scoring_type="binary",
+                    policy=None,
+                    score=None,
+                    deviation=None,
+                    weight=1.0,
+                    target=None,
+                )
+            )
+            continue
 
         # Score the item
         result = score_test_item(iplas_item, config)

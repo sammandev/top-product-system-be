@@ -6,7 +6,6 @@ from . import (  # noqa: F401
     format_compare,
     multi_dut_analysis,
     parsing,
-    rbac,
 )
 
 __all__ = [
@@ -17,5 +16,4 @@ __all__ = [
     "format_compare",
     "dvt_mc2_converter",
     "multi_dut_analysis",
-    "rbac",
 ]

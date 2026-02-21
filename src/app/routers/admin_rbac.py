@@ -1,5 +1,8 @@
 """
 Router for RBAC (Role-Based Access Control) management.
+
+Provides admin-only endpoints for managing roles, permissions,
+role-permission links, and user-role assignments.
 """
 
 import logging
@@ -12,8 +15,8 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies.authz import get_current_user
 from app.models.rbac import Permission, Role
-from app.utils.admin_access import is_user_admin
 from app.models.user import User
+from app.utils.admin_access import is_user_admin
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +125,18 @@ class UpdatePermissionRequest(BaseModel):
 
     name: str | None = Field(None, min_length=1, max_length=64)
     description: str | None = Field(None, max_length=256)
+
+
+class GrantRevokePermissionRequest(BaseModel):
+    """Request model for granting/revoking a permission on a role."""
+
+    perm_id: int = Field(..., description="Permission ID to grant or revoke")
+
+
+class AssignRemoveRoleRequest(BaseModel):
+    """Request model for assigning/removing a role from a user."""
+
+    role_id: int = Field(..., description="Role ID to assign or remove")
 
 
 # ============================================================================
@@ -511,3 +526,121 @@ async def delete_permission(
         db.rollback()
         logger.error(f"Error deleting permission: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to delete permission") from e
+
+
+# ============================================================================
+# Role <-> Permission Links
+# ============================================================================
+
+
+@router.post(
+    "/roles/{role_id}/grant",
+    summary="Grant permission to role",
+    description="Attach an existing permission to the specified role (Admin only)",
+)
+async def grant_permission_to_role(
+    role_id: int,
+    request: GrantRevokePermissionRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Grant a permission to a role."""
+    if not is_user_admin(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can manage role permissions")
+
+    role = db.get(Role, role_id)
+    perm = db.get(Permission, request.perm_id)
+    if not role or not perm:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role or permission not found")
+
+    if perm not in role.permissions:
+        role.permissions.append(perm)
+        db.commit()
+
+    return {"role": role.name, "granted": perm.name}
+
+
+@router.post(
+    "/roles/{role_id}/revoke",
+    summary="Revoke permission from role",
+    description="Remove a permission from the specified role (Admin only)",
+)
+async def revoke_permission_from_role(
+    role_id: int,
+    request: GrantRevokePermissionRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Revoke a permission from a role."""
+    if not is_user_admin(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can manage role permissions")
+
+    role = db.get(Role, role_id)
+    perm = db.get(Permission, request.perm_id)
+    if not role or not perm:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role or permission not found")
+
+    if perm in role.permissions:
+        role.permissions.remove(perm)
+        db.commit()
+
+    return {"role": role.name, "revoked": perm.name}
+
+
+# ============================================================================
+# User <-> Role Links
+# ============================================================================
+
+
+@router.post(
+    "/users/{user_id}/assign-role",
+    summary="Assign role to user",
+    description="Assign a role to a user (Admin only)",
+)
+async def assign_role_to_user(
+    user_id: int,
+    request: AssignRemoveRoleRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Assign a role to a user."""
+    if not is_user_admin(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can manage user roles")
+
+    user = db.get(User, user_id)
+    role = db.get(Role, request.role_id)
+    if not user or not role:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User or role not found")
+
+    if role not in user.roles:
+        user.roles.append(role)
+        db.commit()
+
+    return {"user": user.username, "role": role.name, "assigned": True}
+
+
+@router.post(
+    "/users/{user_id}/remove-role",
+    summary="Remove role from user",
+    description="Remove a role from a user (Admin only)",
+)
+async def remove_role_from_user(
+    user_id: int,
+    request: AssignRemoveRoleRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Remove a role from a user."""
+    if not is_user_admin(current_user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only administrators can manage user roles")
+
+    user = db.get(User, user_id)
+    role = db.get(Role, request.role_id)
+    if not user or not role:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User or role not found")
+
+    if role in user.roles:
+        user.roles.remove(role)
+        db.commit()
+
+    return {"user": user.username, "role": role.name, "removed": True}

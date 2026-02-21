@@ -325,7 +325,6 @@ from .routers import (  # noqa: E402
     menu_access,
     multi_dut_analysis,
     parsing,
-    rbac,
     scoring,
     sfistsp,
     test_log,
@@ -348,7 +347,6 @@ app.include_router(iplas_proxy.router)
 app.include_router(menu_access.router)
 app.include_router(multi_dut_analysis.router)
 app.include_router(parsing.router)
-app.include_router(rbac.router)
 app.include_router(scoring.router)
 app.include_router(sfistsp.router)
 app.include_router(test_log.router)

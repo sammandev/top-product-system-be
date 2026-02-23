@@ -39,6 +39,7 @@ class UserCreateRequest(BaseModel):
     email: str | None = Field(None, max_length=255)
     password: str = Field(..., min_length=6)
     roles: list[str] = Field(default_factory=list)
+    role: str | None = Field(None, description="Access control role (guest/user/admin/superadmin)")
     is_active: bool = True
 
 
@@ -47,6 +48,7 @@ class UserUpdateRequest(BaseModel):
 
     email: str | None = None
     roles: list[str] | None = None
+    role: str | None = Field(None, description="Access control role (guest/user/admin/superadmin)")
     is_active: bool | None = None
     password: str | None = Field(None, min_length=6)
 
@@ -58,6 +60,7 @@ class UserSchema(BaseModel):
     username: str
     email: str | None
     roles: list[str]
+    role: str = "user"
     is_active: bool
     last_login: datetime | None
     created_at: datetime
@@ -143,6 +146,7 @@ async def get_users(
                 username=user.username,
                 email=user.email,
                 roles=roles_list,
+                role=getattr(user, 'role', 'user') or 'user',
                 is_active=user.is_active,
                 last_login=user.last_login,
                 created_at=user.created_at,
@@ -251,7 +255,11 @@ async def create_user(
             updated_at=datetime.now(UTC)
         )
 
-        # Assign roles
+        # Assign access control role
+        if user_data.role and user_data.role in ('guest', 'user', 'admin', 'superadmin'):
+            new_user.role = user_data.role
+
+        # Assign RBAC roles (legacy)
         if user_data.roles:
             roles = db.query(Role).filter(Role.name.in_(user_data.roles)).all()
             new_user.roles = roles
@@ -268,6 +276,7 @@ async def create_user(
             username=new_user.username,
             email=new_user.email,
             roles=roles_list,
+            role=getattr(new_user, 'role', 'user') or 'user',
             is_active=new_user.is_active,
             last_login=new_user.last_login,
             created_at=new_user.created_at,
@@ -355,7 +364,12 @@ async def update_user(
             logger.info(f"Updating password for user {user.username}")
             user.password_hash = hash_password(user_data.password)
 
-        # Update roles
+        # Update access control role
+        if user_data.role is not None and user_data.role in ('guest', 'user', 'admin', 'superadmin'):
+            logger.info(f"Updating access control role for user {user.username}: {getattr(user, 'role', 'user')} -> {user_data.role}")
+            user.role = user_data.role
+
+        # Update RBAC roles (legacy)
         if user_data.roles is not None:
             old_roles = [r.name for r in user.roles] if user.roles else []
             logger.info(f"Updating roles for user {user.username}: {old_roles} -> {user_data.roles}")
@@ -382,6 +396,7 @@ async def update_user(
             username=user.username,
             email=user.email,
             roles=roles_list,
+            role=getattr(user, 'role', 'user') or 'user',
             is_active=user.is_active,
             last_login=user.last_login,
             created_at=user.created_at,

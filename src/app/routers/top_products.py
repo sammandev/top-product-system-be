@@ -676,7 +676,7 @@ class BulkDeleteRequest(BaseModel):
     ids: list[int] = Field(..., min_length=1, description="List of top product IDs to delete")
 
 
-@router.delete(
+@router.post(
     "/bulk-delete",
     summary="Bulk delete top products",
     description="Delete multiple top products and all their measurements. Superadmin/developer only.",

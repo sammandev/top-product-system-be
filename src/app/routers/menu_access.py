@@ -127,12 +127,11 @@ DEFAULT_MENUS = [
     {"menu_key": "mastercontrol-analyze", "title": "MasterControl Analyze", "path": "/mastercontrol/analyze", "icon": "mdi-file-chart", "section": "tools", "sort_order": 20},
     {"menu_key": "dvt-to-mc2-converter", "title": "DVT to MC2 Converter", "path": "/conversion/dvt-to-mc2", "icon": "mdi-file-swap", "section": "tools", "sort_order": 30},
     # System Section (Admin only by default)
-    {"menu_key": "access-control", "title": "Access Control", "path": "", "icon": "mdi-shield-lock", "section": "system", "sort_order": 0},
-    {"menu_key": "access-control-users", "title": "User Management", "path": "/admin/users", "icon": "mdi-circle-small", "parent_key": "access-control", "section": "system", "sort_order": 1},
-    {"menu_key": "access-control-rbac", "title": "Roles & Permissions", "path": "/admin/rbac", "icon": "mdi-circle-small", "parent_key": "access-control", "section": "system", "sort_order": 2},
-    {"menu_key": "access-control-menus", "title": "Menu Access", "path": "/admin/menu-access", "icon": "mdi-circle-small", "parent_key": "access-control", "section": "system", "sort_order": 3},
+    {"menu_key": "system-configuration", "title": "System Configuration", "path": "", "icon": "mdi-shield-lock", "section": "system", "sort_order": 0},
+    {"menu_key": "system-configuration-users", "title": "User Management", "path": "/admin/users", "icon": "mdi-circle-small", "parent_key": "system-configuration", "section": "system", "sort_order": 1},
+    {"menu_key": "system-configuration-menus", "title": "Menu Access", "path": "/admin/menu-access", "icon": "mdi-circle-small", "parent_key": "system-configuration", "section": "system", "sort_order": 2},
+    {"menu_key": "system-configuration-app-config", "title": "App Configuration", "path": "/admin/app-config", "icon": "mdi-circle-small", "parent_key": "system-configuration", "section": "system", "sort_order": 3},
     {"menu_key": "system-cleanup", "title": "System Cleanup", "path": "/admin/cleanup", "icon": "mdi-delete-sweep", "section": "system", "sort_order": 10},
-    {"menu_key": "app-configuration", "title": "App Configuration", "path": "/admin/app-config", "icon": "mdi-cog", "section": "system", "sort_order": 20},
 ]
 
 

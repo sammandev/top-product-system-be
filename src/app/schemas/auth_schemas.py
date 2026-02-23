@@ -93,7 +93,12 @@ class UserResponse(BaseModel):
     is_admin: bool = Field(..., description="Admin status (true if local admin OR external PTB admin)")
     is_ptb_admin: bool = Field(False, description="External PTB admin status (from DUT API)")
     worker_id: str | None = Field(None, description="External worker ID (from DUT API)")
-    roles: list[str] = Field(default_factory=list, description="Assigned roles")
+    email: str | None = Field(None, description="User email address")
+    role: str = Field("user", description="Access control role (developer/superadmin/user)")
+    menu_permissions: dict[str, list[str]] | None = Field(None, description="Per-resource CRUD permissions")
+    is_superuser: bool = Field(False, description="Superuser status (from external API)")
+    is_staff: bool = Field(False, description="Staff status (from external API)")
+    roles: list[str] = Field(default_factory=list, description="Assigned RBAC roles")
 
 
 class UserCreatedResponse(BaseModel):

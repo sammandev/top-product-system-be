@@ -4,8 +4,8 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models.user import User as DBUser
+from app.utils.admin_access import is_superadmin_user, is_user_admin
 from app.utils.auth import decode_jwt, get_user
-from app.utils.admin_access import is_user_admin
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -37,7 +37,7 @@ def get_current_user(
     user = get_user(db, payload.get("sub"))
     if not user:
         raise HTTPException(401, "user not found or inactive")
-    
+
     if not user.is_active:
         raise HTTPException(401, "user not found or inactive")
 
@@ -54,6 +54,13 @@ current_user_dependency = Depends(get_current_user)
 def require_admin(user: DBUser = current_user_dependency) -> DBUser:
     if not is_user_admin(user):
         raise HTTPException(403, "admin privileges required")
+    return user
+
+
+def require_superadmin(user: DBUser = current_user_dependency) -> DBUser:
+    """Require superadmin or developer role — for access control management."""
+    if not is_superadmin_user(user):
+        raise HTTPException(403, "superadmin privileges required")
     return user
 
 

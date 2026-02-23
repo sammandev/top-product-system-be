@@ -1,10 +1,10 @@
+import logging
 import os
 from typing import Annotated
-import logging
 
+import httpx
 from fastapi import APIRouter, Depends, Form, Header, HTTPException
 from fastapi.responses import JSONResponse
-import httpx
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -12,16 +12,12 @@ from app.dependencies.authz import get_current_user, require_admin
 from app.dependencies.external_api_client import get_dut_client, get_settings
 from app.models.user import User as DBUser
 from app.schemas.auth_schemas import (
-    PasswordChangedResponse,
     TokenResponse,
-    TokenRevokedResponse,
-    UserCreatedResponse,
-    UserDeletedResponse,
     UserResponse,
 )
 from app.services import dut_token_service
 from app.utils import auth as auth_utils
-from app.utils.admin_access import is_user_admin
+from app.utils.admin_access import is_developer_identity, is_user_admin
 
 router = APIRouter(prefix="/api/auth", tags=["Auth"])
 # module-level dependency to avoid calling Depends() inside function defaults
@@ -30,6 +26,22 @@ dut_client_dependency = Depends(get_dut_client)
 admin_dependency = Depends(require_admin)
 current_user_dependency = Depends(get_current_user)
 settings_dependency = Depends(get_settings)
+
+
+def _user_response_dict(user: DBUser) -> dict:
+    """Build a consistent user response dict for auth endpoints."""
+    return {
+        "username": user.username,
+        "is_admin": is_user_admin(user),
+        "is_ptb_admin": user.is_ptb_admin,
+        "worker_id": user.worker_id,
+        "email": user.email,
+        "role": user.role.value if user.role else "user",
+        "menu_permissions": user.menu_permissions,
+        "is_superuser": user.is_superuser,
+        "is_staff": user.is_staff,
+        "roles": [r.name for r in user.roles],
+    }
 
 
 @router.post(
@@ -62,13 +74,7 @@ def login(
         "access_token": access_token,
         "refresh_token": refresh_token,
         "token_type": "bearer",
-        "user": {
-            "username": user.username,
-            "is_admin": is_user_admin(user),
-            "is_ptb_admin": user.is_ptb_admin,  # External admin status
-            "worker_id": user.worker_id,
-            "roles": [r.name for r in user.roles],
-        },
+        "user": _user_response_dict(user),
     }
 
 
@@ -124,6 +130,8 @@ async def external_login(
             employee_info = user_info.get("employee_info", {})
             is_ptb_admin = employee_info.get("is_ptb_admin", False)
             worker_id = employee_info.get("worker_id")
+            is_superuser = user_info.get("is_superuser", False)
+            is_staff = user_info.get("is_staff", False)
             logger.info(f"Fetched external user info for {username}: email={user_info.get('email')}, is_ptb_admin={is_ptb_admin}")
         except Exception as e:
             logger.warning(f"Failed to fetch user account info for {username}: {e}")
@@ -134,11 +142,15 @@ async def external_login(
             }
             is_ptb_admin = False
             worker_id = None
+            is_superuser = False
+            is_staff = False
 
         # Extract user details from external API
         external_email = user_info.get("email")
 
         # Step 3: Create or update local user
+        from app.models.user import UserRole
+
         user = auth_utils.get_user(db, username)
         if not user:
             # First time login - create new user
@@ -146,9 +158,17 @@ async def external_login(
             logger.info(f"Creating new user {username} with is_ptb_admin={is_ptb_admin} from external API")
             user = auth_utils.create_user(db, username, password, is_admin=False)
             user.is_ptb_admin = is_ptb_admin
+            user.is_superuser = is_superuser
+            user.is_staff = is_staff
             user.worker_id = worker_id
             if external_email:
                 user.email = external_email
+
+            # Auto-assign developer role for hardcoded identities
+            if is_developer_identity(username, worker_id):
+                user.role = UserRole.developer
+                logger.info(f"Auto-assigned developer role to {username} (hardcoded identity)")
+
             db.commit()
             db.refresh(user)
         else:
@@ -158,6 +178,8 @@ async def external_login(
 
             # Update PTB admin status from external API
             user.is_ptb_admin = is_ptb_admin
+            user.is_superuser = is_superuser
+            user.is_staff = is_staff
 
             # Update worker_id from external API
             if worker_id and user.worker_id != worker_id:
@@ -169,6 +191,11 @@ async def external_login(
 
             # Update password hash in case it changed
             user.password_hash = auth_utils.hash_password(password)
+
+            # Auto-assign developer role for hardcoded identities (on every login)
+            if is_developer_identity(user.username, user.worker_id) and user.role != UserRole.developer:
+                user.role = UserRole.developer
+                logger.info(f"Auto-assigned developer role to {username} (hardcoded identity)")
 
             db.commit()
             db.refresh(user)
@@ -183,18 +210,11 @@ async def external_login(
         # Step 6: Issue our local JWT tokens
         access_token = auth_utils.create_access_token(user)
         refresh_token = auth_utils.create_refresh_token(user)
-        # Admin access granted if EITHER is_admin OR is_ptb_admin is true
         return {
             "access_token": access_token,
             "refresh_token": refresh_token,
             "token_type": "bearer",
-            "user": {
-                "username": user.username,
-                "is_admin": is_user_admin(user),
-                "is_ptb_admin": user.is_ptb_admin,  # External admin status
-                "worker_id": user.worker_id,
-                "roles": [r.name for r in user.roles],
-            },
+            "user": _user_response_dict(user),
         }
 
     except HTTPException:
@@ -211,13 +231,7 @@ async def external_login(
     response_model=UserResponse,
 )
 def me(user: DBUser = current_user_dependency):
-    return {
-        "username": user.username,
-        "is_admin": is_user_admin(user),
-        "is_ptb_admin": user.is_ptb_admin,  # External admin status
-        "worker_id": user.worker_id,
-        "roles": [r.name for r in user.roles],
-    }
+    return _user_response_dict(user)
 
 
 @router.post(

@@ -1,4 +1,5 @@
 from . import (  # noqa: F401
+    admin_access_control,
     auth,
     compare,
     dvt_mc2_converter,
@@ -9,6 +10,7 @@ from . import (  # noqa: F401
 )
 
 __all__ = [
+    "admin_access_control",
     "auth",
     "parsing",
     "compare",

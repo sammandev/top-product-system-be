@@ -310,6 +310,7 @@ app.add_middleware(
 # include routers
 from .routers import (  # noqa: E402
     activity,
+    admin_access_control,
     admin_rbac,
     admin_users,
     app_config,
@@ -332,6 +333,7 @@ from .routers import (  # noqa: E402
 )
 
 app.include_router(activity.router)
+app.include_router(admin_access_control.router)
 app.include_router(admin_rbac.router)
 app.include_router(admin_users.router)
 app.include_router(app_config.router)

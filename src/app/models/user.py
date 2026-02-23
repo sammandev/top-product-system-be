@@ -15,16 +15,20 @@ def _utc_now():
 
 
 class UserRole(enum.StrEnum):
-    """User role hierarchy (highest to lowest).
+    """User role hierarchy (highest to lowest privilege).
 
-    - developer: Hardcoded identity, auto-assigned on login. Cannot be modified via UI.
-    - superadmin: Granted by developer only. Full system access.
-    - user: Regular authenticated user with menu_permissions-based access.
+    - developer: Hardcoded identity, auto-assigned on login. Cannot be modified via UI. Full access.
+    - superadmin: Granted by developer only. Full system access except modifying developer users.
+    - admin: All pages except System Cleanup, App Configuration, Roles & Permissions, Menu Access.
+    - user: Standard pages + Tools. No admin/system pages.
+    - guest: Only Top Products Analysis + Data Explorer. Can be granted more via menu_permissions.
     """
 
     developer = "developer"
     superadmin = "superadmin"
+    admin = "admin"
     user = "user"
+    guest = "guest"
 
 
 # Menu resources available in the system (used for menu_permissions dict keys)

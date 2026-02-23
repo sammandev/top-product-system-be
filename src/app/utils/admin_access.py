@@ -48,13 +48,20 @@ def is_superadmin_user(user: User) -> bool:
     return getattr(user, "role", None) == UserRole.superadmin
 
 
+def is_admin_user(user: User) -> bool:
+    """Check if user has admin role or higher (admin, superadmin, developer)."""
+    if is_superadmin_user(user):
+        return True
+    return getattr(user, "role", None) == UserRole.admin
+
+
 def is_user_admin(user: User) -> bool:
     """Check if user has any admin-level access.
 
-    Returns True for developer, superadmin, is_admin, is_ptb_admin,
+    Returns True for developer, superadmin, admin, is_admin, is_ptb_admin,
     or hardcoded allowlist entries.
     """
-    if is_superadmin_user(user):
+    if is_admin_user(user):
         return True
 
     if user.is_admin or user.is_ptb_admin:

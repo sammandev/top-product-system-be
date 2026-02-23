@@ -26,6 +26,7 @@ class MenuDefinition(Base):
     section = Column(String(32), nullable=False, default="main")  # 'main', 'tools', 'system'
     sort_order = Column(Integer, default=0)  # For ordering menus
     is_active = Column(Boolean, default=True)  # Can disable entire menu items
+    description = Column(String(256), nullable=True)  # Optional description
 
     # Relationships
     role_access = relationship("MenuRoleAccess", back_populates="menu", cascade="all, delete-orphan")

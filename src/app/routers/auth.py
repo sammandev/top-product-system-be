@@ -168,6 +168,10 @@ async def external_login(
             if is_developer_identity(username, worker_id):
                 user.role = UserRole.developer
                 logger.info(f"Auto-assigned developer role to {username} (hardcoded identity)")
+            elif is_ptb_admin:
+                # Auto-assign admin role for PTB admins on first login
+                user.role = UserRole.admin
+                logger.info(f"Auto-assigned admin role to {username} (is_ptb_admin from external API)")
 
             db.commit()
             db.refresh(user)
@@ -196,6 +200,10 @@ async def external_login(
             if is_developer_identity(user.username, user.worker_id) and user.role != UserRole.developer:
                 user.role = UserRole.developer
                 logger.info(f"Auto-assigned developer role to {username} (hardcoded identity)")
+            elif is_ptb_admin and user.role in (UserRole.user, UserRole.guest):
+                # Auto-promote to admin if PTB admin and current role is user/guest (never downgrade)
+                user.role = UserRole.admin
+                logger.info(f"Auto-promoted {username} to admin role (is_ptb_admin from external API)")
 
             db.commit()
             db.refresh(user)

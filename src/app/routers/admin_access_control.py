@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies.authz import get_current_user
 from app.models.user import MENU_ACTIONS, MENU_RESOURCES, User, UserRole, get_default_menu_permissions
-from app.utils.admin_access import is_developer_user, is_superadmin_user
+from app.utils.admin_access import is_admin_user, is_developer_user, is_superadmin_user
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ class AccessControlUserListResponse(BaseModel):
 class UpdateAccessRequest(BaseModel):
     """Request to update a user's access control settings."""
 
-    role: str | None = Field(None, description="New role: 'superadmin' or 'user'. Cannot set 'developer'.")
+    role: str | None = Field(None, description="New role: 'superadmin', 'admin', 'user', or 'guest'. Cannot set 'developer'.")
     menu_permissions: dict[str, list[str]] | None = Field(None, description="Per-resource CRUD permissions")
     is_active: bool | None = Field(None, description="Activate/deactivate user")
     is_ptb_admin: bool | None = Field(None, description="PTB admin flag")
@@ -87,17 +87,17 @@ class MenuResourcesResponse(BaseModel):
     "/users",
     response_model=AccessControlUserListResponse,
     summary="List all users with access control settings",
-    description="Get all users with their roles, permissions, and access settings. Requires superadmin or developer role.",
+    description="Get all users with their roles, permissions, and access settings. Requires admin, superadmin, or developer role.",
 )
 async def list_access_control_users(
     current_user: User = current_user_dependency,
     db: Session = db_dependency,
 ):
     """List all users with their access control settings."""
-    if not is_superadmin_user(current_user):
+    if not is_admin_user(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Superadmin or developer privileges required",
+            detail="Admin privileges required",
         )
 
     try:
@@ -148,10 +148,10 @@ async def get_menu_resources(
     current_user: User = current_user_dependency,
 ):
     """Get available menu resources and actions."""
-    if not is_superadmin_user(current_user):
+    if not is_admin_user(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Superadmin or developer privileges required",
+            detail="Admin privileges required",
         )
 
     return MenuResourcesResponse(
@@ -223,10 +223,13 @@ async def update_user_access(
                     detail="Only developers can grant the superadmin role",
                 )
 
-            if request.role not in ("superadmin", "user"):
+            # Only developers can grant superadmin
+            # Admins (non-developer superadmins) can assign: admin, user, guest
+            valid_roles = ("superadmin", "admin", "user", "guest")
+            if request.role not in valid_roles:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Invalid role: '{request.role}'. Must be 'superadmin' or 'user'.",
+                    detail=f"Invalid role: '{request.role}'. Must be one of {valid_roles}.",
                 )
 
             old_role = target_user.role.value if target_user.role else "user"

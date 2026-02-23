@@ -668,3 +668,74 @@ async def delete_top_product(
         db.rollback()
         logger.error(f"Error deleting top product {product_id}: {e}", exc_info=True)
         raise
+
+
+class BulkDeleteRequest(BaseModel):
+    """Request body for bulk deleting top products."""
+
+    ids: list[int] = Field(..., min_length=1, description="List of top product IDs to delete")
+
+
+@router.delete(
+    "/bulk-delete",
+    summary="Bulk delete top products",
+    description="Delete multiple top products and all their measurements. Superadmin/developer only.",
+)
+async def bulk_delete_top_products(
+    request: BulkDeleteRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Delete multiple top products by IDs.
+
+    Args:
+        request: BulkDeleteRequest with list of product IDs
+        current_user: Authenticated user (must be superadmin or developer)
+        db: Database session
+
+    Returns:
+        Success message with count of deleted products
+    """
+    try:
+        from fastapi import HTTPException
+
+        # Check if user is superadmin or developer
+        is_superadmin = getattr(current_user, "role", None) in ("superadmin", "developer")
+        if not is_superadmin and not is_user_admin(current_user):
+            raise HTTPException(
+                status_code=403,
+                detail="Only superadmin or developer users can bulk delete top products",
+            )
+
+        # Find existing products
+        products = db.query(TopProduct).filter(TopProduct.id.in_(request.ids)).all()
+        if not products:
+            raise HTTPException(status_code=404, detail="No top products found with the given IDs")
+
+        found_ids = [p.id for p in products]
+
+        # Delete measurements first
+        db.query(TopProductMeasurement).filter(
+            TopProductMeasurement.top_product_id.in_(found_ids)
+        ).delete(synchronize_session=False)
+
+        # Delete the products
+        db.query(TopProduct).filter(TopProduct.id.in_(found_ids)).delete(
+            synchronize_session=False
+        )
+        db.commit()
+
+        logger.info(
+            f"Bulk deleted {len(found_ids)} top products by user {current_user.username}"
+        )
+        return {
+            "message": f"Successfully deleted {len(found_ids)} top product(s)",
+            "deleted_count": len(found_ids),
+            "deleted_ids": found_ids,
+        }
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error bulk deleting top products: {e}", exc_info=True)
+        raise

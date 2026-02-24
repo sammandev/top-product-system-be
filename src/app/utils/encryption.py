@@ -60,19 +60,20 @@ def decrypt_value(encoded: str) -> str:
         return ""
 
 
-def mask_value(value: str, visible_chars: int = 4) -> str:
+def mask_value(value: str, visible_chars: int = 3, max_dots: int = 3) -> str:
     """
     Mask a sensitive string, showing only the last few characters.
 
     Args:
         value: The string to mask
         visible_chars: Number of trailing characters to keep visible
+        max_dots: Maximum number of masking dots to display (keeps output compact)
 
     Returns:
-        Masked string like '••••••abcd'
+        Masked string like '•••abc'
     """
     if not value:
         return ""
     if len(value) <= visible_chars:
         return "•" * len(value)
-    return "•" * (len(value) - visible_chars) + value[-visible_chars:]
+    return "•" * max_dots + value[-visible_chars:]

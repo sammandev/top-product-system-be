@@ -3,7 +3,7 @@ import os
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, Depends, Form, Header, HTTPException
+from fastapi import APIRouter, Depends, Form, Header, HTTPException, logger
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
@@ -213,7 +213,7 @@ async def external_login(
             logger.warning(f"Login attempt by deactivated user: {username}")
             raise HTTPException(
                 status_code=403,
-                detail="Your account has been deactivated. Please contact an administrator.",
+                detail="Your access has been deactivated. Please contact an administrator.",
             )
 
         # Step 5: Update last_login timestamp
@@ -269,7 +269,7 @@ def token_refresh(
         raise HTTPException(401, "user not found")
 
     if not user.is_active:
-        raise HTTPException(401, "Your account has been deactivated. Please contact an administrator.")
+        raise HTTPException(401, "Your access has been deactivated. Please contact an administrator.")
 
     # version check enforces stateless revocation for refresh tokens
     if payload.get("ver") != user.token_version:
@@ -350,7 +350,7 @@ async def guest_login(
         elif not user.is_active:
             raise HTTPException(
                 status_code=403,
-                detail="Guest account has been deactivated. Please contact an administrator.",
+                detail="Guest access has been deactivated. Please contact an administrator.",
             )
 
         # Step 4: Update last_login timestamp

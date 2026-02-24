@@ -57,6 +57,16 @@ class _JsonLogFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False)
 
 
+class _HealthCheckFilter(logging.Filter):
+    """Filter out health/readiness/liveness endpoint access logs to reduce Docker noise."""
+
+    _SUPPRESSED_PATHS = ("/health", "/readiness", "/liveness")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(path in msg for path in self._SUPPRESSED_PATHS)
+
+
 def _configure_logging() -> None:
     level_name = os.getenv("LOG_LEVEL", "INFO").upper()
     log_format = os.getenv("LOG_FORMAT", "text").lower()
@@ -78,6 +88,13 @@ def _configure_logging() -> None:
         handlers.append(file_handler)
 
     logging.basicConfig(level=level_name, handlers=handlers)
+
+    # Suppress health check access logs (hit every 30s by Docker healthcheck)
+    logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
+
+    # Quiet down noisy third-party loggers in Docker
+    for noisy_logger in ("watchfiles", "httpcore", "httpx", "hpack"):
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
 
 _configure_logging()

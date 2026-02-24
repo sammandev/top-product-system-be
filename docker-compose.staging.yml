@@ -40,7 +40,7 @@ services:
       options:
         # Log rotation settings for backend service
         max-size: "20m"
-        max-file: "5"
+        max-file: "3"
         labels: "service=backend-api"
     labels:
       - "com.ast-tools.service=backend"

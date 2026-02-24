@@ -708,10 +708,16 @@ async def bulk_delete_top_products(
                 detail="Only superadmin or developer users can bulk delete top products",
             )
 
+        logger.info(f"Bulk delete request from {current_user.username}: ids={request.ids}")
+
         # Find existing products
         products = db.query(TopProduct).filter(TopProduct.id.in_(request.ids)).all()
         if not products:
-            raise HTTPException(status_code=404, detail="No top products found with the given IDs")
+            logger.warning(f"No top products found for ids={request.ids}. Total products in DB: {db.query(TopProduct).count()}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"No top products found with the given IDs: {request.ids}",
+            )
 
         found_ids = [p.id for p in products]
 

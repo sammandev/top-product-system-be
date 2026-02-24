@@ -208,14 +208,22 @@ async def external_login(
             db.commit()
             db.refresh(user)
 
-        # Step 4: Update last_login timestamp
+        # Step 4: Check if user account has been deactivated
+        if not user.is_active:
+            logger.warning(f"Login attempt by deactivated user: {username}")
+            raise HTTPException(
+                status_code=403,
+                detail="Your account has been deactivated. Please contact an administrator.",
+            )
+
+        # Step 5: Update last_login timestamp
         user.last_login = datetime.now(UTC)
         db.commit()
 
-        # Step 5: Save external DUT tokens securely for later use
+        # Step 6: Save external DUT tokens securely for later use
         dut_token_service.store_tokens(user.username, access_token_external, refresh_token_external)
 
-        # Step 6: Issue our local JWT tokens
+        # Step 7: Issue our local JWT tokens
         access_token = auth_utils.create_access_token(user)
         refresh_token = auth_utils.create_refresh_token(user)
         return {
@@ -258,10 +266,10 @@ def token_refresh(
 
     user = auth_utils.get_user(db, payload.get("sub"))
     if not user:
-        raise HTTPException(401, "user not found or inactive")
+        raise HTTPException(401, "user not found")
 
     if not user.is_active:
-        raise HTTPException(401, "user not found or inactive")
+        raise HTTPException(401, "Your account has been deactivated. Please contact an administrator.")
 
     # version check enforces stateless revocation for refresh tokens
     if payload.get("ver") != user.token_version:
@@ -271,6 +279,102 @@ def token_refresh(
     new_access = auth_utils.create_access_token(user)
     new_refresh = auth_utils.create_refresh_token(user)
     return {"access_token": new_access, "refresh_token": new_refresh, "token_type": "bearer"}
+
+
+@router.post(
+    "/guest-login",
+    summary="Login as guest using server-side credentials",
+    description="Authenticate using the active guest credential stored in the database. "
+    "Credentials are never exposed to the frontend.",
+    response_model=TokenResponse,
+)
+async def guest_login(
+    db: Session = db_dependency,
+    client=dut_client_dependency,
+):
+    """
+    Guest login using server-side stored credentials.
+
+    Process:
+    1. Read active guest credential from database
+    2. Decrypt the credentials
+    3. Authenticate with external DUT API
+    4. Issue local JWT tokens with guest mode
+    """
+    from datetime import UTC, datetime
+
+    from app.models.app_config import GuestCredential
+    from app.models.user import UserRole
+    from app.utils.encryption import decrypt_value
+
+    # Step 1: Find active guest credential
+    credential = db.query(GuestCredential).filter(GuestCredential.is_active.is_(True)).first()
+
+    # Fallback to env vars if no DB credential exists
+    if not credential:
+        guest_username = os.environ.get("GUEST_API_USERNAME")
+        guest_password = os.environ.get("GUEST_API_PASSWORD")
+        if not guest_username or not guest_password:
+            raise HTTPException(status_code=503, detail="Guest login is not configured. Please contact an administrator.")
+    else:
+        guest_username = decrypt_value(credential.username)
+        guest_password = decrypt_value(credential.password)
+
+    if not guest_username or not guest_password:
+        raise HTTPException(status_code=503, detail="Guest credentials are invalid or corrupted.")
+
+    try:
+        # Step 2: Authenticate with external DUT API
+        try:
+            auth_data = await client.authenticate(username=guest_username, password=guest_password)
+        except httpx.HTTPStatusError as exc:
+            normalized_username = auth_utils.normalize_username(guest_username)
+            if exc.response.status_code in {401, 403} and normalized_username and normalized_username != guest_username:
+                auth_data = await client.authenticate(username=normalized_username, password=guest_password)
+            else:
+                raise HTTPException(status_code=401, detail="Guest authentication failed. Credentials may be invalid.") from exc
+
+        access_token_external = auth_data.get("access")
+        refresh_token_external = auth_data.get("refresh")
+
+        if not access_token_external:
+            raise HTTPException(status_code=401, detail="Guest authentication failed — no access token returned")
+
+        # Step 3: Create or update local guest user
+        user = auth_utils.get_user(db, guest_username)
+        if not user:
+            user = auth_utils.create_user(db, guest_username, guest_password, is_admin=False)
+            user.role = UserRole.guest
+            db.commit()
+            db.refresh(user)
+        elif not user.is_active:
+            raise HTTPException(
+                status_code=403,
+                detail="Guest account has been deactivated. Please contact an administrator.",
+            )
+
+        # Step 4: Update last_login timestamp
+        user.last_login = datetime.now(UTC)
+        db.commit()
+
+        # Step 5: Save external DUT tokens
+        dut_token_service.store_tokens(user.username, access_token_external, refresh_token_external)
+
+        # Step 6: Issue local JWT tokens
+        access_token = auth_utils.create_access_token(user)
+        refresh_token = auth_utils.create_refresh_token(user)
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "user": _user_response_dict(user),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Guest login failed: {e}")
+        raise HTTPException(status_code=500, detail="Guest login failed. Please try again later.") from e
 
 
 @router.post(

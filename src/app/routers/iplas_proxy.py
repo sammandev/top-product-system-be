@@ -286,6 +286,8 @@ def _get_site_config(site: str, user_token: str | None = None) -> dict[str, str]
     """
     Get iPLAS API configuration for a specific site.
 
+    Priority: user_token > DB active token > env var token.
+
     Args:
         site: Site identifier (PTB, PSZ, PXD, PVN, PTY)
         user_token: Optional user-provided token (overrides default)
@@ -296,11 +298,32 @@ def _get_site_config(site: str, user_token: str | None = None) -> dict[str, str]
     # Normalize site to uppercase
     site_upper = site.upper()
 
+    # Try DB-stored active token first (unless user provided one)
+    db_base_url: str | None = None
+    db_token: str | None = None
+    if not user_token:
+        try:
+            from app.db import SessionLocal
+            from app.models.app_config import IplasToken
+            from app.utils.encryption import decrypt_value
+
+            with SessionLocal() as db:
+                active = (
+                    db.query(IplasToken)
+                    .filter(IplasToken.site == site_upper, IplasToken.is_active.is_(True))
+                    .first()
+                )
+                if active:
+                    db_base_url = active.base_url
+                    db_token = decrypt_value(active.token_value) if active.token_value else None
+        except Exception as e:
+            logger.debug(f"Could not load iPLAS token from DB for site {site_upper}: {e}")
+
     if site_upper in IPLAS_SITES:
         config = IPLAS_SITES[site_upper]
-        base = config["base_url"]
-        # Use user token if provided, otherwise use default
-        token = user_token if user_token else config["token"]
+        base = db_base_url or config["base_url"]
+        # Priority: user token > DB token > env var token
+        token = user_token or db_token or config["token"]
         return {
             "base_url": base,
             "token": token,
@@ -311,8 +334,8 @@ def _get_site_config(site: str, user_token: str | None = None) -> dict[str, str]
     # Fallback to PTB if site not found
     logger.warning(f"Unknown site '{site}', falling back to PTB")
     config = IPLAS_SITES["PTB"]
-    base = config["base_url"]
-    token = user_token if user_token else config["token"]
+    base = db_base_url or config["base_url"]
+    token = user_token or db_token or config["token"]
     return {
         "base_url": base,
         "token": token,

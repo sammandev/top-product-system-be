@@ -40,14 +40,34 @@ router = APIRouter(prefix="/api/sfistsp", tags=["SFISTSP"])
 
 def get_sfistsp_config() -> SfistspConfig:
     """
-    Get SFISTSP configuration from environment variables.
+    Get SFISTSP configuration, preferring DB-stored active config over env vars.
 
-    Environment variables (from .env.staging):
-    - SFISTSP_API_BASE_URL: Base URL for SFISTSP server
-    - SFIS_DEFAULT_PROGRAM_ID: Program ID for authentication
-    - SFIS_DEFAULT_PROGRAM_PASSWORD: Program password
-    - SFISTSP_API_TIMEOUT: Request timeout in seconds
+    Priority:
+    1. Active DB entry (encrypted credentials, decrypted at runtime)
+    2. Environment variables (SFISTSP_API_BASE_URL, SFIS_DEFAULT_PROGRAM_ID, etc.)
     """
+    # Try DB first
+    try:
+        from app.db import SessionLocal
+        from app.models.app_config import SfistspConfig as SfistspConfigModel
+        from app.utils.encryption import decrypt_value
+
+        with SessionLocal() as db:
+            active = (
+                db.query(SfistspConfigModel)
+                .filter(SfistspConfigModel.is_active.is_(True))
+                .first()
+            )
+            if active:
+                return SfistspConfig(
+                    base_url=active.base_url,
+                    program_id=active.program_id,
+                    program_password=decrypt_value(active.program_password) if active.program_password else "",
+                )
+    except Exception as e:
+        logger.debug(f"Could not load SFISTSP config from DB: {e}")
+
+    # Fallback to env vars
     return SfistspConfig(
         base_url=os.environ.get("SFISTSP_API_BASE_URL", SFISTSP_DEFAULT_BASE_URL),
         program_id=os.environ.get("SFIS_DEFAULT_PROGRAM_ID", "TSP_TDSTB"),

@@ -194,6 +194,18 @@ async def initialize_menus(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only superadmin can initialize menu definitions")
 
     try:
+        valid_keys = {m["menu_key"] for m in DEFAULT_MENUS}
+
+        # Remove stale menu entries no longer in DEFAULT_MENUS
+        stale_menus = db.query(MenuDefinition).filter(~MenuDefinition.menu_key.in_(valid_keys)).all()
+        stale_count = 0
+        for stale_menu in stale_menus:
+            # Delete role access entries first
+            db.query(MenuRoleAccess).filter(MenuRoleAccess.menu_id == stale_menu.id).delete(synchronize_session=False)
+            db.delete(stale_menu)
+            stale_count += 1
+            logger.info(f"Removed stale menu entry: {stale_menu.menu_key}")
+
         # Create or update menu definitions
         for menu_data in DEFAULT_MENUS:
             existing = db.query(MenuDefinition).filter(MenuDefinition.menu_key == menu_data["menu_key"]).first()
@@ -223,7 +235,11 @@ async def initialize_menus(
 
         db.commit()
 
-        return {"message": "Menu definitions initialized successfully", "count": len(DEFAULT_MENUS)}
+        return {
+            "message": "Menu definitions initialized successfully",
+            "count": len(DEFAULT_MENUS),
+            "stale_removed": stale_count,
+        }
 
     except Exception as e:
         db.rollback()

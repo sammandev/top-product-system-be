@@ -28,6 +28,36 @@ current_user_dependency = Depends(get_current_user)
 settings_dependency = Depends(get_settings)
 
 
+def _extract_external_auth_error_message(exc: httpx.HTTPStatusError) -> str:
+    """Map upstream DUT auth errors to user-facing validation messages."""
+    response = exc.response
+    status_code = response.status_code
+
+    if status_code in {401, 403}:
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+
+        detail = str((payload or {}).get("detail", "")).strip().lower() if isinstance(payload, dict) else ""
+        code = str((payload or {}).get("code", "")).strip().lower() if isinstance(payload, dict) else ""
+
+        invalid_detail_markers = {
+            "no active account found with the given credentials",
+            "given token not valid for any token type",
+            "token is invalid or expired",
+        }
+        if detail in invalid_detail_markers or code == "token_not_valid":
+            return "Incorrect username or password."
+
+        return "Incorrect username or password."
+
+    if 400 <= status_code < 500:
+        return "Unable to log in with the provided external account."
+
+    return "External authentication service is unavailable. Please try again later."
+
+
 def _user_response_dict(user: DBUser) -> dict:
     """Build a consistent user response dict for auth endpoints."""
     return {
@@ -114,14 +144,32 @@ async def external_login(
         except httpx.HTTPStatusError as exc:
             normalized_username = auth_utils.normalize_username(username)
             if exc.response.status_code in {401, 403} and normalized_username and normalized_username != username:
-                auth_data = await client.authenticate(username=normalized_username, password=password)
+                try:
+                    auth_data = await client.authenticate(username=normalized_username, password=password)
+                except httpx.HTTPStatusError as retry_exc:
+                    raise HTTPException(
+                        status_code=401 if retry_exc.response.status_code in {401, 403} else 502,
+                        detail=_extract_external_auth_error_message(retry_exc),
+                    ) from retry_exc
             else:
-                raise HTTPException(status_code=401, detail="invalid external credentials") from exc
+                raise HTTPException(
+                    status_code=401 if exc.response.status_code in {401, 403} else 502,
+                    detail=_extract_external_auth_error_message(exc),
+                ) from exc
+        except httpx.HTTPError as exc:
+            logger.warning("External authentication request failed for %s: %s", username, exc)
+            raise HTTPException(
+                status_code=502,
+                detail="External authentication service is unavailable. Please try again later.",
+            ) from exc
         access_token_external = auth_data.get("access")
         refresh_token_external = auth_data.get("refresh")
 
         if not access_token_external:
-            raise HTTPException(status_code=401, detail="external auth failed - no access token returned")
+            raise HTTPException(
+                status_code=502,
+                detail="External authentication service returned an invalid response. Please try again later.",
+            )
 
         # Step 2: Fetch user account info from external API
         try:

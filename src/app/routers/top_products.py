@@ -15,10 +15,21 @@ from app.db import get_db
 from app.dependencies.authz import get_current_user, is_user_admin
 from app.models.top_product import TopProduct, TopProductMeasurement
 from app.models.user import User
+from app.utils.cache_manager import clear_all_cache
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/top-products", tags=["Top_Products_Database"])
+
+
+async def _invalidate_top_product_cache() -> None:
+    """Clear API cache after top product mutations so list/stats refresh immediately."""
+    try:
+        result = await clear_all_cache()
+        if result.get("status") != "success":
+            logger.warning("Top product cache clear returned non-success: %s", result)
+    except Exception as exc:  # pragma: no cover - cache invalidation should not break writes
+        logger.warning("Failed to clear API cache after top product mutation: %s", exc, exc_info=True)
 
 
 # ============================================================================
@@ -525,6 +536,7 @@ async def create_top_product(
             db.add(new_measurement)
 
         db.commit()
+        await _invalidate_top_product_cache()
 
         logger.info(f"Top product created with ID {new_product.id} by user {current_user.username}")
         return TopProductCreateResponse(
@@ -602,6 +614,7 @@ async def create_top_products_bulk(
             created_ids.append(new_product.id)
 
         db.commit()
+        await _invalidate_top_product_cache()
 
         logger.info(f"{len(created_ids)} top products created by user {current_user.username}")
         return TopProductBulkCreateResponse(
@@ -660,6 +673,7 @@ async def delete_top_product(
         # Delete the product
         db.delete(product)
         db.commit()
+        await _invalidate_top_product_cache()
 
         logger.info(f"Top product {product_id} deleted by user {current_user.username}")
         return {"message": "Top product deleted successfully", "id": product_id}
@@ -731,6 +745,7 @@ async def bulk_delete_top_products(
             synchronize_session=False
         )
         db.commit()
+        await _invalidate_top_product_cache()
 
         logger.info(
             f"Bulk deleted {len(found_ids)} top products by user {current_user.username}"

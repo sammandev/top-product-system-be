@@ -1044,9 +1044,7 @@ class TestLogParser:
                 test_item = item["test_item"]
                 if test_item not in adjusted_items_grouped:
                     adjusted_items_grouped[test_item] = []
-                adjusted_items_grouped[test_item].append(
-                    {"file_idx": file_data["file_idx"], "isn": item["isn"], "value": item["value"], "numeric_value": item["numeric_value"], "is_calculated": True}
-                )
+                adjusted_items_grouped[test_item].append({"file_idx": file_data["file_idx"], "isn": item["isn"], "value": item["value"], "numeric_value": item["numeric_value"], "is_calculated": True})
 
         # Create comparison items for adjusted power
         for test_item, per_file_data in adjusted_items_grouped.items():
@@ -1417,9 +1415,9 @@ def _parse_test_log_criteria_json(content: bytes) -> dict[str, TestLogCriteriaRu
             "criteria": [
                 {
                     "test_item": "TEST_ITEM_PATTERN",
-                    "ucl": 20.0,
-                    "lcl": 10.0,
-                    "target": 15.0
+                    "ucl": "20.0",
+                    "lcl": "10.0",
+                    "target": "15.0"
                 },
                 ...
             ]

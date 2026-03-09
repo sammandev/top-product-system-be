@@ -2466,7 +2466,7 @@ curl -X GET "http://127.0.0.1:8001/api/dut/history/results?dut_isn=2608849800039
 ```bash
 curl -X POST "http://127.0.0.1:8001/api/dut/top-product?dut_isn=ISN1&dut_isn=ISN2&station=148" \
   -H "Authorization: Bearer <ACCESS_TOKEN>" \
-  -F "criteria_file=@criteria.ini"
+  -F "criteria_file=@criteria.json;type=application/json"
 ```
 
 **Status Codes:**
@@ -2505,7 +2505,7 @@ curl -X POST "http://127.0.0.1:8001/api/dut/top-product?dut_isn=ISN1&dut_isn=ISN
 **Form Data:**
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `criteria_file` | file | No | INI scoring criteria file |
+| `criteria_file` | file | No | JSON scoring criteria file |
 
 **PA Trend Integration:**
 - Automatically fetches PA trend data for test items matching `PA{1-4}_SROM_OLD` and `PA{1-4}_SROM_NEW` patterns
@@ -2749,10 +2749,10 @@ curl -X GET "http://127.0.0.1:8001/api/dut/summary?dut_isn=260884980003907" \
 **Example Requests:**
 
 ```bash
-# Get top 5 products (default) within 3-day window with criteria file
+# Get top 5 products (default) within 3-day window with criteria JSON file
 curl -X POST "http://127.0.0.1:8001/api/dut/stations/Wireless_2_5G_Test/top-products" \
   -H "Authorization: Bearer <ACCESS_TOKEN>" \
-  -F "criteria_file=@criteria.ini" \
+  -F "criteria_file=@top_product_criteria_configuration.json;type=application/json" \
   -F "site_id=PTB" \
   -F "model_id=CALIX_EXPRESSO2-R" \
   -F "start_time=2025-01-01T00:00:00Z" \
@@ -3339,24 +3339,32 @@ overall_data_score = (8.5 + 9.6 + 9.2 + 10.0) / 4 = 9.325
 
 ### Criteria File Format
 
-Optionally, you can provide an INI configuration file to customize scoring thresholds:
+Optionally, you can provide a JSON configuration file to customize scoring thresholds:
 
-**Example `criteria.ini`:**
-```ini
-[WiFi_TX1_EVM_6185_11AX_MCS11_B160]
-usl = -3.0
-lsl = -60.0
-target = -30.0
-
-[WiFi_RX1_PER_6185_11AX_MCS11_B160]
-usl = 0.01
-lsl = 0.0
-target = 0.0
-
-[WiFi_PA1_POW_2422_11AC_MCS7_B40]
-usl = 25.0
-lsl = 17.0
-target = 21.0
+**Example `criteria.json`:**
+```json
+{
+  "criteria": [
+    {
+      "test_item": "WiFi_TX1_EVM_6185_11AX_MCS11_B160",
+      "ucl": "-3.0",
+      "lcl": "-60.0",
+      "target": "-30.0"
+    },
+    {
+      "test_item": "WiFi_RX1_PER_6185_11AX_MCS11_B160",
+      "ucl": "0.01",
+      "lcl": "0.0",
+      "target": "0.0"
+    },
+    {
+      "test_item": "WiFi_PA1_POW_2422_11AC_MCS7_B40",
+      "ucl": "25.0",
+      "lcl": "17.0",
+      "target": "21.0"
+    }
+  ]
+}
 ```
 
 **Notes:**

@@ -1,4 +1,5 @@
 import base64
+import json
 import logging
 import os
 import re
@@ -699,6 +700,9 @@ class MeasurementScore:
     score_breakdown: dict | None = None
 
 
+_GLOBAL_CRITERIA_KEY = "__global__"
+
+
 @dataclass(slots=True)
 class StationEvaluation:
     station_id: int | None
@@ -734,9 +738,11 @@ def _select_station_criteria(
         return []
     normalized_station = _normalize_str(station_name)
     normalized_model = _normalize_str(model_name) if model_name else ""
-    selected: list[CriteriaRule] = []
+    selected: list[CriteriaRule] = list(criteria_map.get(_GLOBAL_CRITERIA_KEY, []))
     for raw_key, rules in criteria_map.items():
         if not rules:
+            continue
+        if raw_key == _GLOBAL_CRITERIA_KEY:
             continue
         key = _normalize_str(raw_key)
         if "|" in key:
@@ -807,25 +813,51 @@ def _determine_target_value(
     return actual
 
 
-DEFAULT_CRITERIA_PATH = FilePath(os.getenv("DUT_CRITERIA_PATH", "reference/conf_dut_criteria.ini"))
-_CRITERIA_CACHE: dict[Path, dict[str, list[CriteriaRule]]] = {}
-_CRITERIA_LINE_PATTERN = re.compile(r'^\s*"(?P<test>.+?)"\s*<(?P<usl>[^,]*),(?P<lsl>[^>]*)>\s*===\>\s*"(?P<target>.*)"\s*$')
+DEFAULT_CRITERIA_PATH = FilePath(os.getenv("DUT_CRITERIA_PATH", "reference/conf_dut_criteria.json"))
+_CRITERIA_CACHE = {}
 
 
-def _parse_criteria_line(line: str) -> CriteriaRule | None:
-    match = _CRITERIA_LINE_PATTERN.match(line.strip())
-    if not match:
-        return None
-    test_pattern = match.group("test")
-    usl = _to_float(match.group("usl"))
-    lsl = _to_float(match.group("lsl"))
-    target = _to_float(match.group("target"))
-    try:
-        compiled = re.compile(test_pattern, re.IGNORECASE)
-    except re.error as exc:
-        logger.warning("Invalid regex '%s' in criteria line: %s", test_pattern, exc)
-        return None
-    return CriteriaRule(pattern=compiled, usl=usl, lsl=lsl, target=target)
+def _validate_criteria_upload_filename(filename: str | None) -> None:
+    if filename and not filename.lower().endswith(".json"):
+        raise HTTPException(status_code=400, detail="Criteria configuration file must use the .json format")
+
+
+def _load_station_criteria_from_json_payload(payload: Any) -> dict[str, list[CriteriaRule]]:
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Criteria JSON must be an object with a 'criteria' array")
+
+    raw_criteria = payload.get("criteria")
+    if not isinstance(raw_criteria, list):
+        raise HTTPException(status_code=400, detail="Criteria JSON must contain a 'criteria' array")
+
+    parsed_rules: list[CriteriaRule] = []
+
+    for index, item in enumerate(raw_criteria, start=1):
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=400, detail=f"criteria[{index}] must be an object")
+
+        test_pattern = str(item.get("test_item") or "").strip()
+        if not test_pattern:
+            raise HTTPException(status_code=400, detail=f"criteria[{index}].test_item is required")
+
+        try:
+            compiled = re.compile(test_pattern, re.IGNORECASE)
+        except re.error as exc:
+            raise HTTPException(status_code=400, detail=f"criteria[{index}].test_item is not a valid regex: {exc}") from exc
+
+        parsed_rules.append(
+            CriteriaRule(
+                pattern=compiled,
+                usl=_to_float(item.get("ucl")),
+                lsl=_to_float(item.get("lcl")),
+                target=_to_float(item.get("target")),
+            )
+        )
+
+    if not parsed_rules:
+        raise HTTPException(status_code=400, detail="Criteria JSON must include at least one criteria entry")
+
+    return {_GLOBAL_CRITERIA_KEY: parsed_rules}
 
 
 # Module-level dependency object to avoid calling Depends() in function defaults
@@ -1381,7 +1413,7 @@ async def get_station_top_products(
         default=None,
         description="Optional regex patterns to exclude measurement rows.",
     ),
-    criteria_file: Annotated[UploadFile | None, File(description="Optional uploaded criteria configuration file.")] = None,
+    criteria_file: Annotated[UploadFile | None, File(description="Optional uploaded criteria configuration JSON file.")] = None,
     client: DUTAPIClient = dut_client_dependency,
 ):
     try:
@@ -1432,6 +1464,7 @@ async def get_station_top_products(
 
     criteria_rules: dict[str, list[CriteriaRule]] | None = None
     if criteria_file is not None:
+        _validate_criteria_upload_filename(criteria_file.filename)
         content = await criteria_file.read()
         if not content:
             raise HTTPException(status_code=400, detail="Uploaded criteria file is empty")
@@ -1761,7 +1794,7 @@ async def get_top_product(
         default=None,
         description="Optional list of regex patterns to exclude from scoring (e.g., WiFi_PA_POW_OLD_6985_11AX_MCS9_B160).",
     ),
-    criteria_file: Annotated[UploadFile | None, File(description="Optional uploaded criteria configuration file.")] = None,
+    criteria_file: Annotated[UploadFile | None, File(description="Optional uploaded criteria configuration JSON file.")] = None,
     station_filters_json: str | None = Query(  # noqa: B008
         default=None,
         alias="station_filters",
@@ -1774,8 +1807,6 @@ async def get_top_product(
     station_filters_map: dict[str, StationFilterConfigSchema] | None = None
     if station_filters_json:
         try:
-            import json
-
             parsed = json.loads(station_filters_json)
             station_filters_map = {k: StationFilterConfigSchema(**v) for k, v in parsed.items()}
         except (json.JSONDecodeError, ValueError) as exc:
@@ -1836,7 +1867,7 @@ async def get_top_product_with_pa_trends(
         default=None,
         description="Optional list of regex patterns to exclude from scoring (e.g., WiFi_PA_POW_OLD_6985_11AX_MCS9_B160).",
     ),
-    criteria_file: Annotated[UploadFile | None, File(description="Optional uploaded criteria configuration file.")] = None,
+    criteria_file: Annotated[UploadFile | None, File(description="Optional uploaded criteria configuration JSON file.")] = None,
     station_filters_json: str | None = Query(  # noqa: B008
         default=None,
         alias="station_filters",
@@ -1859,8 +1890,6 @@ async def get_top_product_with_pa_trends(
     station_filters_map: dict[str, StationFilterConfigSchema] | None = None
     if station_filters_json:
         try:
-            import json
-
             parsed = json.loads(station_filters_json)
             station_filters_map = {k: StationFilterConfigSchema(**v) for k, v in parsed.items()}
         except (json.JSONDecodeError, ValueError) as exc:
@@ -1921,7 +1950,7 @@ async def get_top_product_hierarchical(
         default=None,
         description="Optional list of regex patterns to exclude from scoring (e.g., WiFi_PA_POW_OLD_6985_11AX_MCS9_B160).",
     ),
-    criteria_file: Annotated[UploadFile | None, File(description="Optional uploaded criteria configuration file.")] = None,
+    criteria_file: Annotated[UploadFile | None, File(description="Optional uploaded criteria configuration JSON file.")] = None,
     station_filters_json: str | None = Query(  # noqa: B008
         default=None,
         alias="station_filters",
@@ -1934,8 +1963,6 @@ async def get_top_product_hierarchical(
     station_filters_map: dict[str, StationFilterConfigSchema] | None = None
     if station_filters_json:
         try:
-            import json
-
             parsed = json.loads(station_filters_json)
             station_filters_map = {k: StationFilterConfigSchema(**v) for k, v in parsed.items()}
         except (json.JSONDecodeError, ValueError) as exc:
@@ -4082,6 +4109,7 @@ async def _load_criteria_rules(
 ) -> tuple[dict[str, list[CriteriaRule]] | None, str]:
     if criteria_file is None:
         return None, "latest-tests"
+    _validate_criteria_upload_filename(criteria_file.filename)
     content = await criteria_file.read()
     if not content:
         raise HTTPException(status_code=400, detail="Uploaded criteria file is empty")
@@ -4309,18 +4337,14 @@ def _build_hierarchical_scores(
                     category_bayes_scores.append(bayes)
                 antenna_bayes = _bayes_score(category_bayes_scores) if category_bayes_scores else 0.0
                 category_result[f"{antenna.lower()}_group_score"] = _round_score(antenna_bayes)
-                category_result[f"{antenna.lower()}_avg_score"] = _round_score(
-                    sum(category_avg_scores) / len(category_avg_scores)
-                ) if category_avg_scores else 0.0
+                category_result[f"{antenna.lower()}_avg_score"] = _round_score(sum(category_avg_scores) / len(category_avg_scores)) if category_avg_scores else 0.0
                 subgroup_result[antenna] = category_result
                 if category_bayes_scores:
                     antenna_scores.append(antenna_bayes)
 
             subgroup_bayes = _bayes_score(antenna_scores) if antenna_scores else 0.0
             subgroup_result[f"{subgroup.lower()}_group_score"] = _round_score(subgroup_bayes)
-            subgroup_result[f"{subgroup.lower()}_avg_score"] = _round_score(
-                sum(antenna_scores) / len(antenna_scores)
-            ) if antenna_scores else 0.0
+            subgroup_result[f"{subgroup.lower()}_avg_score"] = _round_score(sum(antenna_scores) / len(antenna_scores)) if antenna_scores else 0.0
             group_result[subgroup] = subgroup_result
             if antenna_scores:
                 subgroup_scores.append(subgroup_bayes)
@@ -4328,9 +4352,7 @@ def _build_hierarchical_scores(
 
         group_bayes = _bayes_score(subgroup_scores) if subgroup_scores else 0.0
         group_result["final_group_score"] = _round_score(group_bayes)
-        group_result["group_avg_score"] = _round_score(
-            sum(subgroup_scores) / len(subgroup_scores)
-        ) if subgroup_scores else 0.0
+        group_result["group_avg_score"] = _round_score(sum(subgroup_scores) / len(subgroup_scores)) if subgroup_scores else 0.0
         final_groups[group_key] = group_result
 
     overall_group_scores = {subgroup: _round_score(_bayes_score(values)) for subgroup, values in subgroup_totals.items() if values}
@@ -4345,27 +4367,6 @@ def _apply_hierarchical_scoring(response: TopProductResponseSchema) -> None:
         station.overall_group_scores = overall_group_scores or None
 
 
-def _parse_criteria_content(lines: Iterable[str]) -> dict[str, list[CriteriaRule]]:
-    station_rules: dict[str, list[CriteriaRule]] = {}
-    current_station: str | None = None
-
-    for raw_line in lines:
-        line = raw_line.strip()
-        if not line or line.startswith(";"):
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            current_station = line[1:-1].strip()
-            continue
-        if current_station is None:
-            continue
-        rule = _parse_criteria_line(line)
-        if rule is None:
-            continue
-        key = _normalize_str(current_station)
-        station_rules.setdefault(key, []).append(rule)
-    return station_rules
-
-
 def _load_station_criteria_from_path(path: FilePath) -> dict[str, list[CriteriaRule]]:
     try:
         resolved = path.expanduser().resolve(strict=True)
@@ -4377,21 +4378,22 @@ def _load_station_criteria_from_path(path: FilePath) -> dict[str, list[CriteriaR
         return cached
 
     try:
-        lines = resolved.read_text(encoding="utf-8").splitlines()
+        data = resolved.read_bytes()
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to read criteria file: {exc}") from exc
 
-    station_rules = _parse_criteria_content(lines)
+    station_rules = _load_station_criteria_from_bytes(data)
     _CRITERIA_CACHE[resolved] = station_rules
     return station_rules
 
 
 def _load_station_criteria_from_bytes(data: bytes) -> dict[str, list[CriteriaRule]]:
     try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        text = data.decode("utf-8", errors="ignore")
-    return _parse_criteria_content(text.splitlines())
+        payload = json.loads(data)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid criteria JSON: {exc.msg}") from exc
+
+    return _load_station_criteria_from_json_payload(payload)
 
 
 def _build_default_wireless_criteria(record_data: list[dict]) -> dict[str, list[CriteriaRule]]:
@@ -4411,7 +4413,9 @@ def _build_default_wireless_criteria(record_data: list[dict]) -> dict[str, list[
 
 
 def _select_station_rules(criteria_map: dict[str, list[CriteriaRule]], station_name: str) -> list[CriteriaRule]:
-    return criteria_map.get(_normalize_str(station_name), [])
+    selected = list(criteria_map.get(_GLOBAL_CRITERIA_KEY, []))
+    selected.extend(criteria_map.get(_normalize_str(station_name), []))
+    return selected
 
 
 def _to_float(value) -> float | None:

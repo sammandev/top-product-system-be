@@ -277,7 +277,7 @@ def _apply_universal_scoring_to_compare_result(result: dict, config_map: dict[st
 
     **Optional criteria filtering:**
     - Upload .json criteria file to filter and score test items
-    - JSON format: {"criteria": [{"test_item": "...", "ucl": 20, "lcl": 10, "target": 15}]}
+    - JSON format: {"criteria": [{"test_item": "...", "ucl": "20", "lcl": "10", "target": "15"}]}
     - Enhanced response includes metadata, classification, scoring with LaTeX formulas
 
     **Parser behavior:**
@@ -290,7 +290,7 @@ def _apply_universal_scoring_to_compare_result(result: dict, config_map: dict[st
 )
 async def parse_test_log(
     file: Annotated[UploadFile, File(description="Test log file (.txt) or archive (.zip, .rar, .7z) to parse")],
-    criteria_file: Annotated[UploadFile | None, File(description="Optional .ini or .json criteria file for filtering")] = None,
+    criteria_file: Annotated[UploadFile | None, File(description="Optional .json criteria file for filtering")] = None,
     show_only_criteria: Annotated[bool, Form(description="If true, only show items matching criteria")] = False,
     scoring_configs: Annotated[str | None, Form(description="Optional JSON string of scoring configurations")] = None,
 ) -> TestLogParseResponse | TestLogParseResponseEnhanced | JSONResponse:
@@ -299,7 +299,7 @@ async def parse_test_log(
 
     Args:
         file: Uploaded .txt file or archive
-        criteria_file: Optional .ini criteria file for filtering
+        criteria_file: Optional .json criteria file for filtering
         show_only_criteria: If True, only return items matching criteria
 
     Returns:
@@ -430,7 +430,7 @@ async def parse_test_log(
 
     **Enhanced with criteria support:**
     - Upload .json criteria file for filtering and scoring
-    - JSON format: {"criteria": [{"test_item": "...", "ucl": 20, "lcl": 10, "target": 15}]}
+    - JSON format: {"criteria": [{"test_item": "...", "ucl": "20", "lcl": "10", "target": "15"}]}
     - Per-ISN deviation from median baseline (or criteria target)
     - Separated value-type items (numeric) from non-value items
     - Aggregate statistics: avg deviation, avg score, median score

@@ -12,9 +12,13 @@ Provides cached proxy endpoints for iPLAS v1 and v2 APIs with:
 """
 
 import asyncio
+import base64
+import gzip
 import logging
 import os
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from hashlib import sha1
 from typing import Any, Literal
 
 import httpx
@@ -25,7 +29,6 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models.cached_test_item import CachedTestItem
-
 from app.schemas.iplas_schemas import (
     CompactCsvTestItemRecord,
     CompactCsvTestItemResponse,
@@ -34,6 +37,8 @@ from app.schemas.iplas_schemas import (
     ExportTestItemsResponse,
     IplasBatchDownloadRequest,
     IplasBatchDownloadResponse,
+    IplasCachedTestItemNamesRequest,
+    IplasCachedTestItemNamesResponse,
     IplasCsvTestItemRequest,
     IplasCsvTestItemResponse,
     IplasDeviceListRequest,
@@ -59,15 +64,13 @@ from app.schemas.iplas_schemas import (
     IplasStationsFromIsnBatchResponse,
     IplasStationsFromIsnRequest,
     IplasStationsFromIsnResponse,
+    IplasTestItemByIsnRecord,
     IplasTestItemByIsnRequest,
     IplasTestItemByIsnResponse,
-    IplasTestItemByIsnRecord,
     IplasTestItemByIsnTestItem,
     IplasTestItemInfo,
     IplasTestItemNamesRequest,
     IplasTestItemNamesResponse,
-    IplasCachedTestItemNamesRequest,
-    IplasCachedTestItemNamesResponse,
     IplasVerifyRequest,
     IplasVerifyResponse,
     SiteProject,
@@ -157,6 +160,17 @@ IPLAS_CACHE_TTL_STATIONS = int(os.getenv("IPLAS_CACHE_TTL_STATIONS", "3600"))  #
 IPLAS_CACHE_TTL_DEVICES = int(os.getenv("IPLAS_CACHE_TTL_DEVICES", "300"))  # 5 minutes
 IPLAS_CACHE_TTL_ISN = int(os.getenv("IPLAS_CACHE_TTL_ISN", "300"))  # 5 minutes
 
+# Station Search bucket-cache configuration (v3)
+IPLAS_STATION_BUCKET_CACHE_VERSION = os.getenv("IPLAS_STATION_BUCKET_CACHE_VERSION", "v3")
+IPLAS_STATION_BUCKET_SIZE_SECONDS = int(os.getenv("IPLAS_STATION_BUCKET_SIZE_SECONDS", "3600"))
+IPLAS_STATION_BUCKET_FINALIZATION_GRACE_SECONDS = int(os.getenv("IPLAS_STATION_BUCKET_FINALIZATION_GRACE_SECONDS", "600"))
+IPLAS_STATION_BUCKET_COMPLETE_TTL = int(os.getenv("IPLAS_STATION_BUCKET_COMPLETE_TTL", "86400"))
+IPLAS_STATION_BUCKET_PARTIAL_TTL = int(os.getenv("IPLAS_STATION_BUCKET_PARTIAL_TTL", "120"))
+IPLAS_STATION_BUCKET_HOT_TTL = int(os.getenv("IPLAS_STATION_BUCKET_HOT_TTL", "30"))
+IPLAS_STATION_BUCKET_EMPTY_HOT_TTL = int(os.getenv("IPLAS_STATION_BUCKET_EMPTY_HOT_TTL", "15"))
+IPLAS_STATION_BUCKET_LOCK_TTL = int(os.getenv("IPLAS_STATION_BUCKET_LOCK_TTL", "20"))
+IPLAS_SERVER_TIME_URL = os.getenv("IPLAS_SERVER_TIME_URL", "http://10.176.33.93/cfs/servertime")
+
 # Fallback for legacy env vars
 IPLAS_V1_BASE_URL = os.getenv("DUT2_API_BASE_URL", "http://10.176.33.89:32678/api/v1")
 IPLAS_TOKEN = os.getenv("DUT2_API_TOKEN", "")
@@ -174,10 +188,10 @@ _in_flight_requests: dict[str, asyncio.Event] = {}
 # Lock to safely access _in_flight_requests
 _in_flight_lock = asyncio.Lock()
 # Temporary storage for in-flight results
-_in_flight_results: dict[str, tuple[list[dict[str, Any]], bool, int, int, bool]] = {}
+_in_flight_results: dict[str, tuple[list[dict[str, Any]], bool, int, int, bool, "StationRangeResponseMetadata"]] = {}
 
 
-async def _get_or_wait_in_flight(cache_key: str) -> tuple[list[dict[str, Any]], bool, int, int, bool] | None:
+async def _get_or_wait_in_flight(cache_key: str) -> tuple[list[dict[str, Any]], bool, int, int, bool, "StationRangeResponseMetadata"] | None:
     """
     Check if there's already an in-flight request for this cache key.
     If so, wait for it to complete and return its result.
@@ -200,7 +214,7 @@ async def _get_or_wait_in_flight(cache_key: str) -> tuple[list[dict[str, Any]], 
         if result:
             logger.info(f"Request coalescing: got result from in-flight request {cache_key[:50]}")
             return result
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.warning(f"Request coalescing: timed out waiting for {cache_key[:50]}")
 
     return None
@@ -214,7 +228,7 @@ async def _register_in_flight(cache_key: str) -> asyncio.Event:
         return event
 
 
-async def _complete_in_flight(cache_key: str, result: tuple[list[dict[str, Any]], bool, int, int, bool]) -> None:
+async def _complete_in_flight(cache_key: str, result: tuple[list[dict[str, Any]], bool, int, int, bool, "StationRangeResponseMetadata"]) -> None:
     """Mark an in-flight request as complete and store its result."""
     async with _in_flight_lock:
         _in_flight_results[cache_key] = result
@@ -308,11 +322,7 @@ def _get_site_config(site: str, user_token: str | None = None) -> dict[str, str]
             from app.utils.encryption import decrypt_value
 
             with SessionLocal() as db:
-                active = (
-                    db.query(IplasToken)
-                    .filter(IplasToken.site == site_upper, IplasToken.is_active.is_(True))
-                    .first()
-                )
+                active = db.query(IplasToken).filter(IplasToken.site == site_upper, IplasToken.is_active.is_(True)).first()
                 if active:
                     db_base_url = active.base_url
                     db_token = decrypt_value(active.token_value) if active.token_value else None
@@ -347,6 +357,792 @@ def _get_site_config(site: str, user_token: str | None = None) -> dict[str, str]
 def _format_datetime_for_iplas(dt: datetime) -> str:
     """Format datetime for iPLAS v1 API (YYYY/MM/DD HH:mm:ss)."""
     return dt.strftime("%Y/%m/%d %H:%M:%S")
+
+
+StationBucketState = Literal["complete", "empty_complete", "partial", "hot", "empty_hot"]
+
+
+@dataclass(slots=True)
+class StationBucketWindow:
+    """Represents a single cache bucket and the query slice inside it."""
+
+    bucket_start: datetime
+    bucket_end: datetime
+    query_start: datetime
+    query_end: datetime
+
+
+@dataclass(slots=True)
+class StationBucketMetadata:
+    """Metadata stored alongside station-search bucket payloads."""
+
+    site: str
+    project: str
+    station: str
+    device_scope: str
+    test_status: str
+    bucket_start: datetime
+    bucket_end: datetime
+    state: StationBucketState
+    validated_until: datetime | None
+    latest_record_time: datetime | None
+    record_count: int
+    fetched_at: datetime
+    first_complete_at: datetime | None = None
+    possibly_truncated: bool = False
+    used_hybrid_strategy: bool = False
+    encoding: str = "json+gzip+base64"
+    version: str = IPLAS_STATION_BUCKET_CACHE_VERSION
+
+
+@dataclass(slots=True)
+class StationBucketFetchResult:
+    """Result of fetching a single station bucket."""
+
+    records: list[dict[str, Any]]
+    metadata: StationBucketMetadata
+    fetched: bool
+    bucket_chunks_fetched: int
+    bucket_total_chunks: int
+
+
+@dataclass(slots=True)
+class StationRangeBucketStat:
+    """Metadata summary for one bucket in a Station Search response."""
+
+    bucket_start: datetime
+    bucket_end: datetime
+    state: StationBucketState
+    source: Literal["cache", "refresh"]
+    record_count: int
+    validated_until: datetime | None
+    latest_record_time: datetime | None
+
+
+@dataclass(slots=True)
+class StationRangeResponseMetadata:
+    """Aggregate cache metadata returned for a Station Search request."""
+
+    cache_coverage: Literal["full", "partial", "miss"]
+    validated_until: datetime | None
+    bucket_stats: list[StationRangeBucketStat]
+
+
+def _ensure_utc_datetime(value: datetime) -> datetime:
+    """Normalize datetimes to timezone-aware UTC values."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _bucket_cache_datetime_to_str(value: datetime | None) -> str:
+    """Serialize a UTC datetime for Redis metadata storage."""
+    if value is None:
+        return ""
+    normalized = _ensure_utc_datetime(value)
+    return normalized.isoformat().replace("+00:00", "Z")
+
+
+def _bucket_cache_datetime_from_str(value: str | bytes | None) -> datetime | None:
+    """Parse a datetime stored in bucket metadata."""
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        value = value.decode("utf-8")
+    stripped = value.strip()
+    if not stripped:
+        return None
+    if stripped.endswith("Z"):
+        stripped = stripped[:-1] + "+00:00"
+    return _ensure_utc_datetime(datetime.fromisoformat(stripped))
+
+
+def _floor_to_station_bucket(value: datetime) -> datetime:
+    """Floor a datetime to the start of its station cache bucket."""
+    normalized = _ensure_utc_datetime(value)
+    bucket_seconds = IPLAS_STATION_BUCKET_SIZE_SECONDS
+    timestamp = int(normalized.timestamp())
+    floored = timestamp - (timestamp % bucket_seconds)
+    return datetime.fromtimestamp(floored, tz=UTC)
+
+
+def _get_station_bucket_end(bucket_start: datetime) -> datetime:
+    """Return the exclusive end datetime for a station cache bucket."""
+    return _ensure_utc_datetime(bucket_start) + timedelta(seconds=IPLAS_STATION_BUCKET_SIZE_SECONDS)
+
+
+def _iter_station_bucket_windows(begin_time: datetime, end_time: datetime) -> list[StationBucketWindow]:
+    """Split a query range into cache bucket windows."""
+    normalized_begin = _ensure_utc_datetime(begin_time)
+    normalized_end = _ensure_utc_datetime(end_time)
+    if normalized_end <= normalized_begin:
+        return []
+
+    windows: list[StationBucketWindow] = []
+    current_bucket_start = _floor_to_station_bucket(normalized_begin)
+    while current_bucket_start < normalized_end:
+        current_bucket_end = _get_station_bucket_end(current_bucket_start)
+        windows.append(
+            StationBucketWindow(
+                bucket_start=current_bucket_start,
+                bucket_end=current_bucket_end,
+                query_start=max(normalized_begin, current_bucket_start),
+                query_end=min(normalized_end, current_bucket_end),
+            )
+        )
+        current_bucket_start = current_bucket_end
+    return windows
+
+
+def _build_station_bucket_scope_hash(
+    site: str,
+    project: str,
+    station: str,
+    device_scope: str,
+    test_status: str,
+) -> str:
+    """Build a deterministic hash for station-search bucket scope."""
+    scope_raw = "|".join(
+        [
+            site.upper(),
+            project,
+            station,
+            device_scope,
+            test_status.upper(),
+            IPLAS_STATION_BUCKET_CACHE_VERSION,
+        ]
+    )
+    return sha1(scope_raw.encode("utf-8")).hexdigest()
+
+
+def _build_station_bucket_scope_label(
+    site: str,
+    project: str,
+    station: str,
+    device_scope: str,
+    test_status: str,
+) -> str:
+    """Build a human-readable scope label for Redis debugging."""
+    return "|".join([site.upper(), project, station, device_scope, test_status.upper(), IPLAS_STATION_BUCKET_CACHE_VERSION])
+
+
+def _build_station_bucket_scope_key(scope_hash: str) -> str:
+    """Return the Redis key for bucket scope debugging metadata."""
+    return f"iplas:{IPLAS_STATION_BUCKET_CACHE_VERSION}:station:scope:{scope_hash}"
+
+
+def _build_station_bucket_data_key(scope_hash: str, bucket_start: datetime) -> str:
+    """Return the Redis key for station-search bucket payload data."""
+    bucket_label = _bucket_cache_datetime_to_str(_floor_to_station_bucket(bucket_start))
+    return f"iplas:{IPLAS_STATION_BUCKET_CACHE_VERSION}:station:data:{scope_hash}:{bucket_label}"
+
+
+def _build_station_bucket_meta_key(scope_hash: str, bucket_start: datetime) -> str:
+    """Return the Redis key for station-search bucket metadata."""
+    bucket_label = _bucket_cache_datetime_to_str(_floor_to_station_bucket(bucket_start))
+    return f"iplas:{IPLAS_STATION_BUCKET_CACHE_VERSION}:station:meta:{scope_hash}:{bucket_label}"
+
+
+def _build_station_bucket_lock_key(scope_hash: str, bucket_start: datetime) -> str:
+    """Return the Redis key used for bucket-level single-flight locking."""
+    bucket_label = _bucket_cache_datetime_to_str(_floor_to_station_bucket(bucket_start))
+    return f"iplas:{IPLAS_STATION_BUCKET_CACHE_VERSION}:station:lock:{scope_hash}:{bucket_label}"
+
+
+def _serialize_station_bucket_records(records: list[dict[str, Any]]) -> str:
+    """Serialize raw station bucket records for Redis storage."""
+    serialized = json_dumps(records)
+    compressed = gzip.compress(serialized)
+    return base64.b64encode(compressed).decode("ascii")
+
+
+def _deserialize_station_bucket_records(payload: str | bytes) -> list[dict[str, Any]]:
+    """Deserialize raw station bucket records from Redis storage."""
+    if isinstance(payload, bytes):
+        payload = payload.decode("ascii")
+    compressed = base64.b64decode(payload.encode("ascii"))
+    return json_loads(gzip.decompress(compressed))
+
+
+def _get_station_bucket_ttl(state: StationBucketState) -> int:
+    """Return the TTL for a given station bucket state."""
+    ttl_map: dict[StationBucketState, int] = {
+        "complete": IPLAS_STATION_BUCKET_COMPLETE_TTL,
+        "empty_complete": IPLAS_STATION_BUCKET_COMPLETE_TTL,
+        "partial": IPLAS_STATION_BUCKET_PARTIAL_TTL,
+        "hot": IPLAS_STATION_BUCKET_HOT_TTL,
+        "empty_hot": IPLAS_STATION_BUCKET_EMPTY_HOT_TTL,
+    }
+    return ttl_map[state]
+
+
+def _get_station_bucket_finalization_cutoff(observable_now: datetime) -> datetime:
+    """Return the time before which buckets may be finalized."""
+    return _ensure_utc_datetime(observable_now) - timedelta(seconds=IPLAS_STATION_BUCKET_FINALIZATION_GRACE_SECONDS)
+
+
+def _extract_station_bucket_latest_record_time(records: list[dict[str, Any]]) -> datetime | None:
+    """Extract the latest observed record time from raw iPLAS records."""
+    latest: datetime | None = None
+    for record in records:
+        for field_name in ("Test end Time", "Test Start Time"):
+            raw_value = record.get(field_name)
+            if not raw_value or not isinstance(raw_value, str):
+                continue
+            try:
+                candidate = _ensure_utc_datetime(datetime.fromisoformat(raw_value.replace("Z", "+00:00")))
+            except ValueError:
+                continue
+            if latest is None or candidate > latest:
+                latest = candidate
+            break
+    return latest
+
+
+def _get_station_record_time(record: dict[str, Any]) -> datetime | None:
+    """Return the primary time used to clip merged bucket records."""
+    raw_value = record.get("Test Start Time") or record.get("Test end Time")
+    if not raw_value or not isinstance(raw_value, str):
+        return None
+    try:
+        return _ensure_utc_datetime(datetime.fromisoformat(raw_value.replace("Z", "+00:00")))
+    except ValueError:
+        return None
+
+
+def _filter_records_to_requested_range(
+    records: list[dict[str, Any]],
+    begin_time: datetime,
+    end_time: datetime,
+) -> list[dict[str, Any]]:
+    """Trim merged bucket records back to the user's requested range."""
+    normalized_begin = _ensure_utc_datetime(begin_time)
+    normalized_end = _ensure_utc_datetime(end_time)
+    filtered_records: list[dict[str, Any]] = []
+
+    for record in records:
+        record_time = _get_station_record_time(record)
+        if record_time is None:
+            continue
+        if normalized_begin <= record_time <= normalized_end:
+            filtered_records.append(record)
+
+    return filtered_records
+
+
+def _build_station_record_signature(record: dict[str, Any]) -> str:
+    """Build a stable signature for merged station-search records."""
+    return "|".join(
+        [
+            str(record.get("Site", "")),
+            str(record.get("Project", "")),
+            str(record.get("station", "")),
+            str(record.get("DeviceId", "")),
+            str(record.get("ISN", "")),
+            str(record.get("Test Start Time", "")),
+            str(record.get("Test end Time", "")),
+        ]
+    )
+
+
+def _deduplicate_station_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Deduplicate merged station-search records while preserving order."""
+    seen: set[str] = set()
+    deduplicated: list[dict[str, Any]] = []
+    for record in records:
+        signature = _build_station_record_signature(record)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        deduplicated.append(record)
+    return deduplicated
+
+
+def _classify_station_bucket_state(
+    *,
+    bucket_end: datetime,
+    validated_until: datetime | None,
+    record_count: int,
+    observable_now: datetime,
+) -> StationBucketState:
+    """Classify the state of a station-search cache bucket."""
+    normalized_bucket_end = _ensure_utc_datetime(bucket_end)
+    normalized_now = _ensure_utc_datetime(observable_now)
+    normalized_validated_until = None
+    if validated_until is not None:
+        normalized_validated_until = min(
+            _ensure_utc_datetime(validated_until),
+            normalized_bucket_end,
+        )
+
+    if normalized_bucket_end <= _get_station_bucket_finalization_cutoff(normalized_now):
+        if normalized_validated_until is not None and normalized_validated_until >= normalized_bucket_end:
+            return "empty_complete" if record_count == 0 else "complete"
+        return "partial"
+
+    return "empty_hot" if record_count == 0 else "hot"
+
+
+def _is_station_bucket_cache_reusable(metadata: StationBucketMetadata, observable_now: datetime) -> bool:
+    """Return whether an existing bucket can be used without immediate refresh."""
+    state = _classify_station_bucket_state(
+        bucket_end=metadata.bucket_end,
+        validated_until=metadata.validated_until,
+        record_count=metadata.record_count,
+        observable_now=observable_now,
+    )
+    return state in {"complete", "empty_complete"}
+
+
+async def _wait_for_station_bucket_unlock(
+    redis: Redis,
+    scope_hash: str,
+    bucket_start: datetime,
+    timeout_seconds: float | None = None,
+    poll_interval_seconds: float = 0.25,
+) -> None:
+    """Wait for a station bucket lock to clear."""
+    lock_key = _build_station_bucket_lock_key(scope_hash, bucket_start)
+    timeout = timeout_seconds or float(IPLAS_STATION_BUCKET_LOCK_TTL + 1)
+    deadline = asyncio.get_running_loop().time() + timeout
+
+    while asyncio.get_running_loop().time() < deadline:
+        if not redis.exists(lock_key):
+            return
+        await asyncio.sleep(poll_interval_seconds)
+
+
+def _station_bucket_metadata_to_mapping(metadata: StationBucketMetadata) -> dict[str, str]:
+    """Convert bucket metadata to a Redis hash mapping."""
+    return {
+        "site": metadata.site,
+        "project": metadata.project,
+        "station": metadata.station,
+        "device_scope": metadata.device_scope,
+        "test_status": metadata.test_status,
+        "bucket_start": _bucket_cache_datetime_to_str(metadata.bucket_start),
+        "bucket_end": _bucket_cache_datetime_to_str(metadata.bucket_end),
+        "state": metadata.state,
+        "validated_until": _bucket_cache_datetime_to_str(metadata.validated_until),
+        "latest_record_time": _bucket_cache_datetime_to_str(metadata.latest_record_time),
+        "record_count": str(metadata.record_count),
+        "fetched_at": _bucket_cache_datetime_to_str(metadata.fetched_at),
+        "first_complete_at": _bucket_cache_datetime_to_str(metadata.first_complete_at),
+        "possibly_truncated": "1" if metadata.possibly_truncated else "0",
+        "used_hybrid_strategy": "1" if metadata.used_hybrid_strategy else "0",
+        "encoding": metadata.encoding,
+        "version": metadata.version,
+    }
+
+
+def _build_station_range_metadata(
+    bucket_stats: list[StationRangeBucketStat],
+) -> StationRangeResponseMetadata:
+    """Build aggregate response metadata from bucket-level stats."""
+    if not bucket_stats:
+        return StationRangeResponseMetadata(
+            cache_coverage="full",
+            validated_until=None,
+            bucket_stats=[],
+        )
+
+    cache_coverage: Literal["full", "partial", "miss"]
+    if all(stat.source == "cache" for stat in bucket_stats):
+        cache_coverage = "full"
+    elif all(stat.source == "refresh" for stat in bucket_stats):
+        cache_coverage = "miss"
+    else:
+        cache_coverage = "partial"
+
+    validated_until_candidates = [_ensure_utc_datetime(stat.validated_until) for stat in bucket_stats if stat.validated_until is not None]
+    validated_until = min(validated_until_candidates) if validated_until_candidates else None
+
+    return StationRangeResponseMetadata(
+        cache_coverage=cache_coverage,
+        validated_until=validated_until,
+        bucket_stats=bucket_stats,
+    )
+
+
+def _station_bucket_metadata_from_mapping(mapping: dict[str, str]) -> StationBucketMetadata | None:
+    """Convert a Redis hash mapping into bucket metadata."""
+    try:
+        state = mapping["state"]
+        if state not in {"complete", "empty_complete", "partial", "hot", "empty_hot"}:
+            raise ValueError(f"Unknown station bucket state: {state}")
+
+        return StationBucketMetadata(
+            site=mapping["site"],
+            project=mapping["project"],
+            station=mapping["station"],
+            device_scope=mapping["device_scope"],
+            test_status=mapping["test_status"],
+            bucket_start=_bucket_cache_datetime_from_str(mapping.get("bucket_start")) or datetime.now(UTC),
+            bucket_end=_bucket_cache_datetime_from_str(mapping.get("bucket_end")) or datetime.now(UTC),
+            state=state,
+            validated_until=_bucket_cache_datetime_from_str(mapping.get("validated_until")),
+            latest_record_time=_bucket_cache_datetime_from_str(mapping.get("latest_record_time")),
+            record_count=int(mapping.get("record_count", "0")),
+            fetched_at=_bucket_cache_datetime_from_str(mapping.get("fetched_at")) or datetime.now(UTC),
+            first_complete_at=_bucket_cache_datetime_from_str(mapping.get("first_complete_at")),
+            possibly_truncated=mapping.get("possibly_truncated", "0") == "1",
+            used_hybrid_strategy=mapping.get("used_hybrid_strategy", "0") == "1",
+            encoding=mapping.get("encoding", "json+gzip+base64"),
+            version=mapping.get("version", IPLAS_STATION_BUCKET_CACHE_VERSION),
+        )
+    except Exception as exc:
+        logger.warning("Failed to parse station bucket metadata: %s", exc)
+        return None
+
+
+def _read_station_bucket(redis: Redis, scope_hash: str, bucket_start: datetime) -> tuple[StationBucketMetadata | None, list[dict[str, Any]] | None]:
+    """Read a station bucket's metadata and payload from Redis."""
+    meta_key = _build_station_bucket_meta_key(scope_hash, bucket_start)
+    data_key = _build_station_bucket_data_key(scope_hash, bucket_start)
+
+    try:
+        pipeline = redis.pipeline()
+        pipeline.hgetall(meta_key)
+        pipeline.get(data_key)
+        raw_meta, raw_payload = pipeline.execute()
+    except Exception as exc:
+        logger.warning("Redis read error for station bucket %s: %s", meta_key, exc)
+        return None, None
+
+    if not raw_meta or raw_payload is None:
+        return None, None
+
+    metadata = _station_bucket_metadata_from_mapping(raw_meta)
+    if metadata is None:
+        return None, None
+
+    try:
+        records = _deserialize_station_bucket_records(raw_payload)
+    except Exception as exc:
+        logger.warning("Failed to decode station bucket payload %s: %s", data_key, exc)
+        return None, None
+
+    return metadata, records
+
+
+def _write_station_bucket(
+    redis: Redis,
+    *,
+    scope_hash: str,
+    scope_label: str,
+    metadata: StationBucketMetadata,
+    records: list[dict[str, Any]],
+) -> None:
+    """Write a station bucket payload and metadata to Redis."""
+    ttl = _get_station_bucket_ttl(metadata.state)
+    data_key = _build_station_bucket_data_key(scope_hash, metadata.bucket_start)
+    meta_key = _build_station_bucket_meta_key(scope_hash, metadata.bucket_start)
+    scope_key = _build_station_bucket_scope_key(scope_hash)
+    payload = _serialize_station_bucket_records(records)
+    mapping = _station_bucket_metadata_to_mapping(metadata)
+
+    pipeline = redis.pipeline()
+    pipeline.set(data_key, payload, ex=ttl)
+    pipeline.hset(meta_key, mapping=mapping)
+    pipeline.expire(meta_key, ttl)
+    pipeline.set(scope_key, scope_label, ex=ttl)
+    pipeline.execute()
+
+
+def _delete_station_bucket(redis: Redis, scope_hash: str, bucket_start: datetime) -> None:
+    """Delete a station bucket payload and metadata from Redis."""
+    data_key = _build_station_bucket_data_key(scope_hash, bucket_start)
+    meta_key = _build_station_bucket_meta_key(scope_hash, bucket_start)
+    redis.delete(data_key, meta_key)
+
+
+def _acquire_station_bucket_lock(
+    redis: Redis,
+    scope_hash: str,
+    bucket_start: datetime,
+    token: str | None = None,
+) -> str | None:
+    """Acquire a short-lived Redis lock for a station bucket."""
+    lock_key = _build_station_bucket_lock_key(scope_hash, bucket_start)
+    lock_token = token or f"{os.getpid()}:{datetime.now(UTC).timestamp()}"
+    acquired = redis.set(lock_key, lock_token, nx=True, ex=IPLAS_STATION_BUCKET_LOCK_TTL)
+    return lock_token if acquired else None
+
+
+def _release_station_bucket_lock(
+    redis: Redis,
+    scope_hash: str,
+    bucket_start: datetime,
+    token: str | None = None,
+) -> bool:
+    """Release a Redis lock for a station bucket when the token matches."""
+    lock_key = _build_station_bucket_lock_key(scope_hash, bucket_start)
+    current_value = redis.get(lock_key)
+    if current_value is None:
+        return True
+    if token is not None and current_value != token:
+        return False
+    redis.delete(lock_key)
+    return True
+
+
+async def _get_iplas_server_time() -> datetime:
+    """Fetch iPLAS server time and fall back to local UTC time on failure."""
+    fallback_now = datetime.now(UTC)
+    try:
+        client = await _get_http_client()
+        response = await client.get(IPLAS_SERVER_TIME_URL)
+        response.raise_for_status()
+        server_time_ms = int(response.text.strip())
+        return datetime.fromtimestamp(server_time_ms / 1000, tz=UTC)
+    except Exception as exc:
+        logger.warning("Failed to fetch iPLAS server time from %s: %s", IPLAS_SERVER_TIME_URL, exc)
+        return fallback_now
+
+
+async def _fetch_station_bucket_with_cache(
+    *,
+    redis: Redis | None,
+    site: str,
+    project: str,
+    station: str,
+    device_scope: str,
+    test_status: str,
+    bucket_window: StationBucketWindow,
+    user_token: str | None,
+    observable_now: datetime,
+) -> tuple[list[dict[str, Any]], bool, int, int, bool]:
+    """Fetch a station bucket using bucket-aware Redis caching."""
+    scope_hash = _build_station_bucket_scope_hash(site, project, station, device_scope, test_status)
+    scope_label = _build_station_bucket_scope_label(site, project, station, device_scope, test_status)
+
+    if redis:
+        cached_meta, cached_records = _read_station_bucket(redis, scope_hash, bucket_window.bucket_start)
+        if cached_meta is not None and cached_records is not None:
+            if _is_station_bucket_cache_reusable(cached_meta, observable_now):
+                logger.debug(
+                    "Station bucket cache HIT: %s %s",
+                    cached_meta.state,
+                    _build_station_bucket_meta_key(scope_hash, bucket_window.bucket_start),
+                )
+                return StationBucketFetchResult(
+                    records=cached_records,
+                    metadata=cached_meta,
+                    fetched=False,
+                    bucket_chunks_fetched=0,
+                    bucket_total_chunks=0,
+                )
+
+    lock_token: str | None = None
+    if redis:
+        lock_token = _acquire_station_bucket_lock(redis, scope_hash, bucket_window.bucket_start)
+        if lock_token is None:
+            await _wait_for_station_bucket_unlock(redis, scope_hash, bucket_window.bucket_start)
+            cached_meta, cached_records = _read_station_bucket(redis, scope_hash, bucket_window.bucket_start)
+            if cached_meta is not None and cached_records is not None:
+                logger.debug(
+                    "Station bucket cache HIT after wait: %s",
+                    _build_station_bucket_meta_key(scope_hash, bucket_window.bucket_start),
+                )
+                return StationBucketFetchResult(
+                    records=cached_records,
+                    metadata=cached_meta,
+                    fetched=False,
+                    bucket_chunks_fetched=0,
+                    bucket_total_chunks=0,
+                )
+
+            lock_token = _acquire_station_bucket_lock(redis, scope_hash, bucket_window.bucket_start)
+
+    try:
+        bucket_records, bucket_truncated, bucket_chunks_fetched, bucket_total_chunks, bucket_used_hybrid = await _fetch_chunked_from_iplas(
+            site,
+            project,
+            station,
+            device_scope,
+            bucket_window.query_start,
+            bucket_window.query_end,
+            test_status,
+            user_token,
+        )
+
+        latest_record_time = _extract_station_bucket_latest_record_time(bucket_records)
+        validated_until = None
+        if latest_record_time is not None:
+            validated_until = min(latest_record_time, bucket_window.bucket_end)
+        if bucket_window.bucket_end <= _get_station_bucket_finalization_cutoff(observable_now) and not bucket_records:
+            validated_until = bucket_window.bucket_end
+
+        bucket_state = _classify_station_bucket_state(
+            bucket_end=bucket_window.bucket_end,
+            validated_until=validated_until,
+            record_count=len(bucket_records),
+            observable_now=observable_now,
+        )
+
+        first_complete_at: datetime | None = None
+        if bucket_state in {"complete", "empty_complete"}:
+            first_complete_at = observable_now
+
+        metadata = StationBucketMetadata(
+            site=site.upper(),
+            project=project,
+            station=station,
+            device_scope=device_scope,
+            test_status=test_status.upper(),
+            bucket_start=bucket_window.bucket_start,
+            bucket_end=bucket_window.bucket_end,
+            state=bucket_state,
+            validated_until=validated_until,
+            latest_record_time=latest_record_time,
+            record_count=len(bucket_records),
+            fetched_at=observable_now,
+            first_complete_at=first_complete_at,
+            possibly_truncated=bucket_truncated,
+            used_hybrid_strategy=bucket_used_hybrid,
+        )
+
+        if redis:
+            try:
+                _write_station_bucket(
+                    redis,
+                    scope_hash=scope_hash,
+                    scope_label=scope_label,
+                    metadata=metadata,
+                    records=bucket_records,
+                )
+            except Exception as exc:
+                logger.warning("Redis station bucket write error for %s: %s", scope_label, exc)
+
+        return StationBucketFetchResult(
+            records=bucket_records,
+            metadata=metadata,
+            fetched=True,
+            bucket_chunks_fetched=bucket_chunks_fetched,
+            bucket_total_chunks=bucket_total_chunks,
+        )
+    finally:
+        if redis and lock_token is not None:
+            _release_station_bucket_lock(redis, scope_hash, bucket_window.bucket_start, token=lock_token)
+
+
+async def _fetch_station_range_with_bucket_cache(
+    *,
+    redis: Redis | None,
+    site: str,
+    project: str,
+    station: str,
+    device_scope: str,
+    begin_time: datetime,
+    end_time: datetime,
+    test_status: str,
+    user_token: str | None,
+) -> tuple[list[dict[str, Any]], bool, int, int, bool, bool, StationRangeResponseMetadata]:
+    """Fetch a station query range using bucket-aware cache reuse."""
+    observable_now = await _get_iplas_server_time()
+    bucket_windows = _iter_station_bucket_windows(begin_time, end_time)
+
+    all_records: list[dict[str, Any]] = []
+    possibly_truncated = False
+    chunks_fetched = 0
+    total_chunks = len(bucket_windows)
+    used_hybrid_strategy = False
+    cached = total_chunks > 0
+    bucket_stats: list[StationRangeBucketStat] = []
+
+    for bucket_window in bucket_windows:
+        bucket_result = await _fetch_station_bucket_with_cache(
+            redis=redis,
+            site=site,
+            project=project,
+            station=station,
+            device_scope=device_scope,
+            test_status=test_status,
+            bucket_window=bucket_window,
+            user_token=user_token,
+            observable_now=observable_now,
+        )
+        all_records.extend(bucket_result.records)
+        possibly_truncated = possibly_truncated or bucket_result.metadata.possibly_truncated
+        used_hybrid_strategy = used_hybrid_strategy or bucket_result.metadata.used_hybrid_strategy
+        bucket_stats.append(
+            StationRangeBucketStat(
+                bucket_start=bucket_result.metadata.bucket_start,
+                bucket_end=bucket_result.metadata.bucket_end,
+                state=bucket_result.metadata.state,
+                source="refresh" if bucket_result.fetched else "cache",
+                record_count=bucket_result.metadata.record_count,
+                validated_until=bucket_result.metadata.validated_until,
+                latest_record_time=bucket_result.metadata.latest_record_time,
+            )
+        )
+
+        if bucket_result.bucket_chunks_fetched > 0:
+            cached = False
+            chunks_fetched += bucket_result.bucket_chunks_fetched
+            total_chunks += max(bucket_result.bucket_total_chunks - 1, 0)
+
+    if total_chunks == 0:
+        total_chunks = 1
+
+    filtered_to_range = _filter_records_to_requested_range(all_records, begin_time, end_time)
+    deduplicated = _deduplicate_station_records(filtered_to_range)
+    response_metadata = _build_station_range_metadata(bucket_stats)
+
+    return deduplicated, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy, cached, response_metadata
+
+
+async def _fetch_station_range_for_request(
+    request: IplasCsvTestItemRequest,
+    redis: Redis | None,
+) -> tuple[list[dict[str, Any]], bool, int, int, bool, bool, StationRangeResponseMetadata]:
+    """Fetch a station range for CSV endpoints using shared in-flight coordination."""
+    cache_key = _generate_cache_key(
+        request.site,
+        request.project,
+        request.station,
+        request.device_id,
+        request.begin_time,
+        request.end_time,
+        request.test_status,
+    )
+
+    logger.debug("Station bucket fetch start: %s", cache_key)
+
+    in_flight_result = await _get_or_wait_in_flight(cache_key)
+    if in_flight_result is not None:
+        records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy, response_metadata = in_flight_result
+        cached = chunks_fetched == 0
+        logger.info(f"Used coalesced result for {cache_key[:50]}")
+        return records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy, cached, response_metadata
+
+    await _register_in_flight(cache_key)
+    try:
+        (
+            records,
+            possibly_truncated,
+            chunks_fetched,
+            total_chunks,
+            used_hybrid_strategy,
+            cached,
+            response_metadata,
+        ) = await _fetch_station_range_with_bucket_cache(
+            redis=redis,
+            site=request.site,
+            project=request.project,
+            station=request.station,
+            device_scope=request.device_id,
+            begin_time=request.begin_time,
+            end_time=request.end_time,
+            test_status=request.test_status,
+            user_token=request.token,
+        )
+
+        await _complete_in_flight(cache_key, (records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy, response_metadata))
+        return records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy, cached, response_metadata
+    except Exception:
+        await _cleanup_in_flight(cache_key, delay=0)
+        raise
 
 
 def _generate_cache_key(
@@ -467,7 +1263,7 @@ async def _fetch_from_iplas(
             raise HTTPException(
                 status_code=502,
                 detail="iPLAS upstream connection failed. Please retry.",
-            )
+            ) from exc
 
     if last_exc is not None:
         raise HTTPException(
@@ -836,7 +1632,7 @@ async def _fetch_chunked_from_iplas(
         if use_hybrid and device_id.upper() == "ALL":
             records, possibly_truncated, used_hybrid = await _fetch_with_hybrid_strategy(site, project, station, device_id, begin_time, end_time, test_status, user_token)
             if used_hybrid:
-                logger.info(f"Single chunk used hybrid V1/V2 strategy")
+                logger.info("Single chunk used hybrid V1/V2 strategy")
             return records, possibly_truncated, 1, 1, used_hybrid
         else:
             records = await _fetch_from_iplas(site, project, station, device_id, begin_time, end_time, test_status, user_token)
@@ -1016,75 +1812,11 @@ async def get_csv_test_items(
 ) -> IplasCsvTestItemResponse:
     """Get filtered CSV test items with caching and request deduplication."""
     redis = get_redis_client()
-    cache_key = _generate_cache_key(
-        request.site,
-        request.project,
-        request.station,
-        request.device_id,
-        request.begin_time,
-        request.end_time,
-        request.test_status,
+
+    records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy, cached, response_metadata = await _fetch_station_range_for_request(
+        request,
+        redis,
     )
-
-    cached = False
-    records: list[dict[str, Any]] = []
-
-    # Try cache first
-    if redis:
-        try:
-            cached_data = redis.get(cache_key)
-            if cached_data:
-                records = json_loads(cached_data)
-                cached = True
-                logger.debug(f"Cache HIT: {cache_key}")
-        except Exception as e:
-            logger.warning(f"Redis GET error: {e}")
-
-    possibly_truncated = False
-    chunks_fetched = 1
-    total_chunks = 1
-    used_hybrid_strategy = False
-
-    # Fetch from iPLAS if cache miss (using chunked fetching for large date ranges)
-    if not cached:
-        logger.debug(f"Cache MISS: {cache_key}")
-
-        # UPDATED: Check for in-flight request first (request deduplication)
-        in_flight_result = await _get_or_wait_in_flight(cache_key)
-        if in_flight_result is not None:
-            # Another request fetched this data, use their result
-            records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy = in_flight_result
-            logger.info(f"Used coalesced result for {cache_key[:50]}")
-        else:
-            # We're the first request - register and fetch
-            await _register_in_flight(cache_key)
-            try:
-                records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy = await _fetch_chunked_from_iplas(
-                    request.site,
-                    request.project,
-                    request.station,
-                    request.device_id,
-                    request.begin_time,
-                    request.end_time,
-                    request.test_status,
-                    request.token,  # Pass user token if provided
-                )
-
-                # Store in cache
-                if redis:
-                    try:
-                        serialized = json_dumps(records)
-                        redis.setex(cache_key, IPLAS_CACHE_TTL, serialized)
-                        logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL}s)")
-                    except Exception as e:
-                        logger.warning(f"Redis SET error: {e}")
-
-                # Notify waiting requests
-                await _complete_in_flight(cache_key, (records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy))
-            except Exception:
-                # Clean up in-flight tracking on error
-                await _cleanup_in_flight(cache_key, delay=0)
-                raise
 
     # Apply test item filtering
     filtered = bool(request.test_item_filters)
@@ -1109,6 +1841,20 @@ async def get_csv_test_items(
         chunks_fetched=chunks_fetched,
         total_chunks=total_chunks,
         used_hybrid_strategy=used_hybrid_strategy,
+        cache_coverage=response_metadata.cache_coverage,
+        validated_until=_bucket_cache_datetime_to_str(response_metadata.validated_until) or None,
+        bucket_stats=[
+            {
+                "bucket_start": _bucket_cache_datetime_to_str(stat.bucket_start),
+                "bucket_end": _bucket_cache_datetime_to_str(stat.bucket_end),
+                "state": stat.state,
+                "source": stat.source,
+                "record_count": stat.record_count,
+                "validated_until": _bucket_cache_datetime_to_str(stat.validated_until) or None,
+                "latest_record_time": _bucket_cache_datetime_to_str(stat.latest_record_time) or None,
+            }
+            for stat in response_metadata.bucket_stats
+        ],
     )
 
 
@@ -1202,109 +1948,31 @@ async def get_csv_test_items_compact(
 ) -> CompactCsvTestItemResponse:
     """Get compact CSV test items without TestItem arrays."""
     redis = get_redis_client()
-    cache_key = _generate_cache_key(
-        request.site,
-        request.project,
-        request.station,
-        request.device_id,
-        request.begin_time,
-        request.end_time,
-        request.test_status,
-    )
-    compact_cache_key = f"{cache_key}:compact"
 
     cached = False
-    cached_compact = False
     records: list[dict[str, Any]] = []
     compact_records: list[dict[str, Any]] = []
 
-    # Try cache first
-    if redis:
-        try:
-            if not request.test_item_filters:
-                cached_data = redis.get(compact_cache_key)
-                if cached_data:
-                    compact_records = json_loads(cached_data)
-                    cached = True
-                    cached_compact = True
-                    logger.debug(f"Cache HIT (compact): {compact_cache_key}")
-            if not cached_compact:
-                cached_data = redis.get(cache_key)
-                if cached_data:
-                    records = json_loads(cached_data)
-                    cached = True
-                    logger.debug(f"Cache HIT (full for compact): {cache_key}")
-        except Exception as e:
-            logger.warning(f"Redis GET error: {e}")
-
     possibly_truncated = False
-    chunks_fetched = 1
-    total_chunks = 1
+    chunks_fetched = 0
+    total_chunks = 0
     used_hybrid_strategy = False
 
-    # Fetch from iPLAS if cache miss
-    if not cached_compact and not records:
-        logger.debug(f"Cache MISS (compact): {cache_key}")
+    records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy, cached, response_metadata = await _fetch_station_range_for_request(
+        request,
+        redis,
+    )
 
-        # UPDATED: Check for in-flight request first (request deduplication)
-        in_flight_result = await _get_or_wait_in_flight(cache_key)
-        if in_flight_result is not None:
-            # Another request fetched this data, use their result
-            records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy = in_flight_result
-            logger.info(f"Used coalesced result for compact {cache_key[:50]}")
-        else:
-            # We're the first request - register and fetch
-            await _register_in_flight(cache_key)
-            try:
-                records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy = await _fetch_chunked_from_iplas(
-                    request.site,
-                    request.project,
-                    request.station,
-                    request.device_id,
-                    request.begin_time,
-                    request.end_time,
-                    request.test_status,
-                    request.token,
-                )
-
-                # Store full records in cache (benefits both endpoints)
-                if redis:
-                    try:
-                        serialized = json_dumps(records)
-                        redis.setex(cache_key, IPLAS_CACHE_TTL, serialized)
-                        logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL}s)")
-                    except Exception as e:
-                        logger.warning(f"Redis SET error: {e}")
-
-                # Notify waiting requests
-                await _complete_in_flight(cache_key, (records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy))
-            except Exception:
-                # Clean up in-flight tracking on error
-                await _cleanup_in_flight(cache_key, delay=0)
-                raise
-
-    # If compact cache hit, we already have compact records ready
     filtered = bool(request.test_item_filters)
-    if not compact_records:
-        # Apply test item filtering (affects TestItemCount)
-        if filtered:
-            records = _filter_test_items(records, request.test_item_filters)
+    if filtered:
+        records = _filter_test_items(records, request.test_item_filters)
 
-        for record in records:
-            test_items = record.get("TestItem", [])
-            record["__test_item_count"] = len(test_items) if isinstance(test_items, list) else 0
-            record.pop("TestItem", None)
+    for record in records:
+        test_items = record.get("TestItem", [])
+        record["__test_item_count"] = len(test_items) if isinstance(test_items, list) else 0
+        record.pop("TestItem", None)
 
-        compact_records = [_convert_to_compact_record_dict(r) for r in records]
-
-        # Cache compact records when unfiltered (safe cache key)
-        if redis and not filtered:
-            try:
-                serialized = json_dumps(compact_records)
-                redis.setex(compact_cache_key, IPLAS_CACHE_TTL, serialized)
-                logger.debug(f"Cached compact: {compact_cache_key} (TTL={IPLAS_CACHE_TTL}s)")
-            except Exception as e:
-                logger.warning(f"Redis SET error (compact): {e}")
+    compact_records = [_convert_to_compact_record_dict(r) for r in records]
 
     total_records = len(compact_records)
 
@@ -1353,6 +2021,20 @@ async def get_csv_test_items_compact(
         chunks_fetched=chunks_fetched,
         total_chunks=total_chunks,
         used_hybrid_strategy=used_hybrid_strategy,
+        cache_coverage=response_metadata.cache_coverage,
+        validated_until=_bucket_cache_datetime_to_str(response_metadata.validated_until) or None,
+        bucket_stats=[
+            {
+                "bucket_start": _bucket_cache_datetime_to_str(stat.bucket_start),
+                "bucket_end": _bucket_cache_datetime_to_str(stat.bucket_end),
+                "state": stat.state,
+                "source": stat.source,
+                "record_count": stat.record_count,
+                "validated_until": _bucket_cache_datetime_to_str(stat.validated_until) or None,
+                "latest_record_time": _bucket_cache_datetime_to_str(stat.latest_record_time) or None,
+            }
+            for stat in response_metadata.bucket_stats
+        ],
     )
 
 
@@ -1577,7 +2259,6 @@ async def get_test_item_names_cached(
     db: Session = Depends(get_db),
 ) -> IplasCachedTestItemNamesResponse:
     """Get cached test item names from database."""
-    from datetime import timezone
 
     site = request.site.upper()
     project = request.project
@@ -1598,7 +2279,7 @@ async def get_test_item_names_cached(
         if cached_items:
             # Check cache age
             oldest_item = min(cached_items, key=lambda x: x.created_at)
-            cache_age = datetime.now(timezone.utc) - oldest_item.created_at.replace(tzinfo=timezone.utc)
+            cache_age = datetime.now(UTC) - oldest_item.created_at.replace(tzinfo=UTC)
             cache_age_hours = cache_age.total_seconds() / 3600
 
             # If cache is still valid (within TTL)
@@ -1730,7 +2411,7 @@ async def get_test_item_names_cached(
     ).delete()
 
     # Save new entries to database
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for item in test_items:
         cached_item = CachedTestItem(
             site=site,
@@ -2110,10 +2791,7 @@ async def search_by_isn(
                 return site_name, []
 
             # Execute all site searches in parallel
-            tasks = [
-                search_site(site_name, site_cfg)
-                for site_name, site_cfg in IPLAS_SITES.items()
-            ]
+            tasks = [search_site(site_name, site_cfg) for site_name, site_cfg in IPLAS_SITES.items()]
             site_results = await asyncio.gather(*tasks, return_exceptions=True)
 
             # Collect results from first site that has data
@@ -2234,10 +2912,7 @@ async def search_by_isn_batch(
                         return site_name, []
 
                     # Execute all site searches in parallel
-                    site_tasks = [
-                        search_site_for_isn(site_name, site_cfg)
-                        for site_name, site_cfg in IPLAS_SITES.items()
-                    ]
+                    site_tasks = [search_site_for_isn(site_name, site_cfg) for site_name, site_cfg in IPLAS_SITES.items()]
                     site_results = await asyncio.gather(*site_tasks, return_exceptions=True)
 
                     # Collect results from first site that has data
@@ -2278,12 +2953,14 @@ async def search_by_isn_batch(
 
     for i, result in enumerate(results):
         if isinstance(result, Exception):
-            batch_results.append(IplasIsnSearchBatchItem(
-                isn=request.isns[i],
-                data=[],
-                cached=False,
-                error=str(result),
-            ))
+            batch_results.append(
+                IplasIsnSearchBatchItem(
+                    isn=request.isns[i],
+                    data=[],
+                    cached=False,
+                    error=str(result),
+                )
+            )
             failed_count += 1
         else:
             batch_results.append(result)
@@ -2293,11 +2970,7 @@ async def search_by_isn_batch(
             else:
                 failed_count += 1
 
-    logger.info(
-        f"Batch ISN search: {len(request.isns)} ISNs, "
-        f"{successful_count} successful, {failed_count} failed, "
-        f"{total_records} total records"
-    )
+    logger.info(f"Batch ISN search: {len(request.isns)} ISNs, {successful_count} successful, {failed_count} failed, {total_records} total records")
 
     return IplasIsnSearchBatchResponse(
         results=batch_results,
@@ -3387,9 +4060,7 @@ async def export_test_items(
         # Filter test items if specified (preserve order)
         if request.selected_test_items:
             selected_set = set(request.selected_test_items)
-            test_items_by_station[station_name] = [
-                name for name in ordered_test_items if name in selected_set
-            ]
+            test_items_by_station[station_name] = [name for name in ordered_test_items if name in selected_set]
         else:
             test_items_by_station[station_name] = ordered_test_items
 
@@ -3422,11 +4093,11 @@ async def export_test_items(
                 status_code=500,
                 detail="openpyxl is required for XLSX export. Install with: pip install openpyxl",
             ) from None
-        
+
         wb = Workbook()
         # Remove default sheet
         wb.remove(wb.active)
-        
+
         for station_name, station_records in records_by_station.items():
             # Create sheet for this station (max 31 chars for sheet name)
             sheet_name = station_name[:31] if len(station_name) > 31 else station_name
@@ -3434,7 +4105,7 @@ async def export_test_items(
             # Use only the test items that belong to this station
             station_test_items = test_items_by_station.get(station_name, [])
             _write_export_sheet(ws, station_records, station_test_items)
-        
+
         # Save to bytes
         output = io.BytesIO()
         wb.save(output)
@@ -3553,12 +4224,12 @@ def _write_export_sheet(
     for col_idx, record in enumerate(records, 4):
         error_code = (record.ErrorCode.strip() if record.ErrorCode else "").upper()
         error_name = (record.ErrorName.strip() if record.ErrorName else "").upper()
-        
+
         # Check for pass: ErrorCode is "PASS" or empty, ErrorName is "N/A" or empty
         is_pass = error_code in ("", "PASS", "0") or (error_code == "N/A" and error_name in ("", "N/A"))
         # Check for fail: ErrorCode is not empty, not "PASS", not "N/A", not "0"
         is_fail = error_code and error_code not in ("", "PASS", "N/A", "0")
-        
+
         if is_fail:
             fail_columns.add(col_idx)
         elif is_pass:

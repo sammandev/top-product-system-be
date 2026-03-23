@@ -174,19 +174,31 @@ def _make_common_payloads():
 
 
 def _write_criteria(tmp_path: Path) -> Path:
-    content = """
-[Wireless_2_5G_Test]
-"WiFi_PA_POW_OLD_2422_11AC_MCS7_B40" <25,17>  ===> "21"
-"WiFi_TX_FIXTURE_OR_DUT_PROBLEM_POW_2437_11N_MCS0_B20" <26,16>  ===> "21"
+    content = """{
+  "criteria": [
+    {
+      "test_item": "WiFi_PA_POW_OLD_2422_11AC_MCS7_B40",
+      "ucl": "25",
+      "lcl": "17",
+      "target": "21"
+    },
+    {
+      "test_item": "WiFi_TX_FIXTURE_OR_DUT_PROBLEM_POW_2437_11N_MCS0_B20",
+      "ucl": "26",
+      "lcl": "16",
+      "target": "21"
+    }
+  ]
+}
 """
-    path = tmp_path / "criteria.ini"
+    path = tmp_path / "criteria.json"
     path.write_text(content.strip(), encoding="utf-8")
     return path
 
 
 def _upload_payload(criteria_file: Path):
     content = criteria_file.read_bytes()
-    return {"criteria_file": (criteria_file.name, content, "text/plain")}
+    return {"criteria_file": (criteria_file.name, content, "application/json")}
 
 
 def test_top_product_endpoint_ranks_best_dut(client, tmp_path):

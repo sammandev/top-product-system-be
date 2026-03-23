@@ -19,9 +19,7 @@ class IplasCsvTestItemRequest(BaseModel):
     device_id: str = Field(..., description="Device ID or 'ALL' for all devices")
     begin_time: datetime = Field(..., description="Start time for the query")
     end_time: datetime = Field(..., description="End time for the query")
-    test_status: Literal["ALL", "PASS", "FAIL"] = Field(
-        default="ALL", description="Filter by test status"
-    )
+    test_status: Literal["ALL", "PASS", "FAIL"] = Field(default="ALL", description="Filter by test status")
     test_item_filters: list[str] | None = Field(
         default=None,
         description="List of test item names to filter. If empty or None, returns all test items.",
@@ -60,9 +58,7 @@ class IplasTestItemNamesRequest(BaseModel):
     device_id: str = Field(default="ALL", description="Device ID or 'ALL' for all devices")
     begin_time: datetime = Field(..., description="Start time for the query")
     end_time: datetime = Field(..., description="End time for the query")
-    test_status: Literal["ALL", "PASS", "FAIL"] = Field(
-        default="PASS", description="Filter by test status (defaults to PASS for test item discovery)"
-    )
+    test_status: Literal["ALL", "PASS", "FAIL"] = Field(default="PASS", description="Filter by test status (defaults to PASS for test item discovery)")
     token: str | None = Field(
         default=None,
         description="Optional user-provided token. If not provided, uses backend default.",
@@ -70,8 +66,7 @@ class IplasTestItemNamesRequest(BaseModel):
     # UPDATED: Add option to exclude BIN test items for scoring dialogs
     exclude_bin: bool = Field(
         default=False,
-        description="If true, excludes BIN/PASS-FAIL test items (is_bin=True) from results. "
-                    "Useful for scoring dialogs that only need CRITERIA and NON-CRITERIA items.",
+        description="If true, excludes BIN/PASS-FAIL test items (is_bin=True) from results. Useful for scoring dialogs that only need CRITERIA and NON-CRITERIA items.",
     )
 
 
@@ -79,26 +74,16 @@ class IplasTestItemInfo(BaseModel):
     """Test item information with type indicator."""
 
     name: str = Field(..., description="Test item name")
-    is_value: bool = Field(
-        ..., description="True if the test item has numeric VALUE (not bin/pass-fail)"
-    )
-    is_bin: bool = Field(
-        default=False, description="True if the test item is binary (PASS/FAIL only)"
-    )
-    has_ucl: bool = Field(
-        default=False, description="True if the test item has a UCL (upper control limit)"
-    )
-    has_lcl: bool = Field(
-        default=False, description="True if the test item has a LCL (lower control limit)"
-    )
+    is_value: bool = Field(..., description="True if the test item has numeric VALUE (not bin/pass-fail)")
+    is_bin: bool = Field(default=False, description="True if the test item is binary (PASS/FAIL only)")
+    has_ucl: bool = Field(default=False, description="True if the test item has a UCL (upper control limit)")
+    has_lcl: bool = Field(default=False, description="True if the test item has a LCL (lower control limit)")
 
 
 class IplasTestItemNamesResponse(BaseModel):
     """Response schema for unique test item names."""
 
-    test_items: list[IplasTestItemInfo] = Field(
-        ..., description="List of unique test item names with type info"
-    )
+    test_items: list[IplasTestItemInfo] = Field(..., description="List of unique test item names with type info")
     total_count: int = Field(..., description="Total number of unique test items")
 
 
@@ -109,10 +94,10 @@ class IplasTestItemNamesResponse(BaseModel):
 
 class IplasCachedTestItemNamesRequest(BaseModel):
     """Request schema for fetching cached test item names.
-    
+
     This endpoint uses database caching to avoid iPLAS API calls when possible.
     Date range is intentionally NOT part of the cache key since test items rarely change.
-    
+
     When `begin_time` and `end_time` are provided, they will be used when fetching
     fresh data from iPLAS (on cache miss). This is useful for the Station Search
     where users have already selected a time range. If not provided, a default
@@ -147,9 +132,7 @@ class IplasCachedTestItemNamesRequest(BaseModel):
 class IplasCachedTestItemNamesResponse(BaseModel):
     """Response schema for cached test item names."""
 
-    test_items: list[IplasTestItemInfo] = Field(
-        ..., description="List of unique test item names with type info"
-    )
+    test_items: list[IplasTestItemInfo] = Field(..., description="List of unique test item names with type info")
     total_count: int = Field(..., description="Total number of unique test items")
     cached: bool = Field(default=False, description="True if data was served from database cache")
     cache_age_hours: float | None = Field(
@@ -218,40 +201,41 @@ class IplasCsvTestItemRecord(BaseModel):
 class IplasCsvTestItemResponse(BaseModel):
     """Response schema for filtered CSV test items."""
 
+    class StationBucketStat(BaseModel):
+        """Bucket-level cache metadata for Station Search responses."""
+
+        bucket_start: str = Field(..., description="Bucket start time in ISO-8601 UTC format")
+        bucket_end: str = Field(..., description="Bucket end time in ISO-8601 UTC format")
+        state: Literal["complete", "empty_complete", "partial", "hot", "empty_hot"] = Field(..., description="Bucket cache state")
+        source: Literal["cache", "refresh"] = Field(..., description="Whether this bucket was reused from cache or refreshed from iPLAS")
+        record_count: int = Field(..., description="Number of records stored for the bucket")
+        validated_until: str | None = Field(default=None, description="Validated coverage timestamp for this bucket in ISO-8601 UTC format")
+        latest_record_time: str | None = Field(default=None, description="Latest observed test record time in this bucket in ISO-8601 UTC format")
+
     data: list[dict] = Field(..., description="Filtered test item records")
     total_records: int = Field(..., description="Total records before pagination")
     returned_records: int = Field(..., description="Number of records returned")
-    filtered: bool = Field(
-        ..., description="True if test item filtering was applied"
-    )
+    filtered: bool = Field(..., description="True if test item filtering was applied")
     cached: bool = Field(..., description="True if data was served from cache")
-    possibly_truncated: bool = Field(
-        default=False,
-        description="True if any chunk hit the 5000 record limit (data may be incomplete)"
-    )
+    possibly_truncated: bool = Field(default=False, description="True if any chunk hit the 5000 record limit (data may be incomplete)")
     # Chunking metadata for progress indicators
-    chunks_fetched: int = Field(
-        default=1,
-        description="Number of API chunks fetched (for queries >6 days)"
-    )
-    total_chunks: int = Field(
-        default=1,
-        description="Total number of chunks (for queries >6 days)"
-    )
+    chunks_fetched: int = Field(default=1, description="Number of API chunks fetched (for queries >6 days)")
+    total_chunks: int = Field(default=1, description="Total number of chunks (for queries >6 days)")
     # Hybrid V1/V2 strategy metadata
-    used_hybrid_strategy: bool = Field(
-        default=False,
-        description="True if hybrid V1/V2 strategy was used (per-device fetching for high-density stations)"
-    )
+    used_hybrid_strategy: bool = Field(default=False, description="True if hybrid V1/V2 strategy was used (per-device fetching for high-density stations)")
+    cache_coverage: Literal["full", "partial", "miss"] | None = Field(default=None, description="Bucket-cache coverage for this request: full cache hit, partial reuse, or full refresh")
+    validated_until: str | None = Field(default=None, description="Earliest validated coverage timestamp across all buckets in ISO-8601 UTC format")
+    bucket_stats: list[StationBucketStat] | None = Field(default=None, description="Bucket-level cache metadata for the request")
 
 
 class CompactCsvTestItemRecord(BaseModel):
     """
     Compact record without TestItem array for memory-efficient list views.
-    
+
     Use this for displaying record lists. TestItems can be loaded on-demand
     via a separate endpoint when the user expands a record.
     """
+
     Site: str
     Project: str
     station: str
@@ -278,28 +262,17 @@ class CompactCsvTestItemResponse(BaseModel):
     data: list[CompactCsvTestItemRecord] = Field(..., description="Compact test item records")
     total_records: int = Field(..., description="Total records before pagination")
     returned_records: int = Field(..., description="Number of records returned")
-    filtered: bool = Field(
-        ..., description="True if test item filtering was applied"
-    )
+    filtered: bool = Field(..., description="True if test item filtering was applied")
     cached: bool = Field(..., description="True if data was served from cache")
-    possibly_truncated: bool = Field(
-        default=False,
-        description="True if any chunk hit the 5000 record limit (data may be incomplete)"
-    )
+    possibly_truncated: bool = Field(default=False, description="True if any chunk hit the 5000 record limit (data may be incomplete)")
     # Chunking metadata for progress indicators
-    chunks_fetched: int = Field(
-        default=1,
-        description="Number of API chunks fetched (for queries >6 days)"
-    )
-    total_chunks: int = Field(
-        default=1,
-        description="Total number of chunks (for queries >6 days)"
-    )
+    chunks_fetched: int = Field(default=1, description="Number of API chunks fetched (for queries >6 days)")
+    total_chunks: int = Field(default=1, description="Total number of chunks (for queries >6 days)")
     # Hybrid V1/V2 strategy metadata
-    used_hybrid_strategy: bool = Field(
-        default=False,
-        description="True if hybrid V1/V2 strategy was used (per-device fetching for high-density stations)"
-    )
+    used_hybrid_strategy: bool = Field(default=False, description="True if hybrid V1/V2 strategy was used (per-device fetching for high-density stations)")
+    cache_coverage: Literal["full", "partial", "miss"] | None = Field(default=None, description="Bucket-cache coverage for this request: full cache hit, partial reuse, or full refresh")
+    validated_until: str | None = Field(default=None, description="Earliest validated coverage timestamp across all buckets in ISO-8601 UTC format")
+    bucket_stats: list[IplasCsvTestItemResponse.StationBucketStat] | None = Field(default=None, description="Bucket-level cache metadata for the request")
 
 
 # ============================================================================
@@ -478,9 +451,7 @@ class IplasDownloadAttachmentRequest(BaseModel):
 
     site: str = Field(..., description="Site identifier")
     project: str = Field(..., description="Project identifier")
-    info: list[IplasDownloadAttachmentInfo] = Field(
-        ..., description="List of attachment info to download"
-    )
+    info: list[IplasDownloadAttachmentInfo] = Field(..., description="List of attachment info to download")
     token: str | None = Field(
         default=None,
         description="Optional user-provided token. If not provided, uses backend default.",
@@ -491,9 +462,7 @@ class IplasDownloadAttachmentResponse(BaseModel):
     """Response schema for download attachment."""
 
     content: str = Field(..., description="Base64 encoded file content")
-    filename: str | None = Field(
-        default=None, description="Filename (only when single file)"
-    )
+    filename: str | None = Field(default=None, description="Filename (only when single file)")
 
 
 # ============================================================================
@@ -503,7 +472,7 @@ class IplasDownloadAttachmentResponse(BaseModel):
 
 class IplasDownloadCsvLogInfo(BaseModel):
     """Single CSV log info for download request.
-    
+
     Based on iPLAS v1 API: POST /raw/get_test_log
     """
 
@@ -514,19 +483,14 @@ class IplasDownloadCsvLogInfo(BaseModel):
     model: str = Field(default="ALL", description="Model (usually 'ALL')")
     deviceid: str = Field(..., description="Device ID")
     isn: str = Field(..., description="Device serial number")
-    test_end_time: str = Field(
-        ..., 
-        description="Test end time in format 'YYYY/MM/DD HH:mm:ss.000' (MUST include .000)"
-    )
+    test_end_time: str = Field(..., description="Test end time in format 'YYYY/MM/DD HH:mm:ss.000' (MUST include .000)")
     data_source: int = Field(default=0, description="Data source (usually 0)")
 
 
 class IplasDownloadCsvLogRequest(BaseModel):
     """Request schema for downloading CSV test logs."""
 
-    query_list: list[IplasDownloadCsvLogInfo] = Field(
-        ..., description="List of test log queries to download"
-    )
+    query_list: list[IplasDownloadCsvLogInfo] = Field(..., description="List of test log queries to download")
     token: str | None = Field(
         default=None,
         description="Optional user-provided token. If not provided, uses backend default.",
@@ -537,9 +501,7 @@ class IplasDownloadCsvLogResponse(BaseModel):
     """Response schema for download CSV log."""
 
     content: str = Field(..., description="CSV file content as string")
-    filename: str | None = Field(
-        default=None, description="Filename from response header"
-    )
+    filename: str | None = Field(default=None, description="Filename from response header")
 
 
 # ============================================================================
@@ -549,7 +511,7 @@ class IplasDownloadCsvLogResponse(BaseModel):
 
 class IplasBatchDownloadRequest(BaseModel):
     """Request schema for batch downloading logs (TXT, CSV, or both).
-    
+
     This endpoint handles batch downloads efficiently by:
     - Making parallel requests to iPLAS for each item
     - Packaging multiple files into a zip archive
@@ -558,13 +520,8 @@ class IplasBatchDownloadRequest(BaseModel):
 
     site: str = Field(..., description="Site identifier")
     project: str = Field(..., description="Project identifier")
-    items: list[IplasDownloadCsvLogInfo] = Field(
-        ..., description="List of test log items to download"
-    )
-    download_type: str = Field(
-        default="all",
-        description="Type of download: 'txt' for attachments only, 'csv' for CSV logs only, 'all' for both"
-    )
+    items: list[IplasDownloadCsvLogInfo] = Field(..., description="List of test log items to download")
+    download_type: str = Field(default="all", description="Type of download: 'txt' for attachments only, 'csv' for CSV logs only, 'all' for both")
     token: str | None = Field(
         default=None,
         description="Optional user-provided token. If not provided, uses backend default.",
@@ -611,24 +568,18 @@ class IplasVerifyResponse(BaseModel):
 
 class IplasTestItemByIsnRequest(BaseModel):
     """Request schema for fetching test items by ISN from iPLAS v1 API.
-    
+
     This endpoint searches for an ISN across all related stations within a date range.
     More flexible than the V2 isn_search as it supports date filtering.
-    
+
     Based on: POST /{site}/{project}/dut/get_test_item_by_isn
     """
 
     site: str = Field(..., description="Site identifier (e.g., 'PTB')")
     project: str = Field(..., description="Project identifier (e.g., 'HH5K')")
     isn: str = Field(..., description="Device serial number to search for")
-    station: str = Field(
-        default="",
-        description="Station filter (leave empty to search all related stations)"
-    )
-    device: str = Field(
-        default="",
-        description="Device ID filter (leave empty to search all device IDs)"
-    )
+    station: str = Field(default="", description="Station filter (leave empty to search all related stations)")
+    device: str = Field(default="", description="Device ID filter (leave empty to search all device IDs)")
     begin_time: datetime = Field(..., description="Start time for the search range")
     end_time: datetime = Field(..., description="End time for the search range")
     token: str | None = Field(
@@ -665,9 +616,7 @@ class IplasTestItemByIsnRecord(BaseModel):
 class IplasTestItemByIsnResponse(BaseModel):
     """Response schema for get_test_item_by_isn endpoint."""
 
-    data: list[IplasTestItemByIsnRecord] = Field(
-        ..., description="List of matching records across all related stations"
-    )
+    data: list[IplasTestItemByIsnRecord] = Field(..., description="List of matching records across all related stations")
     total_count: int = Field(..., description="Total number of records found")
     cached: bool = Field(default=False, description="True if data was served from cache")
 
@@ -679,7 +628,7 @@ class IplasTestItemByIsnResponse(BaseModel):
 
 class IplasStationsFromIsnRequest(BaseModel):
     """Request schema for getting station list from ISN.
-    
+
     This endpoint first looks up the ISN to find its site/project,
     then fetches the full station list for that project.
     """
@@ -693,13 +642,13 @@ class IplasStationsFromIsnRequest(BaseModel):
 
 class IplasStationsFromIsnBatchRequest(BaseModel):
     """Request schema for getting station lists from multiple ISNs.
-    
+
     For each unique site/project pair found, the station list is fetched.
     Results are deduplicated if multiple ISNs belong to the same project.
     """
 
     isns: list[str] = Field(
-        ..., 
+        ...,
         description="List of ISNs to look up",
         min_length=1,
         max_length=50,
@@ -721,16 +670,12 @@ class IplasIsnProjectInfo(BaseModel):
 
 class IplasStationsFromIsnResponse(BaseModel):
     """Response schema for stations from ISN lookup.
-    
+
     Contains the ISN's site/project info and all stations for that project.
     """
 
-    isn_info: IplasIsnProjectInfo = Field(
-        ..., description="Information about the ISN's project"
-    )
-    stations: list[IplasStation] = Field(
-        ..., description="List of all stations for the ISN's project"
-    )
+    isn_info: IplasIsnProjectInfo = Field(..., description="Information about the ISN's project")
+    stations: list[IplasStation] = Field(..., description="List of all stations for the ISN's project")
     total_stations: int = Field(..., description="Total number of stations")
     cached: bool = Field(default=False, description="True if data was served from cache")
 
@@ -738,31 +683,22 @@ class IplasStationsFromIsnResponse(BaseModel):
 class IplasStationsFromIsnBatchItem(BaseModel):
     """Single item in batch stations lookup response."""
 
-    isn_info: IplasIsnProjectInfo = Field(
-        ..., description="Information about the ISN's project"
-    )
-    stations: list[IplasStation] = Field(
-        ..., description="List of all stations for the ISN's project"
-    )
+    isn_info: IplasIsnProjectInfo = Field(..., description="Information about the ISN's project")
+    stations: list[IplasStation] = Field(..., description="List of all stations for the ISN's project")
     total_stations: int = Field(..., description="Total number of stations")
 
 
 class IplasStationsFromIsnBatchResponse(BaseModel):
     """Response schema for batch stations from ISN lookup.
-    
+
     Returns station lists for each unique site/project found.
     ISNs sharing the same project will have the same station list.
     """
 
-    results: list[IplasStationsFromIsnBatchItem] = Field(
-        ..., description="Station lists for each ISN"
-    )
+    results: list[IplasStationsFromIsnBatchItem] = Field(..., description="Station lists for each ISN")
     total_isns: int = Field(..., description="Total number of ISNs processed")
     unique_projects: int = Field(..., description="Number of unique site/project pairs")
-    not_found_isns: list[str] = Field(
-        default_factory=list,
-        description="ISNs that were not found in any site"
-    )
+    not_found_isns: list[str] = Field(default_factory=list, description="ISNs that were not found in any site")
     cached: bool = Field(default=False, description="True if any data was served from cache")
 
 
@@ -800,16 +736,12 @@ class ExportRecord(BaseModel):
 class ExportTestItemsRequest(BaseModel):
     """Request schema for exporting test items to CSV/XLSX."""
 
-    records: list[ExportRecord] = Field(
-        ..., description="List of records to export, grouped by station"
-    )
+    records: list[ExportRecord] = Field(..., description="List of records to export, grouped by station")
     selected_test_items: list[str] | None = Field(
         default=None,
         description="List of test item names to include. If None/empty, includes all test items.",
     )
-    format: Literal["csv", "xlsx"] = Field(
-        default="xlsx", description="Export format (csv or xlsx)"
-    )
+    format: Literal["csv", "xlsx"] = Field(default="xlsx", description="Export format (csv or xlsx)")
     filename_prefix: str = Field(
         default="test_items_export",
         description="Prefix for the generated filename",

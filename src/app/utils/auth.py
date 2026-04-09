@@ -4,16 +4,17 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import jwt
-from sqlalchemy import func
 from pwdlib import PasswordHash
 from pwdlib.hashers.argon2 import Argon2Hasher
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.user import User
 from app.utils.admin_access import is_user_admin
 
 # === Config ===
-JWT_SECRET = os.environ.get("JWT_SECRET", "change_this_secret")  # random 32-bytes | run in terminal: openssl rand -hex 32
+DEFAULT_JWT_SECRET = "change_this_secret"
+STRICT_ENVIRONMENTS = frozenset({"production", "prod", "staging"})
 JWT_ALG = os.environ.get("JWT_ALG", "HS256")
 JWT_TTL_SECONDS = int(os.environ.get("JWT_TTL", "86400"))  # access TTL
 JWT_REFRESH_TTL_SECONDS = int(os.environ.get("JWT_REFRESH_TTL", "86400"))  # refresh TTL
@@ -32,6 +33,34 @@ password_hasher = PasswordHash(
         ),
     )
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _normalized_environment() -> str:
+    return os.environ.get("ENVIRONMENT", "local").strip().lower()
+
+
+def _uses_default_jwt_secret(secret: str | None) -> bool:
+    return not secret or secret == DEFAULT_JWT_SECRET
+
+
+def get_jwt_secret() -> str:
+    secret = os.environ.get("JWT_SECRET")
+    if _uses_default_jwt_secret(secret):
+        if _normalized_environment() in STRICT_ENVIRONMENTS:
+            raise RuntimeError("JWT_SECRET must be configured to a non-default value in staging and production")
+        logger.warning("JWT_SECRET is not configured; using the development fallback secret")
+        return DEFAULT_JWT_SECRET
+    return secret
+
+
+def validate_auth_configuration() -> None:
+    if _normalized_environment() not in STRICT_ENVIRONMENTS:
+        return
+
+    if _uses_default_jwt_secret(os.environ.get("JWT_SECRET")):
+        raise RuntimeError("JWT_SECRET must be configured to a non-default value in staging and production")
 
 
 def hash_password(password: str) -> str:
@@ -60,7 +89,7 @@ def create_access_token(user: User, ttl: int | None = None) -> str:
     p = _base_payload(user)
     exp = datetime.now(UTC) + timedelta(seconds=(ttl or JWT_TTL_SECONDS))
     p.update({"type": "access", "exp": int(exp.timestamp())})
-    return jwt.encode(p, JWT_SECRET, algorithm=JWT_ALG)
+    return jwt.encode(p, get_jwt_secret(), algorithm=JWT_ALG)
 
 
 def create_refresh_token(user: User, ttl: int | None = None) -> str:
@@ -68,13 +97,12 @@ def create_refresh_token(user: User, ttl: int | None = None) -> str:
     exp = datetime.now(UTC) + timedelta(seconds=(ttl or JWT_REFRESH_TTL_SECONDS))
     # IMPORTANT: mark type=refresh so it cannot be used for Bearer auth
     p.update({"type": "refresh", "exp": int(exp.timestamp())})
-    return jwt.encode(p, JWT_SECRET, algorithm=JWT_ALG)
+    return jwt.encode(p, get_jwt_secret(), algorithm=JWT_ALG)
 
 
 def decode_jwt(token: str) -> dict | None:
-    logger = logging.getLogger(__name__)
     try:
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        return jwt.decode(token, get_jwt_secret(), algorithms=[JWT_ALG])
     except jwt.ExpiredSignatureError:
         # Token expired
         logger.debug("JWT decode failed: token expired")

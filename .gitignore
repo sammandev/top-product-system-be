@@ -114,6 +114,9 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
+!.env.*.example
 .env.local
 .env.*.local
 .venv
@@ -125,6 +128,7 @@ ENV/
 env.bak/
 venv.bak/
 pythonenv*
+external-api/
 
 # Spyder project settings
 .spyderproject

@@ -78,6 +78,16 @@ from app.schemas.iplas_schemas import (
 
 logger = logging.getLogger(__name__)
 
+
+def _raise_iplas_response_error(response: httpx.Response, detail: str) -> None:
+    logger.error("iPLAS upstream error: status=%s body=%s", response.status_code, response.text)
+    raise HTTPException(status_code=response.status_code, detail=detail)
+
+
+def _raise_iplas_unavailable(detail: str, exc: httpx.RequestError) -> None:
+    logger.error("%s: %s", detail, exc)
+    raise HTTPException(status_code=503, detail=detail) from None
+
 # ============================================================================
 # JSON Serialization with orjson Fallback
 # ============================================================================
@@ -1326,11 +1336,7 @@ async def _fetch_from_iplas(
             # Fall through to normal error handling if not raise_on_limit
 
     if response.status_code != 200:
-        logger.error(f"iPLAS API error: {response.status_code} - {response.text}")
-        raise HTTPException(
-            status_code=response.status_code,
-            detail=f"iPLAS API error: {response.text}",
-        )
+        _raise_iplas_response_error(response, "iPLAS request failed")
 
     data = response.json()
 
@@ -1338,16 +1344,11 @@ async def _fetch_from_iplas(
     if "error_msg" in data:
         error_msg = data.get("error_msg", "Unknown error")
         logger.error(f"iPLAS API error_msg: {error_msg}")
-        raise HTTPException(
-            status_code=400,
-            detail=f"iPLAS API error: {error_msg}",
-        )
+        detail = "iPLAS request time interval is invalid" if "time interval" in error_msg.lower() else "iPLAS request failed"
+        raise HTTPException(status_code=400, detail=detail)
 
     if data.get("statuscode") != 200:
-        raise HTTPException(
-            status_code=500,
-            detail=f"iPLAS API returned status {data.get('statuscode')}",
-        )
+        raise HTTPException(status_code=500, detail="iPLAS request failed")
 
     # Add station field to each record since iPLAS API doesn't include it
     records = data.get("data", [])
@@ -2384,7 +2385,7 @@ async def get_test_item_names_cached(
         except Exception as e:
             last_error = HTTPException(
                 status_code=502,
-                detail=f"Failed to fetch test items from iPLAS: {str(e)}",
+                detail="Failed to fetch test items from iPLAS",
             )
             logger.error(f"Failed to fetch from iPLAS: {e}")
 
@@ -2428,7 +2429,7 @@ async def get_test_item_names_cached(
             except Exception as e:
                 last_error = HTTPException(
                     status_code=502,
-                    detail=f"Failed to fetch test items from iPLAS: {str(e)}",
+                    detail="Failed to fetch test items from iPLAS",
                 )
                 logger.error(f"Failed to fetch from iPLAS: {e}")
                 continue
@@ -2645,17 +2646,14 @@ async def get_stations(
                 )
 
                 if response.status_code != 200:
-                    raise HTTPException(
-                        status_code=response.status_code,
-                        detail=f"iPLAS v2 API error: {response.text}",
-                    )
+                    _raise_iplas_response_error(response, "iPLAS v2 request failed")
 
                 data = response.json()
                 stations = [IplasStation(**item) for item in data]
                 stations.sort(key=lambda s: (s.order is None, s.order))
 
         except httpx.RequestError as e:
-            raise HTTPException(status_code=503, detail=f"iPLAS v2 API unavailable: {e}") from None
+            _raise_iplas_unavailable("iPLAS v2 service unavailable", e)
 
         # Store in cache
         if redis and stations:
@@ -2724,15 +2722,12 @@ async def get_devices(
                 )
 
                 if response.status_code != 200:
-                    raise HTTPException(
-                        status_code=response.status_code,
-                        detail=f"iPLAS v2 API error: {response.text}",
-                    )
+                    _raise_iplas_response_error(response, "iPLAS v2 request failed")
 
                 devices = response.json()
 
         except httpx.RequestError as e:
-            raise HTTPException(status_code=503, detail=f"iPLAS v2 API unavailable: {e}") from None
+            _raise_iplas_unavailable("iPLAS v2 service unavailable", e)
 
         # Store in cache
         if redis and devices:
@@ -3373,10 +3368,7 @@ async def download_attachment(
             response = await client.post(url, json=payload)
 
             if response.status_code != 200:
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail=f"iPLAS v1 API error: {response.text}",
-                )
+                _raise_iplas_response_error(response, "iPLAS v1 request failed")
 
             data = response.json()
 
@@ -3392,7 +3384,7 @@ async def download_attachment(
             )
 
     except httpx.RequestError as e:
-        raise HTTPException(status_code=503, detail=f"iPLAS v1 API unavailable: {e}") from None
+        _raise_iplas_unavailable("iPLAS v1 service unavailable", e)
 
 
 # ============================================================================
@@ -3448,10 +3440,7 @@ async def download_csv_log(
             response = await client.post(url, json=payload)
 
             if response.status_code != 200:
-                raise HTTPException(
-                    status_code=response.status_code,
-                    detail=f"iPLAS v1 API error: {response.text}",
-                )
+                _raise_iplas_response_error(response, "iPLAS v1 request failed")
 
             # Get filename from Content-Disposition header if available
             filename = None
@@ -3471,7 +3460,7 @@ async def download_csv_log(
             )
 
     except httpx.RequestError as e:
-        raise HTTPException(status_code=503, detail=f"iPLAS v1 API unavailable: {e}") from None
+        _raise_iplas_unavailable("iPLAS v1 service unavailable", e)
 
 
 # ============================================================================
@@ -3807,10 +3796,7 @@ async def get_test_item_by_isn(
                 response = await client.post(url, json=payload)
 
                 if response.status_code != 200:
-                    raise HTTPException(
-                        status_code=response.status_code,
-                        detail=f"iPLAS v1 API error: {response.text}",
-                    )
+                    _raise_iplas_response_error(response, "iPLAS v1 request failed")
 
                 data = response.json()
 
@@ -3855,7 +3841,7 @@ async def get_test_item_by_isn(
                 logger.info(f"Found {len(results)} records for ISN {request.isn}")
 
         except httpx.RequestError as e:
-            raise HTTPException(status_code=503, detail=f"iPLAS v1 API unavailable: {e}") from None
+            _raise_iplas_unavailable("iPLAS v1 service unavailable", e)
 
         # Store in cache
         if redis and results:

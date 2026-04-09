@@ -1,4 +1,5 @@
 import io
+import logging
 
 import pandas as pd
 from fastapi import APIRouter, File, HTTPException, UploadFile
@@ -13,6 +14,7 @@ from app.utils.dvt_to_mc2_converter import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 DVT_FILE = File(..., description="DVT format CSV file to convert")
 
@@ -44,7 +46,8 @@ async def convert_dvt_to_mc2_endpoint(dvt_file: UploadFile = DVT_FILE):
     try:
         raw = await dvt_file.read()
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not read uploaded DVT file: {e}") from e
+        logger.warning("Failed to read uploaded DVT file: %s", e)
+        raise HTTPException(status_code=400, detail="Could not read uploaded DVT file") from e
 
     # If XLSX try to convert to CSV string first
     filename_lower = (dvt_file.filename or "").lower()
@@ -55,7 +58,8 @@ async def convert_dvt_to_mc2_endpoint(dvt_file: UploadFile = DVT_FILE):
             # Export without pandas-generated header row so original rows are preserved
             dvt_text = df.to_csv(index=False, header=False)
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Failed to parse XLSX: {e}") from e
+            logger.warning("Failed to parse uploaded DVT workbook: %s", e)
+            raise HTTPException(status_code=400, detail="Failed to parse uploaded DVT workbook") from e
     else:
         try:
             dvt_text = raw.decode("utf-8", errors="ignore")
@@ -82,4 +86,5 @@ async def convert_dvt_to_mc2_endpoint(dvt_file: UploadFile = DVT_FILE):
         return response
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Conversion failed: {e}") from e
+        logger.exception("DVT to MC2 conversion failed")
+        raise HTTPException(status_code=500, detail="DVT to MC2 conversion failed") from e

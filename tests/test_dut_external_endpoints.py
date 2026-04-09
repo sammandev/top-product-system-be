@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -24,6 +25,8 @@ class _MockDUTClient:
         latest_nonvalue_bin=None,
         station_records=None,
         latest_records=None,
+        latest_test_items_by_range=None,
+        latest_test_items_by_range_error=None,
         sites=None,
         models=None,
         stations=None,
@@ -40,6 +43,8 @@ class _MockDUTClient:
         self._latest_nonvalue_bin = latest_nonvalue_bin or {}
         self._station_records = station_records or {}
         self._latest_records = latest_records or {}
+        self._latest_test_items_by_range = latest_test_items_by_range or []
+        self._latest_test_items_by_range_error = latest_test_items_by_range_error
         self._sites = sites or []
         self._models = models or {}
         self._stations = stations or {}
@@ -57,6 +62,11 @@ class _MockDUTClient:
 
     async def get_test_items_by_station(self, station_id: int):
         return self._test_items.get(station_id, [])
+
+    async def get_latest_test_items_by_range(self, payload):
+        if self._latest_test_items_by_range_error is not None:
+            raise self._latest_test_items_by_range_error
+        return self._latest_test_items_by_range
 
     async def get_station_records(self, station_id: int, dut_id: int):
         return self._station_records.get((station_id, dut_id), {"record": [], "data": []})
@@ -734,6 +744,44 @@ def test_latest_test_items_batch_returns_structured_payload():
     ]
     assert "status" not in station["nonvalue_bin_test_items"][0]
     assert station["error"] is None
+
+
+def test_latest_test_items_by_range_falls_back_to_station_items_on_upstream_404():
+    request = httpx.Request("POST", "http://mock/api/testitems/latest")
+    response = httpx.Response(404, request=request)
+    latest_endpoint_error = httpx.HTTPStatusError("not found", request=request, response=response)
+
+    mock = _MockDUTClient(
+        latest_test_items_by_range_error=latest_endpoint_error,
+        test_items={
+            148: [
+                {"id": 230217, "name": "WiFi_TX1_POW_6115_11AG_OFDM6_B20", "upperlimit": 19.5, "lowerlimit": 16.5, "status": 1},
+                {"id": 202620, "name": "SET_IPLAS_INFO_WIRELESS_2", "upperlimit": 0, "lowerlimit": 0, "status": 1},
+            ]
+        },
+        sites=[{"id": 2, "name": "PTB"}],
+        models={2: [{"id": 44, "name": "HH5K", "site_id": 2}]},
+        stations={44: [{"id": 148, "name": "Wireless_Test_6G", "site_id": 2, "model_id": 44, "status": 1, "order": 10}]},
+    )
+    _override_client(mock)
+
+    client = TestClient(app)
+    resp = client.post(
+        "/api/dut/test-items/latest",
+        json={
+            "site_name": "PTB",
+            "project_name": "HH5K",
+            "station_name": "Wireless_Test_6G",
+            "start_time": "2026-04-08T01:56:42Z",
+            "end_time": "2026-04-08T07:56:42Z",
+        },
+    )
+
+    assert resp.status_code == 200, resp.json()
+    payload = resp.json()
+    assert payload["station_id"] == 148
+    assert payload["source"] == "default"
+    assert [item["name"] for item in payload["data"]] == ["WiFi_TX1_POW_6115_11AG_OFDM6_B20"]
 
 
 def test_latest_station_records_accepts_station_name_and_isn():

@@ -166,6 +166,13 @@ def _expand_device_identifiers(values: Iterable[str]) -> list[str]:
     return identifiers
 
 
+def _safe_http_exception_detail(exc: HTTPException, default: str) -> str:
+    detail = exc.detail if isinstance(exc.detail, str) else default
+    if exc.status_code < 500 and detail:
+        return detail
+    return default
+
+
 async def _parse_device_results_form(
     site_id: Annotated[str, Form(description="Site identifier or name used to narrow device lookup (e.g., 2 or PTB).")],
     model_id: Annotated[str, Form(description="Model identifier or name to narrow device lookup (e.g., 44 or HH5K).")],
@@ -845,7 +852,7 @@ def _load_station_criteria_from_json_payload(payload: Any) -> dict[str, list[Cri
         try:
             compiled = re.compile(test_pattern, re.IGNORECASE)
         except re.error as exc:
-            raise HTTPException(status_code=400, detail=f"criteria[{index}].test_item is not a valid regex: {exc}") from exc
+            raise HTTPException(status_code=400, detail=f"criteria[{index}].test_item is not a valid regex pattern") from exc
 
         parsed_rules.append(
             CriteriaRule(
@@ -929,7 +936,7 @@ async def get_sites(client: DUTAPIClient = dut_client_dependency):
         return sites
     except Exception as e:
         logger.error(f"Error fetching sites: {e}")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail="Failed to retrieve DUT sites") from e
 
 
 @router.get(
@@ -959,7 +966,7 @@ async def get_models_by_site(
         return models
     except Exception as e:
         logger.error(f"Error fetching models for site {site_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail="Failed to retrieve DUT models") from e
 
 
 @router.get(
@@ -998,7 +1005,7 @@ async def get_stations_by_model(
         return stations_sorted
     except Exception as e:
         logger.error(f"Error fetching stations for model {model_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail="Failed to retrieve DUT stations") from e
 
 
 @router.get(
@@ -1040,7 +1047,7 @@ async def get_devices_by_station(
         devices = await client.get_devices_by_station(resolved_station_id)
     except Exception as exc:
         logger.error("Error fetching devices for station %s (%s): %s", station_id, resolved_station_id, exc)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Failed to retrieve DUT devices") from exc
     if not isinstance(devices, list):
         raise HTTPException(status_code=502, detail="Unexpected response format from external API")
     filtered = _filter_entries_by_status(devices, status, default_active_codes={1, 2})
@@ -1110,7 +1117,7 @@ async def get_devices_by_station_period(
             resolved_station_id,
             exc,
         )
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Failed to retrieve DUT devices") from exc
     if not isinstance(devices, list):
         raise HTTPException(status_code=502, detail="Unexpected response format from external API")
     filtered = _filter_entries_by_status(devices, status, default_active_codes={1, 2})
@@ -1160,7 +1167,7 @@ async def get_test_items_by_station(
         items = await client.get_test_items_by_station(resolved_station_id)
     except Exception as exc:
         logger.error("Error fetching test items for station %s (%s): %s", station_id, resolved_station_id, exc)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Failed to retrieve DUT test items") from exc
     if not isinstance(items, list):
         raise HTTPException(status_code=502, detail="Unexpected response format from external API")
     filtered = _filter_entries_by_status(items, status)
@@ -1414,7 +1421,19 @@ async def get_latest_test_items_by_range(
         "station_name": request.station_name,
     }
 
-    items = await client.get_latest_test_items_by_range(payload)
+    try:
+        items = await client.get_latest_test_items_by_range(payload)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 404:
+            raise HTTPException(status_code=502, detail="Failed to fetch latest test items from DUT API") from exc
+
+        logger.warning(
+            "Latest DUT test-items endpoint unavailable for station %s (%s). Falling back to station test item list.",
+            resolved_station_id,
+            request.station_name,
+        )
+        items = await client.get_test_items_by_station(resolved_station_id)
+
     if not isinstance(items, list):
         raise HTTPException(status_code=502, detail="Unexpected latest test items response from DUT API")
 
@@ -1487,7 +1506,7 @@ async def get_station_top_products(
         start_dt = _parse_input_datetime(start_time)
         end_dt = _parse_input_datetime(end_time)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail="Invalid datetime value") from exc
     _validate_time_window(start_dt, end_dt)
 
     # Validate that the time window is not longer than 7 days
@@ -1877,7 +1896,7 @@ async def get_top_product(
             parsed = json.loads(station_filters_json)
             station_filters_map = {k: StationFilterConfigSchema(**v) for k, v in parsed.items()}
         except (json.JSONDecodeError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid station_filters JSON: {exc}") from exc
+            raise HTTPException(status_code=400, detail="Invalid station_filters JSON payload") from exc
 
     criteria_rules, criteria_label = await _load_criteria_rules(criteria_file)
     return await _generate_top_product_batch(
@@ -1960,7 +1979,7 @@ async def get_top_product_with_pa_trends(
             parsed = json.loads(station_filters_json)
             station_filters_map = {k: StationFilterConfigSchema(**v) for k, v in parsed.items()}
         except (json.JSONDecodeError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid station_filters JSON: {exc}") from exc
+            raise HTTPException(status_code=400, detail="Invalid station_filters JSON payload") from exc
 
     criteria_rules, criteria_label = await _load_criteria_rules(criteria_file)
     return await _generate_top_product_batch(
@@ -2033,7 +2052,7 @@ async def get_top_product_hierarchical(
             parsed = json.loads(station_filters_json)
             station_filters_map = {k: StationFilterConfigSchema(**v) for k, v in parsed.items()}
         except (json.JSONDecodeError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid station_filters JSON: {exc}") from exc
+            raise HTTPException(status_code=400, detail="Invalid station_filters JSON payload") from exc
 
     criteria_rules, criteria_label = await _load_criteria_rules(criteria_file)
     return await _generate_top_product_batch(
@@ -2090,7 +2109,7 @@ async def get_dut_records(
         return filtered_records
     except Exception as e:
         logger.error(f"Error fetching DUT records for {dut_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail="Failed to retrieve DUT records") from e
 
 
 @router.get(
@@ -2129,7 +2148,7 @@ async def get_station_records(
         payload = await client.get_station_records(resolved_station_id, resolved_dut_id)
     except Exception as exc:
         logger.error("Error fetching station records for station %s and dut %s: %s", station_id, dut_id, exc)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Failed to retrieve station DUT records") from exc
 
     try:
         return StationRecordResponseSchema.model_validate(payload)
@@ -2179,7 +2198,7 @@ async def get_latest_station_record(
             dut_id,
             exc,
         )
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Failed to retrieve station DUT records") from exc
 
     try:
         validated = StationRecordResponseSchema.model_validate(payload)
@@ -2252,7 +2271,7 @@ async def get_station_nonvalue_records(
             dut_id,
             exc,
         )
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Failed to retrieve non-value DUT records") from exc
 
     try:
         return StationRecordResponseSchema.model_validate(payload)
@@ -2302,7 +2321,7 @@ async def get_latest_station_nonvalue_record(
             dut_id,
             exc,
         )
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Failed to retrieve non-value DUT records") from exc
 
     try:
         validated = StationRecordResponseSchema.model_validate(payload)
@@ -2390,7 +2409,7 @@ async def get_latest_pa_srom_enhanced_record(
             dut_id,
             exc,
         )
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Failed to retrieve PA scoring source data") from exc
 
     try:
         validated = StationRecordResponseSchema.model_validate(payload)
@@ -2479,7 +2498,7 @@ async def get_scored_pa_adjusted_power(
             dut_id,
             exc,
         )
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Failed to retrieve PA scoring source data") from exc
 
     try:
         validated = StationRecordResponseSchema.model_validate(payload)
@@ -2590,7 +2609,7 @@ async def get_scored_pa_adjusted_power(
 
     except Exception as exc:
         logger.error("Error fetching PA trend data: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Failed to fetch PA trend data: {str(exc)}") from exc
+        raise HTTPException(status_code=500, detail="Failed to fetch PA trend data") from exc
 
     # Step 4: Parse trend data and calculate adjusted power from trend
     trend_adjusted_power = {}  # {adjusted_pow_test_item: {"mean": float, "mid": float}}
@@ -2742,7 +2761,7 @@ async def get_station_nonvalue_bin_records(
             dut_id,
             exc,
         )
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Failed to retrieve non-value BIN DUT records") from exc
 
     try:
         return StationRecordResponseSchema.model_validate(payload)
@@ -2792,7 +2811,7 @@ async def get_latest_station_nonvalue_bin_record(
             dut_id,
             exc,
         )
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Failed to retrieve non-value BIN DUT records") from exc
 
     try:
         validated = StationRecordResponseSchema.model_validate(payload)
@@ -3172,7 +3191,7 @@ async def get_complete_dut_info(
         return info_data
     except Exception as e:
         logger.error(f"Error fetching complete DUT info for {dut_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail="Failed to retrieve complete DUT info") from e
 
 
 @router.get(
@@ -3195,7 +3214,7 @@ async def get_svn_info(client: DUTAPIClient = dut_client_dependency):
         return svn_info
     except Exception as e:
         logger.error(f"Error fetching SVN info: {e}")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail="Failed to retrieve SVN info") from e
 
 
 def _status_from_result(result: int | None) -> str:
@@ -4235,12 +4254,12 @@ async def _generate_top_product_batch(
         except HTTPException as exc:
             if len(normalized_isns) == 1:
                 raise
-            detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+            detail = _safe_http_exception_detail(exc, "Failed to process top product request")
             return None, TopProductErrorSchema(dut_isn=current_isn, detail=detail)
         except Exception as exc:
             if len(normalized_isns) == 1:
-                raise HTTPException(status_code=500, detail=str(exc)) from exc
-            return None, TopProductErrorSchema(dut_isn=current_isn, detail=str(exc))
+                raise HTTPException(status_code=500, detail="Failed to process top product request") from exc
+            return None, TopProductErrorSchema(dut_isn=current_isn, detail="Failed to process top product request")
 
     # Execute all ISN processing tasks concurrently
     tasks = [process_isn(isn) for isn in normalized_isns]
@@ -4252,7 +4271,7 @@ async def _generate_top_product_batch(
             # If a task raised an exception (shouldn't happen with our error handling)
             if len(normalized_isns) == 1:
                 raise item
-            errors.append(TopProductErrorSchema(dut_isn="unknown", detail=str(item)))
+            errors.append(TopProductErrorSchema(dut_isn="unknown", detail="Failed to process top product request"))
         else:
             result, error = item
             if result:
@@ -4447,7 +4466,7 @@ def _load_station_criteria_from_path(path: FilePath) -> dict[str, list[CriteriaR
     try:
         data = resolved.read_bytes()
     except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to read criteria file: {exc}") from exc
+        raise HTTPException(status_code=500, detail="Failed to read criteria file") from exc
 
     station_rules = _load_station_criteria_from_bytes(data)
     _CRITERIA_CACHE[resolved] = station_rules
@@ -6863,7 +6882,7 @@ async def get_test_results_by_device(
         start_dt = _parse_input_datetime(params.start_time)
         end_dt = _parse_input_datetime(params.end_time)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid datetime format: {exc}") from exc
+        raise HTTPException(status_code=400, detail="Invalid datetime value") from exc
 
     if end_dt <= start_dt:
         raise HTTPException(status_code=400, detail="end_time must be greater than start_time")
@@ -6887,7 +6906,7 @@ async def get_test_results_by_device(
                 model=params.model,
             )
         except ValidationError as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid query parameters: {exc}") from exc
+            raise HTTPException(status_code=400, detail="Invalid device results query parameters") from exc
 
         lookup_key = _normalize_str(current_device)
         resolved_device_id = resolved_cache.get(lookup_key)
@@ -6914,7 +6933,7 @@ async def get_test_results_by_device(
             results = await client.get_test_results_by_device(payload)
         except Exception as exc:
             logger.error("Error fetching device test results for payload %s: %s", payload, exc)
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+            raise HTTPException(status_code=500, detail="Failed to retrieve device test results") from exc
         if not isinstance(results, list):
             raise HTTPException(status_code=502, detail="Unexpected response format from external API")
         aggregated_results.extend(results)
@@ -6961,7 +6980,7 @@ async def get_model_summary(
         start_dt = _parse_input_datetime(start_time)
         end_dt = _parse_input_datetime(end_time)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid datetime format: {exc}") from exc
+        raise HTTPException(status_code=400, detail="Invalid datetime value") from exc
 
     if end_dt <= start_dt:
         raise HTTPException(status_code=400, detail="end_time must be greater than start_time")
@@ -6983,7 +7002,7 @@ async def get_model_summary(
             model=normalized_model,
         )
     except ValidationError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid query parameters: {exc}") from exc
+        raise HTTPException(status_code=400, detail="Invalid model summary query parameters") from exc
 
     payload_model = _normalize_optional_string(summary_query.model)
     payload = {
@@ -6997,7 +7016,7 @@ async def get_model_summary(
         summary = await client.get_model_summary(payload)
     except Exception as exc:
         logger.error("Error fetching model summary for payload %s: %s", payload, exc)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="Failed to retrieve model summary") from exc
     if not isinstance(summary, dict):
         raise HTTPException(status_code=502, detail="Unexpected response format from external API")
     try:
@@ -7800,10 +7819,10 @@ async def calculate_pa_adjusted_power(request: AdjustedPowerRequestSchema, clien
         trend_data = await client.get_pa_test_items_trend(payload)
     except httpx.HTTPStatusError as exc:
         logger.error("Failed to fetch PA trend data: status=%s body=%s", exc.response.status_code, exc.response.text)
-        raise HTTPException(status_code=exc.response.status_code, detail=f"External API error: {exc.response.text}") from exc
+        raise HTTPException(status_code=exc.response.status_code, detail="External API request failed") from exc
     except Exception as exc:
         logger.error("Unexpected error fetching PA trend data: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Failed to fetch trend data: {exc!s}") from exc
+        raise HTTPException(status_code=500, detail="Failed to fetch trend data") from exc
 
     if not trend_data:
         raise HTTPException(status_code=404, detail="No trend data returned from external API")
@@ -9621,7 +9640,7 @@ async def get_cache_statistics():
         return stats
     except Exception as e:
         logger.error(f"Error fetching cache stats: {e}")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail="Failed to retrieve cache statistics") from e
 
 
 @router.delete(
@@ -9661,7 +9680,7 @@ async def invalidate_cache_endpoint(
         }
     except Exception as e:
         logger.error(f"Error invalidating cache: {e}")
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        raise HTTPException(status_code=500, detail="Failed to invalidate cache") from e
 
 
 # ==================== Custom Formula Evaluation ====================
@@ -9902,4 +9921,4 @@ async def download_test_log(request: TestLogDownloadRequest, current_user: Annot
     except Exception as e:
         logger.error(f"Unexpected error in download_test_log: {e}")
         logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}") from e
+        raise HTTPException(status_code=500, detail="Failed to download test log") from e

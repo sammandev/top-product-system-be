@@ -1,4 +1,5 @@
 import io
+import logging
 
 import pandas as pd
 from fastapi import APIRouter, File, HTTPException, UploadFile
@@ -9,6 +10,7 @@ from app.utils.multi_dut_analyzer import analyze_mc2_with_spec
 from app.utils.spec_loader import load_spec_payload
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # Module-level default for spec_file to avoid calling File(...) directly in the function arguments
 SPEC_FILE_REQUIRED = File(
@@ -45,7 +47,8 @@ async def analyze_multi_dut(
     try:
         raw = await mc2_file.read()
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not read uploaded file: {e}") from e
+        logger.warning("Failed to read uploaded MC2 file: %s", e)
+        raise HTTPException(status_code=400, detail="Could not read uploaded MC2 file") from e
 
     filename_lower = (mc2_file.filename or "").lower()
     # Convert XLSX to CSV if needed
@@ -54,7 +57,8 @@ async def analyze_multi_dut(
             df = pd.read_excel(io.BytesIO(raw), sheet_name=0, dtype=str, header=0)
             mc2_text = df.to_csv(index=False)
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Failed to parse XLSX: {e}") from e
+            logger.warning("Failed to parse uploaded MC2 workbook: %s", e)
+            raise HTTPException(status_code=400, detail="Failed to parse uploaded MC2 workbook") from e
     else:
         try:
             mc2_text = raw.decode("utf-8", errors="ignore")
@@ -65,7 +69,8 @@ async def analyze_multi_dut(
     try:
         spec_bytes = await spec_file.read()
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to read spec file: {e}") from e
+        logger.warning("Failed to read uploaded spec file: %s", e)
+        raise HTTPException(status_code=400, detail="Failed to read uploaded spec file") from e
     spec = None
     criteria_rules = []
     try:
@@ -80,7 +85,8 @@ async def analyze_multi_dut(
                 if bucket:
                     criteria_rules.extend(bucket)
         except Exception as ini_exc:
-            raise HTTPException(status_code=400, detail=f"Unable to parse spec file: {ini_exc}") from ini_exc
+            logger.warning("Failed to parse multi-DUT spec file: %s", ini_exc)
+            raise HTTPException(status_code=400, detail="Unable to parse uploaded spec file") from ini_exc
     if spec is None and not criteria_rules:
         raise HTTPException(status_code=400, detail="Spec file did not provide usable configuration")
 
@@ -102,4 +108,5 @@ async def analyze_multi_dut(
         )
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {e}") from e
+        logger.exception("Multi-DUT analysis failed")
+        raise HTTPException(status_code=500, detail="Multi-DUT analysis failed") from e

@@ -1,6 +1,8 @@
 import csv
 import json
+import logging
 import os
+import re
 import threading
 import time
 from io import BytesIO
@@ -8,6 +10,11 @@ from io import BytesIO
 import chardet
 import pandas as pd
 from fastapi import HTTPException
+
+logger = logging.getLogger(__name__)
+
+_ALLOWED_UPLOAD_EXTENSIONS = frozenset({"csv", "xls", "xlsx"})
+_DEFAULT_UPLOAD_BASENAME = "upload"
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
@@ -35,6 +42,45 @@ _TEMP_UPLOADS: dict[str, tuple[float, bytes]] = {}
 # Track whether the background cleanup worker is already running to avoid spawning duplicates.
 _cleanup_worker_started = False
 _cleanup_worker_lock = threading.Lock()
+
+
+def sanitize_upload_filename(filename: str | None) -> str:
+    raw_name = (filename or "").replace("\\", "/").split("/")[-1].strip()
+    if not raw_name:
+        raw_name = _DEFAULT_UPLOAD_BASENAME
+
+    root, ext = os.path.splitext(raw_name)
+    safe_root = re.sub(r"[^A-Za-z0-9._-]+", "_", root).strip("._-") or _DEFAULT_UPLOAD_BASENAME
+    safe_ext = re.sub(r"[^A-Za-z0-9.]", "", ext.lower())
+    return f"{safe_root}{safe_ext}"
+
+
+def normalize_upload_identifier(file_id: str) -> str:
+    candidate = (file_id or "").strip()
+    if not candidate or candidate != os.path.basename(candidate) or "/" in candidate or "\\" in candidate or "\x00" in candidate:
+        raise HTTPException(status_code=400, detail="Invalid file identifier")
+    return candidate
+
+
+def _get_upload_max_size_mb() -> int:
+    try:
+        return max(int(os.environ.get("UPLOAD_MAX_SIZE_MB", "50")), 0)
+    except Exception:
+        return 50
+
+
+def validate_upload_file(filename: str | None, size_bytes: int) -> str:
+    safe_filename = sanitize_upload_filename(filename)
+    extension = os.path.splitext(safe_filename)[1].lstrip(".").lower()
+    if extension not in _ALLOWED_UPLOAD_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Unsupported file extension")
+
+    max_size_mb = _get_upload_max_size_mb()
+    max_size_bytes = max_size_mb * 1024 * 1024
+    if size_bytes > max_size_bytes:
+        raise HTTPException(status_code=413, detail=f"Uploaded file exceeds the {max_size_mb} MB limit")
+
+    return safe_filename
 
 
 def save_temp_upload(file_id: str, b: bytes):
@@ -426,15 +472,22 @@ def _prepare_df_for_selection(file_id: str):
     If `UPLOAD_PERSIST` is True the file is read from disk under `uploads/`.
     If persistence is disabled, the bytes are read from an in-memory store.
     """
+    file_id = normalize_upload_identifier(file_id)
     path = os.path.join(UPLOAD_DIR, file_id)
     if _upload_persist_enabled():
         if not os.path.exists(path):
-            raise HTTPException(status_code=404, detail=f"file not found: {file_id}")
-        return read_full_dataframe_from_path(path, file_id)
+            raise HTTPException(status_code=404, detail="Uploaded file not found")
+        try:
+            return read_full_dataframe_from_path(path, file_id)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning("Failed to read persisted upload %s: %s", file_id, exc)
+            raise HTTPException(status_code=400, detail="Failed to read uploaded file") from exc
     # persistence disabled -> look up in-memory
     item = _TEMP_UPLOADS.get(file_id)
     if not item:
-        raise HTTPException(status_code=404, detail=f"file not found (in-memory): {file_id}")
+        raise HTTPException(status_code=404, detail="Uploaded file not found")
     _, b = item
     # Use the same parsing routine but from bytes; implement a small helper here
     ext = file_id.lower().split(".")[-1]
@@ -443,7 +496,8 @@ def _prepare_df_for_selection(file_id: str):
         try:
             return pd.read_excel(BytesIO(b), engine="openpyxl", header=header)
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Failed to read excel: {e}") from e
+            logger.warning("Failed to read Excel upload %s: %s", file_id, e)
+            raise HTTPException(status_code=400, detail="Failed to read uploaded Excel file") from e
     elif ext == "csv":
         try:
             enc = _detect_encoding(b)
@@ -460,7 +514,8 @@ def _prepare_df_for_selection(file_id: str):
                 encoding=enc,
             )
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Failed to read CSV from bytes: {e}") from e
+            logger.warning("Failed to read CSV upload %s: %s", file_id, e)
+            raise HTTPException(status_code=400, detail="Failed to read uploaded CSV file") from e
     else:
         raise HTTPException(status_code=400, detail="Unsupported file extension")
 

@@ -1,5 +1,6 @@
 import io
 import json
+import logging
 import os
 import zipfile
 from uuid import uuid4
@@ -8,15 +9,23 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.utils.helpers import (
+    UPLOAD_DIR,
     dataframe_to_csv_stream,
     read_preview_from_bytes,
     save_temp_upload,
+    validate_upload_file,
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # Module-level singleton to avoid calling File() in function default arguments
 UPLOAD_FILE = File(...)
+
+
+def _raise_selection_error(file_id: str, exc: Exception) -> None:
+    logger.warning("Selection failed for file %s: %s", file_id, exc)
+    raise HTTPException(status_code=400, detail="Invalid row or column selection") from exc
 
 
 @router.post(
@@ -56,9 +65,10 @@ async def upload_preview(
     ),
 ):
     contents = await file.read()
+    safe_filename = validate_upload_file(file.filename, len(contents))
     file_id = uuid4().hex
-    safe_name = f"{file_id}_{file.filename}"
-    path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads", safe_name)
+    safe_name = f"{file_id}_{safe_filename}"
+    path = os.path.join(UPLOAD_DIR, safe_name)
     # determine persistence: dynamic from environment, override by request
     env_persist = os.environ.get("UPLOAD_PERSIST", "1").lower() not in (
         "0",
@@ -66,23 +76,27 @@ async def upload_preview(
         "no",
     )
     use_persist = env_persist if persist is None else bool(persist)
-    if use_persist:
-        # persist upload to disk
-        with open(path, "wb") as f:
-            f.write(contents)
-    else:
-        # store in-memory to avoid file system accumulation during tests
-        try:
-            save_temp_upload(safe_name, contents)
-        except Exception:
-            # fallback to writing to disk if in-memory store fails
+    try:
+        if use_persist:
+            # persist upload to disk
             with open(path, "wb") as f:
                 f.write(contents)
+        else:
+            # store in-memory to avoid file system accumulation during tests
+            try:
+                save_temp_upload(safe_name, contents)
+            except Exception:
+                # fallback to writing to disk if in-memory store fails
+                with open(path, "wb") as f:
+                    f.write(contents)
+    except OSError as exc:
+        logger.exception("Failed to store uploaded file %s", safe_filename)
+        raise HTTPException(status_code=500, detail="Failed to store uploaded file") from exc
 
     try:
         cols, preview = read_preview_from_bytes(
             contents,
-            file.filename,
+            safe_filename,
             nrows=20,
             has_header=has_header,
             delimiter=delimiter,
@@ -90,12 +104,13 @@ async def upload_preview(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to parse preview: {e}") from e
+        logger.warning("Failed to parse uploaded preview for %s: %s", safe_filename, e)
+        raise HTTPException(status_code=400, detail="Failed to parse uploaded file preview") from e
 
     return JSONResponse(
         {
             "file_id": safe_name,
-            "filename": file.filename,
+            "filename": safe_filename,
             "columns": cols,
             "preview": preview,
         }
@@ -236,8 +251,10 @@ async def parse(
                 df2 = df.iloc[keep_positions][cols]
         else:
             raise HTTPException(status_code=400, detail="unknown mode")
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Selection error ({type(e).__name__}): {e}") from e
+        _raise_selection_error(file_id, e)
 
     df2 = df2.fillna("")
     cols_out = [str(c) for c in df2.columns]
@@ -322,8 +339,10 @@ async def parse_download(
                 df2 = df.iloc[keep_positions][cols]
         else:
             raise HTTPException(status_code=400, detail="unknown mode")
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Selection error ({type(e).__name__}): {e}") from e
+        _raise_selection_error(file_id, e)
 
     df2 = df2.fillna("")
     gen = dataframe_to_csv_stream(df2)
@@ -410,8 +429,10 @@ async def parse_download_format(
                 df2 = df.iloc[keep_positions][cols]
         else:
             raise HTTPException(status_code=400, detail="unknown mode")
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Selection error ({type(e).__name__}): {e}") from e
+        _raise_selection_error(file_id, e)
 
     # If has_header is False and we have rows selected, use first row as header
     if not has_header and len(df2) > 0:

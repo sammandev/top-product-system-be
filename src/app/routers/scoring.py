@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/scoring", tags=["Scoring"])
 
 
+def _raise_scoring_error(detail: str, exc: Exception, status_code: int) -> None:
+    logger.exception("%s", detail)
+    raise HTTPException(status_code=status_code, detail=detail) from exc
+
+
 @router.post(
     "/calculate",
     response_model=CalculateScoresResponse,
@@ -57,8 +62,7 @@ async def calculate_test_scores(request: CalculateScoresRequest, current_user: A
         return result
 
     except Exception as e:
-        logger.exception(f"Error calculating scores: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error calculating scores: {str(e)}")
+        _raise_scoring_error("Failed to calculate scores", e, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @router.post(
@@ -88,8 +92,7 @@ async def detect_scoring_types(record: dict, current_user: Annotated[User, Depen
         return results
 
     except Exception as e:
-        logger.exception(f"Error detecting scoring types: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error detecting scoring types: {str(e)}")
+        _raise_scoring_error("Failed to detect scoring types", e, status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @router.get("/types", response_model=list[dict], summary="Get available scoring types", description="Returns list of available scoring types with descriptions, LaTeX formulas, and default parameters.")
@@ -265,4 +268,4 @@ async def preview_score(value: float, scoring_type: ScoringType, ucl: float | No
         return {"value": value, "scoring_type": scoring_type.value, "ucl": ucl, "lcl": lcl, "score": score, "deviation": deviation, "score_percent": f"{score * 100:.1f}%"}
 
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Error calculating preview: {str(e)}")
+        _raise_scoring_error("Failed to calculate score preview", e, status.HTTP_400_BAD_REQUEST)

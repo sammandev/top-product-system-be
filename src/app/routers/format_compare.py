@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import UTC, timedelta, timezone
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -17,11 +18,17 @@ from app.utils.format_compare import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 # Module-level File() dependency objects to avoid calling File() in argument defaults
 _UPLOAD_REQUIRED = File(...)
 _UPLOAD_OPTIONAL_NONE = File(None)
+
+
+def _raise_format_compare_error(detail: str, exc: Exception, status_code: int = 400) -> None:
+    logger.warning("Format comparison failed: %s", exc)
+    raise HTTPException(status_code=status_code, detail=detail) from exc
 
 
 @router.post(
@@ -77,7 +84,7 @@ async def compare_formats(
         master_text = raw_master.decode("utf-8", errors="ignore")
         dvt_text = raw_dvt.decode("utf-8", errors="ignore")
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not read uploaded file: {e}") from e
+        _raise_format_compare_error("Could not read uploaded comparison files", e)
 
     # fallback: if the dvt upload read zero bytes, try to inspect the full request form
     # (some test clients may wire multipart data oddly). Use request to find any uploaded
@@ -118,37 +125,7 @@ async def compare_formats(
         try:
             dvt_map = parse_wifi_dvt_text(dvt_text)
         except Exception as pe:
-            # Provide a small diagnostic preview of the uploaded DVT content so tests
-            # can determine why the parser failed to detect the title row. Limit to
-            # the first 12 CSV rows to keep the message compact.
-            try:
-                import csv
-                from io import StringIO as _StringIO
-
-                rdr = csv.reader(_StringIO(dvt_text))
-                rows = list(rdr)[:12]
-                preview = "\n".join(",".join(r) for r in rows)
-            except Exception:
-                preview = "<unable to generate preview>"
-            # if preview is empty, also include a short repr and length of the decoded text
-            extra = ""
-            try:
-                if not preview:
-                    rd_len = len(raw_dvt) if "raw_dvt" in locals() else "<no raw>"
-                    md_len = len(raw_master) if "raw_master" in locals() else "<no raw>"
-                    md_name = getattr(master_file, "filename", "<no name>")
-                    dv_name = getattr(dvt_file, "filename", "<no name>")
-                    extra = (
-                        f"\nDVT text length={len(dvt_text)}; snippet={repr(dvt_text[:400])}; "
-                        f"raw_bytes_len={rd_len}; raw_bytes_snippet={repr(raw_dvt[:200] if 'raw_dvt' in locals() else b'')}; "
-                        f"master_raw_len={md_len}; master_filename={md_name}; dvt_filename={dv_name}"
-                    )
-            except Exception:
-                extra = ""
-            raise HTTPException(
-                status_code=400,
-                detail=(f"Compare error: DVT parse failed: {pe}. DVT preview (first 12 rows):\n{preview}{extra}"),
-            ) from pe
+            _raise_format_compare_error("Failed to parse uploaded DVT file", pe)
         # try to load spec_config.json from repo root unless user uploaded one
         spec = None
         try:
@@ -277,5 +254,7 @@ async def compare_formats(
             )
         # for programmatic API return augmented rows so clients have USL/LSL and diffs
         return JSONResponse({"rows": human_rows, "summary": summary})
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Compare error: {e}") from e
+        _raise_format_compare_error("Format comparison could not be completed", e)

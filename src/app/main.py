@@ -34,6 +34,7 @@ except (ImportError, AttributeError):  # pragma: no cover - optional dependency 
         swagger_ui_5_path = None
 
 from app.dependencies.external_api_client import get_settings
+from app.utils.auth import validate_auth_configuration
 from app.utils.helpers import _start_cleanup_worker
 
 # Suppress Pydantic v1 compatibility warning for Python 3.14+
@@ -98,6 +99,7 @@ def _configure_logging() -> None:
 
 
 _configure_logging()
+validate_auth_configuration()
 
 
 @asynccontextmanager

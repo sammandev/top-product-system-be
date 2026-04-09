@@ -107,6 +107,11 @@ def _build_scoring_config_map(scoring_configs_json: str | None) -> dict[str, Sco
     return config_map
 
 
+def _raise_test_log_processing_error(detail: str, exc: Exception, status_code: int) -> None:
+    logger.warning("Test log processing failed: %s", exc)
+    raise HTTPException(status_code=status_code, detail=detail) from exc
+
+
 def _score_test_item_universal(
     test_item_name: str,
     value_str: str | None,
@@ -336,7 +341,7 @@ async def parse_test_log(
             criteria_content = await criteria_file.read()
             criteria_rules = parse_test_log_criteria_file(criteria_content, criteria_file.filename)
         except Exception as e:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to parse criteria file: {str(e)}") from e
+            _raise_test_log_processing_error("Failed to parse criteria file", e, status.HTTP_400_BAD_REQUEST)
 
     # Save uploaded file temporarily
     temp_file_path = UPLOAD_DIR / file.filename
@@ -409,8 +414,11 @@ async def parse_test_log(
             response = TestLogParseResponseEnhanced(**result)
             return response
 
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to parse file: {str(e)}") from e
+        logger.exception("Test log parsing failed")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to parse uploaded test log") from e
 
     finally:
         # Clean up temporary file
@@ -488,7 +496,7 @@ async def compare_test_logs(
             criteria_content = await criteria_file.read()
             criteria_rules = parse_test_log_criteria_file(criteria_content, criteria_file.filename)
         except Exception as e:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to parse criteria file: {str(e)}") from e
+            _raise_test_log_processing_error("Failed to parse criteria file", e, status.HTTP_400_BAD_REQUEST)
 
     temp_file_paths = []
     txt_file_paths = []
@@ -548,7 +556,8 @@ async def compare_test_logs(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to compare files: {str(e)}") from e
+        logger.exception("Test log comparison failed")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to compare uploaded test logs") from e
 
     finally:
         # Clean up temporary files

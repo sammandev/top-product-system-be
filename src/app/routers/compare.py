@@ -1,5 +1,8 @@
 import json
+import logging
+import os
 
+import pandas as pd
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -11,6 +14,12 @@ from app.utils.helpers import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+def _raise_compare_error(exc: Exception) -> None:
+    logger.warning("Comparison request failed: %s", exc)
+    raise HTTPException(status_code=400, detail="Comparison request could not be processed") from exc
 
 
 @router.post(
@@ -36,7 +45,7 @@ async def compare(
     b_join_on: str | None = Form(None, description='JSON array or string of column(s) to join on in file B (e.g., ["ISN"])'),
     request: Request = None,
 ):
-    if request is not None and not __import__("os").environ.get("ASTPARSER_API_KEY"):
+    if request is not None and not os.environ.get("ASTPARSER_API_KEY"):
         # keep existing behavior (API key optional)
         pass
 
@@ -85,7 +94,7 @@ async def compare(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Compare error ({type(e).__name__}): {e}") from e
+        _raise_compare_error(e)
 
 
 @router.post(
@@ -154,9 +163,9 @@ async def compare_download(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Compare error ({type(e).__name__}): {e}") from e
+        _raise_compare_error(e)
 
-    df_out = __import__("pandas").DataFrame(payload.get("rows", []))
+    df_out = pd.DataFrame(payload.get("rows", []))
     gen = dataframe_to_csv_stream(df_out)
     headers = {"Content-Disposition": 'attachment; filename="compare.csv"'}
     return StreamingResponse(gen(), media_type="text/csv", headers=headers)

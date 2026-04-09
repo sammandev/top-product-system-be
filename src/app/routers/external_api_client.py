@@ -1386,7 +1386,24 @@ async def get_latest_test_items_by_range(
         site_hint=request.site_name,
     )
 
-    metadata = await _get_station_metadata(client, resolved_station_id)
+    metadata = {
+        "station_id": resolved_station_id,
+        "station_name": request.station_name,
+        "model_id": None,
+        "model_name": request.project_name,
+        "site_id": None,
+        "site_name": request.site_name,
+    }
+    try:
+        resolved_metadata = await _get_station_metadata(client, resolved_station_id)
+        metadata.update(resolved_metadata)
+    except HTTPException as exc:
+        logger.warning(
+            "Falling back to request metadata for latest test items station %s: %s",
+            resolved_station_id,
+            exc.detail,
+        )
+
     payload = {
         "start_time": request.start_time.astimezone(UTC).isoformat().replace("+00:00", "Z"),
         "end_time": request.end_time.astimezone(UTC).isoformat().replace("+00:00", "Z"),

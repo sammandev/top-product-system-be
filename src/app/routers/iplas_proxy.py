@@ -457,6 +457,24 @@ def _bucket_cache_datetime_from_str(value: str | bytes | None) -> datetime | Non
     return _ensure_utc_datetime(datetime.fromisoformat(stripped))
 
 
+def _parse_iplas_record_datetime(raw_value: str) -> datetime | None:
+    """Parse iPLAS record timestamps into timezone-aware UTC datetimes."""
+    candidate = raw_value.strip()
+    if not candidate:
+        return None
+
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"):
+        try:
+            return datetime.strptime(candidate, fmt).replace(tzinfo=UTC)
+        except ValueError:
+            continue
+
+    try:
+        return _ensure_utc_datetime(datetime.fromisoformat(candidate.replace("Z", "+00:00")))
+    except ValueError:
+        return None
+
+
 def _floor_to_station_bucket(value: datetime) -> datetime:
     """Floor a datetime to the start of its station cache bucket."""
     normalized = _ensure_utc_datetime(value)
@@ -469,6 +487,11 @@ def _floor_to_station_bucket(value: datetime) -> datetime:
 def _get_station_bucket_end(bucket_start: datetime) -> datetime:
     """Return the exclusive end datetime for a station cache bucket."""
     return _ensure_utc_datetime(bucket_start) + timedelta(seconds=IPLAS_STATION_BUCKET_SIZE_SECONDS)
+
+
+def _is_full_station_bucket_query(bucket_window: StationBucketWindow) -> bool:
+    """Return whether the query slice covered the entire bucket."""
+    return _ensure_utc_datetime(bucket_window.query_start) == _ensure_utc_datetime(bucket_window.bucket_start) and _ensure_utc_datetime(bucket_window.query_end) == _ensure_utc_datetime(bucket_window.bucket_end)
 
 
 def _iter_station_bucket_windows(begin_time: datetime, end_time: datetime) -> list[StationBucketWindow]:
@@ -589,9 +612,8 @@ def _extract_station_bucket_latest_record_time(records: list[dict[str, Any]]) ->
             raw_value = record.get(field_name)
             if not raw_value or not isinstance(raw_value, str):
                 continue
-            try:
-                candidate = _ensure_utc_datetime(datetime.fromisoformat(raw_value.replace("Z", "+00:00")))
-            except ValueError:
+            candidate = _parse_iplas_record_datetime(raw_value)
+            if candidate is None:
                 continue
             if latest is None or candidate > latest:
                 latest = candidate
@@ -604,10 +626,31 @@ def _get_station_record_time(record: dict[str, Any]) -> datetime | None:
     raw_value = record.get("Test Start Time") or record.get("Test end Time")
     if not raw_value or not isinstance(raw_value, str):
         return None
-    try:
-        return _ensure_utc_datetime(datetime.fromisoformat(raw_value.replace("Z", "+00:00")))
-    except ValueError:
+    return _parse_iplas_record_datetime(raw_value)
+
+
+def _get_station_bucket_validated_until(
+    *,
+    bucket_window: StationBucketWindow,
+    bucket_records: list[dict[str, Any]],
+    latest_record_time: datetime | None,
+    observable_now: datetime,
+    possibly_truncated: bool,
+) -> datetime | None:
+    """Return the safe validated coverage timestamp for a fetched bucket."""
+    normalized_latest = _ensure_utc_datetime(latest_record_time) if latest_record_time is not None else None
+
+    if possibly_truncated:
+        return min(normalized_latest, bucket_window.query_end) if normalized_latest is not None else None
+
+    is_historical_bucket = bucket_window.bucket_end <= _get_station_bucket_finalization_cutoff(observable_now)
+    if is_historical_bucket and _is_full_station_bucket_query(bucket_window):
+        return bucket_window.bucket_end
+
+    if normalized_latest is None:
         return None
+
+    return min(normalized_latest, bucket_window.query_end)
 
 
 def _filter_records_to_requested_range(
@@ -967,11 +1010,13 @@ async def _fetch_station_bucket_with_cache(
         )
 
         latest_record_time = _extract_station_bucket_latest_record_time(bucket_records)
-        validated_until = None
-        if latest_record_time is not None:
-            validated_until = min(latest_record_time, bucket_window.bucket_end)
-        if bucket_window.bucket_end <= _get_station_bucket_finalization_cutoff(observable_now) and not bucket_records:
-            validated_until = bucket_window.bucket_end
+        validated_until = _get_station_bucket_validated_until(
+            bucket_window=bucket_window,
+            bucket_records=bucket_records,
+            latest_record_time=latest_record_time,
+            observable_now=observable_now,
+            possibly_truncated=bucket_truncated,
+        )
 
         bucket_state = _classify_station_bucket_state(
             bucket_end=bucket_window.bucket_end,

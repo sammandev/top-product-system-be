@@ -162,6 +162,22 @@ class BatchDevicesResponseSchema(BaseModel):
     stations: list[StationDeviceListSchema] = Field(default_factory=list)
 
 
+class LatestTestItemsByRangeRequestSchema(BaseModel):
+    """Request to fetch latest test items for a station by time range and site/project/station names."""
+
+    site_name: str = Field(..., description="Site name (e.g. PTB)")
+    project_name: str = Field(..., description="Project/model name (e.g. HH5K)")
+    station_name: str = Field(..., description="Station name (e.g. Wireless_Test_6G)")
+    start_time: datetime = Field(..., description="Inclusive start time in ISO-8601 UTC format")
+    end_time: datetime = Field(..., description="Inclusive end time in ISO-8601 UTC format")
+
+
+class LatestTestItemsByRangeResponseSchema(StationTestItemListSchema):
+    """Latest test items fetched from the external DUT API for a specific range."""
+
+    source: str = Field(default="default", description="Logical source name for the test item payload")
+
+
 class StationSchema(BaseModel):
     """Station information schema."""
 
@@ -718,7 +734,9 @@ class PATrendRequestSchema(BaseModel):
     test_items: list[str] = Field(..., description="List of PA test item names (e.g., WiFi_PA1_SROM_OLD_5985_11AX_MCS9_B80)")
     model: str | None = Field(default="", description="Model filter (empty string or 'ALL')")
 
-    model_config = ConfigDict(json_schema_extra={"example": {"start_time": "2025-11-15T08:22:21.00Z", "end_time": "2025-11-17T08:22:21.00Z", "model": "", "station_id": 145, "test_items": ["WiFi_PA1_SROM_OLD_5985_11AX_MCS9_B80", "WiFi_PA1_SROM_NEW_5985_11AX_MCS9_B80"]}})
+    model_config = ConfigDict(
+        json_schema_extra={"example": {"start_time": "2025-11-15T08:22:21.00Z", "end_time": "2025-11-17T08:22:21.00Z", "model": "", "station_id": 145, "test_items": ["WiFi_PA1_SROM_OLD_5985_11AX_MCS9_B80", "WiFi_PA1_SROM_NEW_5985_11AX_MCS9_B80"]}}
+    )
 
 
 class PATrendItemSchema(BaseModel):
@@ -769,7 +787,9 @@ class AdjustedPowerRequestSchema(BaseModel):
     test_items: list[str] = Field(..., description="List of PA test item names (must include both OLD and NEW variants)")
     model: str | None = Field(default="", description="Model filter (empty string or 'ALL')")
 
-    model_config = ConfigDict(json_schema_extra={"example": {"start_time": "2025-11-15T08:22:21.00Z", "end_time": "2025-11-17T08:22:21.00Z", "station_id": 145, "test_items": ["WiFi_PA1_SROM_OLD_5985_11AX_MCS9_B80", "WiFi_PA1_SROM_NEW_5985_11AX_MCS9_B80"], "model": ""}})
+    model_config = ConfigDict(
+        json_schema_extra={"example": {"start_time": "2025-11-15T08:22:21.00Z", "end_time": "2025-11-17T08:22:21.00Z", "station_id": 145, "test_items": ["WiFi_PA1_SROM_OLD_5985_11AX_MCS9_B80", "WiFi_PA1_SROM_NEW_5985_11AX_MCS9_B80"], "model": ""}}
+    )
 
 
 class PATrendDataItemSchema(BaseModel):
@@ -950,6 +970,7 @@ class PAActualAdjustedISNGroupSchema(BaseModel):
 
 class TestLogDownloadInfo(BaseModel):
     """Single test log download info"""
+
     isn: str = Field(..., description="DUT ISN identifier")
     time: str = Field(..., description="Test time in format: YYYY/MM/DD HH:MM:SS")
     deviceid: str = Field(..., description="Device ID name")
@@ -958,23 +979,9 @@ class TestLogDownloadInfo(BaseModel):
 
 class TestLogDownloadRequest(BaseModel):
     """Request to download test log(s) from External2 API"""
+
     info_list: list[TestLogDownloadInfo] = Field(..., description="List of test log info to download")
     site: str = Field(..., description="Site name (e.g., PTB)")
     project: str = Field(..., description="Project/Model name (e.g., HH5K)")
-    
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "info_list": [
-                    {
-                        "isn": "DM2527470036123",
-                        "time": "2025/11/17 14:20:28",
-                        "deviceid": "614640",
-                        "station": "Wireless_Test_2_5G"
-                    }
-                ],
-                "site": "PTB",
-                "project": "HH5K"
-            }
-        }
-    )
+
+    model_config = ConfigDict(json_schema_extra={"example": {"info_list": [{"isn": "DM2527470036123", "time": "2025/11/17 14:20:28", "deviceid": "614640", "station": "Wireless_Test_2_5G"}], "site": "PTB", "project": "HH5K"}})

@@ -311,6 +311,11 @@ class DUTAPIClient:
         response = await self._perform_request("GET", f"/api/testitems/{station_id}")
         return response.json()
 
+    async def get_latest_test_items_by_range(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        """Fetch the latest station test items using the external DUT time-range endpoint."""
+        response = await self._perform_request("POST", "/api/testitems/latest", json=payload)
+        return response.json()
+
     async def get_model_summary(self, payload: dict[str, Any] | list[dict[str, Any]]) -> dict[str, Any]:
         body: dict[str, Any]
         if isinstance(payload, list):

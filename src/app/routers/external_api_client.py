@@ -68,6 +68,8 @@ from app.schemas.dut_schemas import (
     PASROMDataItemSchema,
     PASROMEnhancedResponseSchema,
     GenericTestItemSchema,
+    LatestTestItemsByRangeRequestSchema,
+    LatestTestItemsByRangeResponseSchema,
     SimplePATrendResponseSchema,
     SiteSchema,
     StationDeviceListSchema,
@@ -1363,6 +1365,54 @@ async def get_latest_test_items_batch(
     request.model_identifier = _clean_hint(request.model_identifier)  # type: ignore[assignment]
 
     return await _build_latest_test_items_response(client, request)
+
+
+@router.post(
+    "/test-items/latest",
+    tags=["DUT_Management"],
+    summary="Fetch latest test items for a station by time range",
+    response_model=LatestTestItemsByRangeResponseSchema,
+    responses={200: {"description": "Latest test items for the requested station and time range."}},
+)
+async def get_latest_test_items_by_range(
+    request: LatestTestItemsByRangeRequestSchema,
+    client: DUTAPIClient = dut_client_dependency,
+):
+    """Fetch latest test items using the external DUT time-range endpoint."""
+    resolved_station_id = await _resolve_station_id(
+        client,
+        request.station_name,
+        model_hint=request.project_name,
+        site_hint=request.site_name,
+    )
+
+    metadata = await _get_station_metadata(client, resolved_station_id)
+    payload = {
+        "start_time": request.start_time.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+        "end_time": request.end_time.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+        "model": request.project_name,
+        "station_id": 0,
+        "site_name": request.site_name,
+        "project_name": request.project_name,
+        "station_name": request.station_name,
+    }
+
+    items = await client.get_latest_test_items_by_range(payload)
+    if not isinstance(items, list):
+        raise HTTPException(status_code=502, detail="Unexpected latest test items response from DUT API")
+
+    valid_items = []
+    for item in items:
+        upper = item.get("upperlimit")
+        lower = item.get("lowerlimit")
+        if upper == 0 and lower == 0:
+            continue
+        valid_items.append(item)
+
+    valid_items.sort(key=lambda item: int(item.get("id", 0) or 0))
+
+    data = [TestItemSchema.model_validate(item) for item in valid_items]
+    return LatestTestItemsByRangeResponseSchema(**metadata, data=data, source="default")
 
 
 @router.post(

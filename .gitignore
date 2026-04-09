@@ -129,6 +129,7 @@ env.bak/
 venv.bak/
 pythonenv*
 external-api/
+.dev-references/
 
 # Spyder project settings
 .spyderproject

@@ -24,6 +24,10 @@ class IplasCsvTestItemRequest(BaseModel):
         default=None,
         description="List of test item names to filter. If empty or None, returns all test items.",
     )
+    include_test_items: bool = Field(
+        default=False,
+        description="Include full TestItem arrays in each record. Defaults to False for compact list responses.",
+    )
     limit: int | None = Field(
         default=None,
         ge=1,
@@ -217,6 +221,7 @@ class IplasCsvTestItemResponse(BaseModel):
     returned_records: int = Field(..., description="Number of records returned")
     filtered: bool = Field(..., description="True if test item filtering was applied")
     cached: bool = Field(..., description="True if data was served from cache")
+    includes_test_items: bool = Field(default=False, description="True when full TestItem arrays are included in response records")
     possibly_truncated: bool = Field(default=False, description="True if any chunk hit the 5000 record limit (data may be incomplete)")
     # Chunking metadata for progress indicators
     chunks_fetched: int = Field(default=1, description="Number of API chunks fetched (for queries >6 days)")
@@ -264,6 +269,7 @@ class CompactCsvTestItemResponse(BaseModel):
     returned_records: int = Field(..., description="Number of records returned")
     filtered: bool = Field(..., description="True if test item filtering was applied")
     cached: bool = Field(..., description="True if data was served from cache")
+    includes_test_items: bool = Field(default=False, description="Always false for compact responses")
     possibly_truncated: bool = Field(default=False, description="True if any chunk hit the 5000 record limit (data may be incomplete)")
     # Chunking metadata for progress indicators
     chunks_fetched: int = Field(default=1, description="Number of API chunks fetched (for queries >6 days)")

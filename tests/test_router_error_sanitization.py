@@ -60,6 +60,138 @@ class _StubAsyncClient:
         return self._post_response
 
 
+def test_iplas_csv_test_items_defaults_to_compact_records(monkeypatch):
+    async def fake_fetch(_request, _redis):
+        return (
+            [
+                {
+                    "Site": "PTB",
+                    "Project": "HH5K",
+                    "station": "Wireless_Test_2_5G",
+                    "TSP": "TSP1",
+                    "Model": "MODEL",
+                    "MO": "MO1",
+                    "Line": "L1",
+                    "ISN": "ISN1",
+                    "DeviceId": "DEV1",
+                    "Test Status": "PASS",
+                    "Test Start Time": "2026-01-01T00:00:00Z",
+                    "Test end Time": "2026-01-01T00:10:00Z",
+                    "ErrorCode": "",
+                    "ErrorName": "",
+                    "TestItem": [
+                        {
+                            "NAME": "ITEM1",
+                            "STATUS": "PASS",
+                            "VALUE": "1",
+                            "UCL": "2",
+                            "LCL": "0",
+                            "CYCLE": "",
+                        }
+                    ],
+                }
+            ],
+            False,
+            1,
+            1,
+            False,
+            True,
+            iplas_router.StationRangeResponseMetadata(
+                cache_coverage="full",
+                validated_until=None,
+                bucket_stats=[],
+            ),
+        )
+
+    monkeypatch.setattr(iplas_router, "get_redis_client", lambda: None)
+    monkeypatch.setattr(iplas_router, "_fetch_station_range_for_request", fake_fetch)
+
+    response = client.post(
+        "/api/iplas/csv-test-items",
+        json={
+            "site": "PTB",
+            "project": "HH5K",
+            "station": "Wireless_Test_2_5G",
+            "device_id": "ALL",
+            "begin_time": "2026-01-01T00:00:00Z",
+            "end_time": "2026-01-01T01:00:00Z",
+            "test_status": "PASS",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["includes_test_items"] is False
+    assert payload["data"][0]["TestItemCount"] == 1
+    assert "TestItem" not in payload["data"][0]
+
+
+def test_iplas_csv_test_items_include_test_items_opt_in(monkeypatch):
+    async def fake_fetch(_request, _redis):
+        return (
+            [
+                {
+                    "Site": "PTB",
+                    "Project": "HH5K",
+                    "station": "Wireless_Test_2_5G",
+                    "TSP": "TSP1",
+                    "Model": "MODEL",
+                    "MO": "MO1",
+                    "Line": "L1",
+                    "ISN": "ISN1",
+                    "DeviceId": "DEV1",
+                    "Test Status": "PASS",
+                    "Test Start Time": "2026-01-01T00:00:00Z",
+                    "Test end Time": "2026-01-01T00:10:00Z",
+                    "ErrorCode": "",
+                    "ErrorName": "",
+                    "TestItem": [
+                        {
+                            "NAME": "ITEM1",
+                            "STATUS": "PASS",
+                            "VALUE": "1",
+                            "UCL": "2",
+                            "LCL": "0",
+                            "CYCLE": "",
+                        }
+                    ],
+                }
+            ],
+            False,
+            1,
+            1,
+            False,
+            True,
+            iplas_router.StationRangeResponseMetadata(
+                cache_coverage="full",
+                validated_until=None,
+                bucket_stats=[],
+            ),
+        )
+
+    monkeypatch.setattr(iplas_router, "get_redis_client", lambda: None)
+    monkeypatch.setattr(iplas_router, "_fetch_station_range_for_request", fake_fetch)
+
+    response = client.post(
+        "/api/iplas/csv-test-items",
+        json={
+            "site": "PTB",
+            "project": "HH5K",
+            "station": "Wireless_Test_2_5G",
+            "device_id": "ALL",
+            "begin_time": "2026-01-01T00:00:00Z",
+            "end_time": "2026-01-01T01:00:00Z",
+            "test_status": "PASS",
+            "include_test_items": True,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["includes_test_items"] is True
+    assert payload["data"][0]["TestItem"][0]["NAME"] == "ITEM1"
+
+
 def test_compare_endpoint_hides_internal_error(monkeypatch, tmp_path):
     def explode(*args, **kwargs):
         raise RuntimeError("compare secret details")

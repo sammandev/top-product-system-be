@@ -1847,7 +1847,8 @@ def _extract_unique_test_items(records: list[dict[str, Any]]) -> list[IplasTestI
     2. Uses request deduplication to coalesce concurrent requests for the same data
     3. Fetches from iPLAS if cache miss
     4. Applies test_item_filters on server-side (reduces payload to frontend)
-    5. Supports pagination with limit/offset
+    5. Returns compact records by default; set include_test_items=true for explicit heavy mode
+    6. Supports pagination with limit/offset
     
     **Cache TTL**: Data is cached for 3 minutes
     **Request Deduplication**: Concurrent requests for the same data share a single upstream request.
@@ -1856,7 +1857,7 @@ def _extract_unique_test_items(records: list[dict[str, Any]]) -> list[IplasTestI
 async def get_csv_test_items(
     request: IplasCsvTestItemRequest,
 ) -> IplasCsvTestItemResponse:
-    """Get filtered CSV test items with caching and request deduplication."""
+    """Get filtered CSV test items with compact-by-default response semantics."""
     redis = get_redis_client()
 
     records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy, cached, response_metadata = await _fetch_station_range_for_request(
@@ -1868,6 +1869,9 @@ async def get_csv_test_items(
     filtered = bool(request.test_item_filters)
     if filtered:
         records = _filter_test_items(records, request.test_item_filters)
+
+    if not request.include_test_items:
+        records = [_convert_to_compact_record_dict(record) for record in records]
 
     total_records = len(records)
 
@@ -1883,24 +1887,14 @@ async def get_csv_test_items(
         returned_records=len(records),
         filtered=filtered,
         cached=cached,
+        includes_test_items=request.include_test_items,
         possibly_truncated=possibly_truncated,
         chunks_fetched=chunks_fetched,
         total_chunks=total_chunks,
         used_hybrid_strategy=used_hybrid_strategy,
         cache_coverage=response_metadata.cache_coverage,
         validated_until=_bucket_cache_datetime_to_str(response_metadata.validated_until) or None,
-        bucket_stats=[
-            {
-                "bucket_start": _bucket_cache_datetime_to_str(stat.bucket_start),
-                "bucket_end": _bucket_cache_datetime_to_str(stat.bucket_end),
-                "state": stat.state,
-                "source": stat.source,
-                "record_count": stat.record_count,
-                "validated_until": _bucket_cache_datetime_to_str(stat.validated_until) or None,
-                "latest_record_time": _bucket_cache_datetime_to_str(stat.latest_record_time) or None,
-            }
-            for stat in response_metadata.bucket_stats
-        ],
+        bucket_stats=_build_bucket_stats_response(response_metadata),
     )
 
 
@@ -1968,6 +1962,23 @@ def _convert_to_compact_record_dict(record: dict[str, Any]) -> dict[str, Any]:
         "ErrorName": _safe_str(record.get("ErrorName")),
         "TestItemCount": int(test_item_count) if isinstance(test_item_count, int | str) else 0,
     }
+
+
+def _build_bucket_stats_response(
+    response_metadata: StationRangeResponseMetadata,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "bucket_start": _bucket_cache_datetime_to_str(stat.bucket_start),
+            "bucket_end": _bucket_cache_datetime_to_str(stat.bucket_end),
+            "state": stat.state,
+            "source": stat.source,
+            "record_count": stat.record_count,
+            "validated_until": _bucket_cache_datetime_to_str(stat.validated_until) or None,
+            "latest_record_time": _bucket_cache_datetime_to_str(stat.latest_record_time) or None,
+        }
+        for stat in response_metadata.bucket_stats
+    ]
 
 
 @router.post(
@@ -2063,24 +2074,14 @@ async def get_csv_test_items_compact(
         returned_records=len(compact_models),
         filtered=filtered,
         cached=cached,
+        includes_test_items=False,
         possibly_truncated=possibly_truncated,
         chunks_fetched=chunks_fetched,
         total_chunks=total_chunks,
         used_hybrid_strategy=used_hybrid_strategy,
         cache_coverage=response_metadata.cache_coverage,
         validated_until=_bucket_cache_datetime_to_str(response_metadata.validated_until) or None,
-        bucket_stats=[
-            {
-                "bucket_start": _bucket_cache_datetime_to_str(stat.bucket_start),
-                "bucket_end": _bucket_cache_datetime_to_str(stat.bucket_end),
-                "state": stat.state,
-                "source": stat.source,
-                "record_count": stat.record_count,
-                "validated_until": _bucket_cache_datetime_to_str(stat.validated_until) or None,
-                "latest_record_time": _bucket_cache_datetime_to_str(stat.latest_record_time) or None,
-            }
-            for stat in response_metadata.bucket_stats
-        ],
+        bucket_stats=_build_bucket_stats_response(response_metadata),
     )
 
 

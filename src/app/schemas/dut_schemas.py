@@ -175,7 +175,10 @@ class LatestTestItemsByRangeRequestSchema(BaseModel):
 class LatestTestItemsByRangeResponseSchema(StationTestItemListSchema):
     """Latest test items fetched from the external DUT API for a specific range."""
 
-    source: str = Field(default="default", description="Logical source name for the test item payload")
+    source: Literal["default", "fallback_station_items"] = Field(
+        default="default",
+        description="Logical source name for the test item payload",
+    )
 
 
 class StationSchema(BaseModel):

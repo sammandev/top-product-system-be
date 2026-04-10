@@ -101,6 +101,36 @@ from app.services import dut_metadata_cache, dut_token_service
 
 logger = logging.getLogger(__name__)
 
+
+def _dedupe_test_items_by_name(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep one test-item entry per name, preferring entries with richer limit metadata."""
+    deduped: dict[str, dict[str, Any]] = {}
+
+    for item in items:
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+
+        current = deduped.get(name)
+        if current is None:
+            deduped[name] = item
+            continue
+
+        current_limit_count = int(current.get("upperlimit") is not None) + int(current.get("lowerlimit") is not None)
+        candidate_limit_count = int(item.get("upperlimit") is not None) + int(item.get("lowerlimit") is not None)
+
+        if candidate_limit_count > current_limit_count:
+            deduped[name] = item
+            continue
+
+        if candidate_limit_count == current_limit_count:
+            current_id = int(current.get("id", 0) or 0)
+            candidate_id = int(item.get("id", 0) or 0)
+            if candidate_id < current_id:
+                deduped[name] = item
+
+    return sorted(deduped.values(), key=lambda item: int(item.get("id", 0) or 0))
+
 router = APIRouter(
     prefix="/api/dut",
     tags=["DUT_Management"],
@@ -1421,6 +1451,8 @@ async def get_latest_test_items_by_range(
         "station_name": request.station_name,
     }
 
+    response_source: Literal["default", "fallback_station_items"] = "default"
+
     try:
         items = await client.get_latest_test_items_by_range(payload)
     except httpx.HTTPStatusError as exc:
@@ -1433,6 +1465,7 @@ async def get_latest_test_items_by_range(
             request.station_name,
         )
         items = await client.get_test_items_by_station(resolved_station_id)
+        response_source = "fallback_station_items"
 
     if not isinstance(items, list):
         raise HTTPException(status_code=502, detail="Unexpected latest test items response from DUT API")
@@ -1445,10 +1478,10 @@ async def get_latest_test_items_by_range(
             continue
         valid_items.append(item)
 
-    valid_items.sort(key=lambda item: int(item.get("id", 0) or 0))
+    valid_items = _dedupe_test_items_by_name(valid_items)
 
     data = [TestItemSchema.model_validate(item) for item in valid_items]
-    return LatestTestItemsByRangeResponseSchema(**metadata, data=data, source="default")
+    return LatestTestItemsByRangeResponseSchema(**metadata, data=data, source=response_source)
 
 
 @router.post(

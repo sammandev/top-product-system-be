@@ -756,6 +756,7 @@ def test_latest_test_items_by_range_falls_back_to_station_items_on_upstream_404(
         test_items={
             148: [
                 {"id": 230217, "name": "WiFi_TX1_POW_6115_11AG_OFDM6_B20", "upperlimit": 19.5, "lowerlimit": 16.5, "status": 1},
+                {"id": 230300, "name": "WiFi_TX1_POW_6115_11AG_OFDM6_B20", "upperlimit": 19.5, "lowerlimit": 16.5, "status": 1},
                 {"id": 202620, "name": "SET_IPLAS_INFO_WIRELESS_2", "upperlimit": 0, "lowerlimit": 0, "status": 1},
             ]
         },
@@ -780,7 +781,7 @@ def test_latest_test_items_by_range_falls_back_to_station_items_on_upstream_404(
     assert resp.status_code == 200, resp.json()
     payload = resp.json()
     assert payload["station_id"] == 148
-    assert payload["source"] == "default"
+    assert payload["source"] == "fallback_station_items"
     assert [item["name"] for item in payload["data"]] == ["WiFi_TX1_POW_6115_11AG_OFDM6_B20"]
 
 

@@ -52,6 +52,7 @@ class _MockDUTClient:
         self.last_period_query = None
         self.last_device_payload = None
         self.last_summary_payload = None
+        self.last_latest_test_items_payload = None
 
     async def get_devices_by_station(self, station_id: int):
         return self._devices.get(station_id, [])
@@ -64,6 +65,7 @@ class _MockDUTClient:
         return self._test_items.get(station_id, [])
 
     async def get_latest_test_items_by_range(self, payload):
+        self.last_latest_test_items_payload = payload
         if self._latest_test_items_by_range_error is not None:
             raise self._latest_test_items_by_range_error
         return self._latest_test_items_by_range
@@ -783,6 +785,42 @@ def test_latest_test_items_by_range_falls_back_to_station_items_on_upstream_404(
     assert payload["station_id"] == 148
     assert payload["source"] == "fallback_station_items"
     assert [item["name"] for item in payload["data"]] == ["WiFi_TX1_POW_6115_11AG_OFDM6_B20"]
+
+
+def test_latest_test_items_by_range_uses_empty_model_payload():
+    mock = _MockDUTClient(
+        latest_test_items_by_range=[
+            {
+                "id": 230217,
+                "name": "WiFi_TX1_POW_6115_11AG_OFDM6_B20",
+                "upperlimit": 19.5,
+                "lowerlimit": 16.5,
+                "status": 1,
+            }
+        ],
+        sites=[{"id": 2, "name": "PTB"}],
+        models={2: [{"id": 44, "name": "HH5K", "site_id": 2}]},
+        stations={44: [{"id": 145, "name": "Wireless_Test_6G", "site_id": 2, "model_id": 44, "status": 1, "order": 5}]},
+    )
+    _override_client(mock)
+
+    client = TestClient(app)
+    resp = client.post(
+        "/api/dut/test-items/latest",
+        json={
+            "site_name": "PTB",
+            "project_name": "HH5K",
+            "station_name": "Wireless_Test_6G",
+            "start_time": "2026-04-10T01:00:00Z",
+            "end_time": "2026-04-10T13:00:00Z",
+        },
+    )
+
+    assert resp.status_code == 200, resp.json()
+    assert mock.last_latest_test_items_payload is not None
+    assert mock.last_latest_test_items_payload["model"] == ""
+    assert mock.last_latest_test_items_payload["project_name"] == "HH5K"
+    assert mock.last_latest_test_items_payload["station_id"] == 0
 
 
 def test_latest_station_records_accepts_station_name_and_isn():

@@ -1444,7 +1444,9 @@ async def get_latest_test_items_by_range(
     payload = {
         "start_time": request.start_time.astimezone(UTC).isoformat().replace("+00:00", "Z"),
         "end_time": request.end_time.astimezone(UTC).isoformat().replace("+00:00", "Z"),
-        "model": request.project_name,
+        # Upstream latest-test-items endpoint expects an empty model field.
+        # project_name carries the actual model selection.
+        "model": "",
         "station_id": 0,
         "site_name": request.site_name,
         "project_name": request.project_name,

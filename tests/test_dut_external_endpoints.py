@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.dependencies.authz import get_current_user
 from app.main import app
+from app.routers import external_api_client
 from app.routers.external_api_client import get_user_dut_client
 
 
@@ -111,6 +112,37 @@ class _MockDUTClient:
         return self._latest_nonvalue_bin.get((station_id, dut_id), {"record": [], "data": []})
 
 
+class _StubDownloadResponse:
+    def __init__(self, *, status_code=200, json_data=None):
+        self.status_code = status_code
+        self._json_data = json_data or {}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            request = httpx.Request("POST", "http://iplas.test/api/v1/file/PTB/HH5K/download_attachment")
+            response = httpx.Response(self.status_code, request=request)
+            raise httpx.HTTPStatusError("download failed", request=request, response=response)
+
+    def json(self):
+        return self._json_data
+
+
+class _StubDownloadAsyncClient:
+    def __init__(self, response: _StubDownloadResponse):
+        self._response = response
+        self.last_post: tuple[str, dict] | None = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, url, json):
+        self.last_post = (url, json)
+        return self._response
+
+
 @pytest.fixture(autouse=True)
 def reset_overrides():
     """Clear dependency overrides and metadata cache before and after each test."""
@@ -132,6 +164,100 @@ def reset_overrides():
 def _override_client(mock_client: _MockDUTClient):
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(username="tester")
     app.dependency_overrides[get_user_dut_client] = lambda: mock_client
+
+
+def test_download_test_log_uses_site_specific_iplas_config(monkeypatch):
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(username="tester")
+
+    file_bytes = b"zip-bytes"
+    stub_client = _StubDownloadAsyncClient(
+        _StubDownloadResponse(
+            json_data={
+                "statuscode": 200,
+                "data": {
+                    "content": base64.b64encode(file_bytes).decode(),
+                    "filename": "dut-log.zip",
+                },
+            }
+        )
+    )
+
+    monkeypatch.setattr(external_api_client, "IPLAS_SITES", {"PTB": {"token": "unused"}})
+    monkeypatch.setattr(
+        external_api_client,
+        "_get_site_config",
+        lambda site: {
+            "base_url": "http://iplas.test",
+            "token": "site-token",
+            "v1_url": "http://iplas.test/api/v1",
+            "v2_url": "http://iplas.test/api/v2",
+        },
+    )
+    monkeypatch.setattr(
+        external_api_client.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: stub_client,
+    )
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/dut/test-log/download",
+        json={
+            "info_list": [
+                {
+                    "isn": "ISN123",
+                    "time": "2026/04/10 12:34:56",
+                    "deviceid": "12345",
+                    "station": "BP3 Download",
+                }
+            ],
+            "site": "PTB",
+            "project": "HH5K",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.content == file_bytes
+    assert response.headers["content-disposition"] == 'attachment; filename="dut-log.zip"'
+    assert stub_client.last_post == (
+        "http://iplas.test/api/v1/file/PTB/HH5K/download_attachment",
+        {
+            "info": [
+                {
+                    "isn": "ISN123",
+                    "time": "2026/04/10 12:34:56",
+                    "deviceid": "12345",
+                    "station": "BP3 Download",
+                }
+            ],
+            "token": "site-token",
+        },
+    )
+
+
+def test_download_test_log_rejects_unsupported_site(monkeypatch):
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(username="tester")
+    monkeypatch.setattr(external_api_client, "IPLAS_SITES", {"PTB": {"token": "unused"}})
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/dut/test-log/download",
+        json={
+            "info_list": [
+                {
+                    "isn": "ISN123",
+                    "time": "2026/04/10 12:34:56",
+                    "deviceid": "12345",
+                    "station": "BP3 Download",
+                }
+            ],
+            "site": "XXX",
+            "project": "HH5K",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Unsupported iPLAS site: XXX"
 
 
 def test_devices_by_station_accepts_name_resolution():

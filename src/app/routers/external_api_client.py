@@ -26,6 +26,7 @@ from app.dependencies.authz import get_current_user
 from app.external_services.dut_api_client import DUTAPIClient
 from app.models.test_log import ScoreBreakdown
 from app.models.top_product import TopProduct, TopProductMeasurement
+from app.routers.iplas_proxy import IPLAS_SITES, _get_site_config
 from app.schemas.dut_schemas import (
     AdjustedPowerRequestSchema,
     AdjustedPowerResponseSchema,
@@ -9870,17 +9871,23 @@ async def download_test_log(request: TestLogDownloadRequest, current_user: Annot
         HTTPException: If iPLAS API call fails or returns an error
     """
     try:
-        # Get iPLAS API configuration from environment
-        base_url = os.getenv("DUT2_API_BASE_URL", "http://10.176.33.89:32678/api/v1")
-        token = os.getenv("DUT2_API_TOKEN")
-        timeout = int(os.getenv("DUT2_API_TIMEOUT", "30"))
+        site_upper = request.site.upper()
+        if site_upper not in IPLAS_SITES:
+            logger.error(f"Unsupported iPLAS site requested for test-log download: {request.site}")
+            raise HTTPException(status_code=400, detail=f"Unsupported iPLAS site: {request.site}")
+
+        # Reuse the site-aware iPLAS configuration already used by the proxy routes.
+        site_config = _get_site_config(site_upper)
+        base_url = site_config["v1_url"]
+        token = site_config["token"]
+        timeout = int(os.getenv("IPLAS_API_TIMEOUT", os.getenv("DUT2_API_TIMEOUT", "30")))
 
         if not token:
-            logger.error("DUT2_API_TOKEN not configured in environment")
-            raise HTTPException(status_code=500, detail="External API token not configured")
+            logger.error(f"iPLAS token not configured for site {site_upper}")
+            raise HTTPException(status_code=500, detail=f"iPLAS token not configured for site {site_upper}")
 
         # Construct iPLAS API URL
-        url = f"{base_url}/file/{request.site}/{request.project}/download_attachment"
+        url = f"{base_url}/file/{site_upper}/{request.project}/download_attachment"
 
         # Prepare request body for iPLAS API
         payload = {

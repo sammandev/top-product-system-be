@@ -24,6 +24,10 @@ class IplasCsvTestItemRequest(BaseModel):
         default=None,
         description="List of test item names to filter. If empty or None, returns all test items.",
     )
+    exclude_test_item_filters: list[str] | None = Field(
+        default=None,
+        description="List of test item names to exclude. Applied after include filters when provided.",
+    )
     include_test_items: bool = Field(
         default=False,
         description="Include full TestItem arrays in each record. Defaults to False for compact list responses.",

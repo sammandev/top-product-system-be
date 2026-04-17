@@ -1734,26 +1734,38 @@ async def _fetch_chunked_from_iplas(
     return all_records, possibly_truncated, chunk_count, estimated_chunks, used_hybrid_any
 
 
-def _filter_test_items(records: list[dict[str, Any]], test_item_filters: list[str] | None) -> list[dict[str, Any]]:
+def _filter_test_items(
+    records: list[dict[str, Any]],
+    test_item_filters: list[str] | None,
+    exclude_test_item_filters: list[str] | None = None,
+) -> list[dict[str, Any]]:
     """
     Filter test items within each record based on the filter list.
 
     Args:
         records: List of test records from iPLAS
         test_item_filters: List of test item names to keep. If None/empty, keep all.
+        exclude_test_item_filters: List of test item names to remove after include filtering.
 
     Returns:
         Records with filtered TestItem arrays
     """
-    if not test_item_filters:
+    if not test_item_filters and not exclude_test_item_filters:
         return records
 
-    filter_set = set(test_item_filters)
+    filter_set = set(test_item_filters or [])
+    exclude_filter_set = set(exclude_test_item_filters or [])
     filtered_records = []
 
     for record in records:
         test_items = record.get("TestItem", [])
-        filtered_items = [item for item in test_items if item.get("NAME") in filter_set]
+        filtered_items = test_items
+
+        if filter_set:
+            filtered_items = [item for item in filtered_items if item.get("NAME") in filter_set]
+
+        if exclude_filter_set:
+            filtered_items = [item for item in filtered_items if item.get("NAME") not in exclude_filter_set]
 
         # Only include record if it has matching test items
         if filtered_items:
@@ -1866,9 +1878,9 @@ async def get_csv_test_items(
     )
 
     # Apply test item filtering
-    filtered = bool(request.test_item_filters)
+    filtered = bool(request.test_item_filters or request.exclude_test_item_filters)
     if filtered:
-        records = _filter_test_items(records, request.test_item_filters)
+        records = _filter_test_items(records, request.test_item_filters, request.exclude_test_item_filters)
 
     if not request.include_test_items:
         records = [_convert_to_compact_record_dict(record) for record in records]
@@ -2020,9 +2032,9 @@ async def get_csv_test_items_compact(
         redis,
     )
 
-    filtered = bool(request.test_item_filters)
+    filtered = bool(request.test_item_filters or request.exclude_test_item_filters)
     if filtered:
-        records = _filter_test_items(records, request.test_item_filters)
+        records = _filter_test_items(records, request.test_item_filters, request.exclude_test_item_filters)
 
     for record in records:
         test_items = record.get("TestItem", [])
@@ -3945,8 +3957,8 @@ async def stream_csv_test_items(
                 used_hybrid = False
 
             # Apply test item filtering if specified
-            if request.test_item_filters:
-                records = _filter_test_items(records, request.test_item_filters)
+            if request.test_item_filters or request.exclude_test_item_filters:
+                records = _filter_test_items(records, request.test_item_filters, request.exclude_test_item_filters)
 
             total_records = len(records)
 
@@ -3979,7 +3991,7 @@ async def stream_csv_test_items(
             metadata = {
                 "_metadata": True,
                 "total_records": total_records,
-                "filtered": bool(request.test_item_filters),
+                "filtered": bool(request.test_item_filters or request.exclude_test_item_filters),
                 "cached": cached,
                 "possibly_truncated": possibly_truncated,
                 "chunks_fetched": chunks_fetched,

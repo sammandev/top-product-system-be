@@ -22,6 +22,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db import Base, get_db
+from app.dependencies.external_api_client import get_dut_client
 from app.dependencies.authz import get_current_user
 from app.external_services.dut_api_client import DUTAPIClient
 from app.models.test_log import ScoreBreakdown
@@ -913,6 +914,10 @@ def get_user_dut_client(current_user=dut_get_current_user_dependency) -> DUTAPIC
     if not token_bundle or not token_bundle.get("access"):
         raise HTTPException(status_code=401, detail="Please re-login via /api/auth/external-login")
 
+    return _build_dut_client_from_token_bundle(token_bundle)
+
+
+def _build_dut_client_from_token_bundle(token_bundle: dict[str, Any]) -> DUTAPIClient:
     client = DUTAPIClient(base_url=os.getenv("DUT_API_BASE_URL", "http://172.18.220.56:9001"))
     client.access_token = token_bundle.get("access")
     client.refresh_token = token_bundle.get("refresh")
@@ -929,6 +934,23 @@ def get_user_dut_client(current_user=dut_get_current_user_dependency) -> DUTAPIC
         except ValueError:
             client.token_expiry = None
     return client
+
+
+async def _get_latest_test_items_client(current_user, service_client: DUTAPIClient) -> DUTAPIClient:
+    token = dut_token_service.ensure_valid_access(current_user.username)
+    token_bundle = dut_token_service.get_tokens(current_user.username) if token else None
+
+    if token_bundle and token_bundle.get("access"):
+        return _build_dut_client_from_token_bundle(token_bundle)
+
+    if getattr(service_client, "access_token", None):
+        logger.warning(
+            "Falling back to DUT service account for latest test items on behalf of user %s",
+            current_user.username,
+        )
+        return service_client
+
+    raise HTTPException(status_code=401, detail="Please re-login via /api/auth/external-login")
 
 
 # Module-level dependency object to avoid calling Depends() in function defaults
@@ -1414,9 +1436,12 @@ async def get_latest_test_items_batch(
 )
 async def get_latest_test_items_by_range(
     request: LatestTestItemsByRangeRequestSchema,
-    client: DUTAPIClient = dut_client_dependency,
+    current_user=dut_get_current_user_dependency,
+    service_client: DUTAPIClient = Depends(get_dut_client),
 ):
     """Fetch latest test items using the external DUT time-range endpoint."""
+    client = await _get_latest_test_items_client(current_user, service_client)
+
     resolved_station_id = await _resolve_station_id(
         client,
         request.station_name,
@@ -1473,15 +1498,7 @@ async def get_latest_test_items_by_range(
     if not isinstance(items, list):
         raise HTTPException(status_code=502, detail="Unexpected latest test items response from DUT API")
 
-    valid_items = []
-    for item in items:
-        upper = item.get("upperlimit")
-        lower = item.get("lowerlimit")
-        if upper == 0 and lower == 0:
-            continue
-        valid_items.append(item)
-
-    valid_items = _dedupe_test_items_by_name(valid_items)
+    valid_items = _dedupe_test_items_by_name(items)
 
     data = [TestItemSchema.model_validate(item) for item in valid_items]
     return LatestTestItemsByRangeResponseSchema(**metadata, data=data, source=response_source)

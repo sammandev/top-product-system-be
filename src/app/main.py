@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html, get_swagger_ui_oauth2_redirect_html
@@ -32,8 +32,14 @@ except (ImportError, AttributeError):  # pragma: no cover - optional dependency 
             swagger_ui_5_path = None
     except Exception:
         swagger_ui_5_path = None
+try:
+    from fastapi_mcp import AuthConfig, FastApiMCP
+except ImportError:  # pragma: no cover - optional dependency
+    AuthConfig = None
+    FastApiMCP = None
 
 from app.dependencies.external_api_client import get_settings
+from app.dependencies.authz import get_current_user
 from app.utils.auth import validate_auth_configuration
 from app.utils.helpers import _start_cleanup_worker
 
@@ -96,6 +102,44 @@ def _configure_logging() -> None:
     # Quiet down noisy third-party loggers in Docker
     for noisy_logger in ("watchfiles", "httpcore", "httpx", "hpack"):
         logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+
+
+def _is_truthy_env(value: str | None, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _mount_mcp_server(target_app: FastAPI) -> None:
+    if FastApiMCP is None or AuthConfig is None:
+        logger.info("fastapi-mcp is not installed; skipping MCP server mount")
+        return
+
+    if not _is_truthy_env(os.getenv("ENABLE_FASTAPI_MCP"), default=True):
+        logger.info("fastapi-mcp integration disabled by ENABLE_FASTAPI_MCP")
+        return
+
+    mount_path = os.getenv("FASTAPI_MCP_PATH", "/mcp").strip() or "/mcp"
+    transport = os.getenv("FASTAPI_MCP_TRANSPORT", "http").strip().lower() or "http"
+    require_auth = _is_truthy_env(os.getenv("FASTAPI_MCP_REQUIRE_AUTH"), default=True)
+
+    auth_config = AuthConfig(dependencies=[Depends(get_current_user)]) if require_auth else None
+    mcp_server = FastApiMCP(
+        target_app,
+        name=f"{settings.app_name} MCP",
+        description=f"MCP tool surface for {settings.app_name}",
+        auth_config=auth_config,
+    )
+
+    if transport == "http":
+        mcp_server.mount_http(mount_path=mount_path)
+    elif transport == "sse":
+        mcp_server.mount_sse(mount_path=mount_path)
+    else:
+        raise ValueError(f"Unsupported FASTAPI_MCP_TRANSPORT: {transport}")
+
+    target_app.state.mcp_server = mcp_server
+    logger.info("Mounted fastapi-mcp transport=%s path=%s auth=%s", transport, mount_path, require_auth)
 
 
 _configure_logging()
@@ -372,6 +416,8 @@ app.include_router(scoring.router)
 app.include_router(sfistsp.router)
 app.include_router(test_log.router)
 app.include_router(top_products.router)
+
+_mount_mcp_server(app)
 
 # debug router removed after diagnostics
 

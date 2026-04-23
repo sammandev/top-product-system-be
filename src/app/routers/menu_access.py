@@ -129,8 +129,9 @@ DEFAULT_MENUS = [
     # System Section (Admin only by default)
     {"menu_key": "system-configuration", "title": "System Configuration", "path": "", "icon": "mdi-shield-lock", "section": "system", "sort_order": 0},
     {"menu_key": "system-configuration-users", "title": "User Management", "path": "/admin/users", "icon": "mdi-circle-small", "parent_key": "system-configuration", "section": "system", "sort_order": 1},
-    {"menu_key": "system-configuration-menus", "title": "Menu Access", "path": "/admin/menu-access", "icon": "mdi-circle-small", "parent_key": "system-configuration", "section": "system", "sort_order": 2},
-    {"menu_key": "system-configuration-app-config", "title": "App Configuration", "path": "/admin/app-config", "icon": "mdi-circle-small", "parent_key": "system-configuration", "section": "system", "sort_order": 3},
+    {"menu_key": "system-configuration-rbac", "title": "Roles & Permissions", "path": "/admin/rbac", "icon": "mdi-circle-small", "parent_key": "system-configuration", "section": "system", "sort_order": 2},
+    {"menu_key": "system-configuration-menus", "title": "Menu Access", "path": "/admin/menu-access", "icon": "mdi-circle-small", "parent_key": "system-configuration", "section": "system", "sort_order": 3},
+    {"menu_key": "system-configuration-app-config", "title": "App Configuration", "path": "/admin/app-config", "icon": "mdi-circle-small", "parent_key": "system-configuration", "section": "system", "sort_order": 4},
     {"menu_key": "system-cleanup", "title": "System Cleanup", "path": "/admin/cleanup", "icon": "mdi-delete-sweep", "section": "system", "sort_order": 10},
 ]
 
@@ -174,6 +175,71 @@ DEFAULT_ROLE_ACCESS = {
 }
 
 
+def sync_default_menu_definitions(
+    db: Session,
+    *,
+    prune_stale: bool = False,
+    reset_role_access: bool = False,
+) -> tuple[int, int]:
+    """Upsert default menu definitions and seed role access for new defaults.
+
+    Read endpoints use this to introduce newly added default menus without requiring a manual
+    re-initialization, while the explicit initialize endpoint can still reset stale entries and
+    restore default access rules.
+    """
+
+    valid_keys = {menu["menu_key"] for menu in DEFAULT_MENUS}
+    created_menu_keys: set[str] = set()
+    stale_count = 0
+
+    if prune_stale:
+        stale_menus = db.query(MenuDefinition).filter(~MenuDefinition.menu_key.in_(valid_keys)).all()
+        for stale_menu in stale_menus:
+            db.query(MenuRoleAccess).filter(MenuRoleAccess.menu_id == stale_menu.id).delete(
+                synchronize_session=False,
+            )
+            db.delete(stale_menu)
+            stale_count += 1
+            logger.info(f"Removed stale menu entry: {stale_menu.menu_key}")
+
+    for menu_data in DEFAULT_MENUS:
+        existing = db.query(MenuDefinition).filter(MenuDefinition.menu_key == menu_data["menu_key"]).first()
+
+        if existing:
+            for key, value in menu_data.items():
+                setattr(existing, key, value)
+            continue
+
+        db.add(MenuDefinition(**menu_data, is_active=True))
+        created_menu_keys.add(menu_data["menu_key"])
+
+    db.flush()
+
+    for role_name, menu_keys in DEFAULT_ROLE_ACCESS.items():
+        for menu_key in menu_keys:
+            if not reset_role_access and menu_key not in created_menu_keys:
+                continue
+
+            menu = db.query(MenuDefinition).filter(MenuDefinition.menu_key == menu_key).first()
+            if not menu:
+                continue
+
+            existing_access = db.query(MenuRoleAccess).filter(
+                MenuRoleAccess.menu_id == menu.id,
+                MenuRoleAccess.role_name == role_name,
+            ).first()
+
+            if existing_access:
+                if reset_role_access and not existing_access.can_view:
+                    existing_access.can_view = True
+                continue
+
+            db.add(MenuRoleAccess(menu_id=menu.id, role_name=role_name, can_view=True))
+
+    db.commit()
+    return len(created_menu_keys), stale_count
+
+
 # ============================================================================
 # Endpoints
 # ============================================================================
@@ -194,46 +260,11 @@ async def initialize_menus(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only superadmin can initialize menu definitions")
 
     try:
-        valid_keys = {m["menu_key"] for m in DEFAULT_MENUS}
-
-        # Remove stale menu entries no longer in DEFAULT_MENUS
-        stale_menus = db.query(MenuDefinition).filter(~MenuDefinition.menu_key.in_(valid_keys)).all()
-        stale_count = 0
-        for stale_menu in stale_menus:
-            # Delete role access entries first
-            db.query(MenuRoleAccess).filter(MenuRoleAccess.menu_id == stale_menu.id).delete(synchronize_session=False)
-            db.delete(stale_menu)
-            stale_count += 1
-            logger.info(f"Removed stale menu entry: {stale_menu.menu_key}")
-
-        # Create or update menu definitions
-        for menu_data in DEFAULT_MENUS:
-            existing = db.query(MenuDefinition).filter(MenuDefinition.menu_key == menu_data["menu_key"]).first()
-
-            if existing:
-                # Update existing
-                for key, value in menu_data.items():
-                    setattr(existing, key, value)
-            else:
-                # Create new
-                menu = MenuDefinition(**menu_data, is_active=True)
-                db.add(menu)
-
-        db.commit()
-
-        # Initialize default role access
-        for role_name, menu_keys in DEFAULT_ROLE_ACCESS.items():
-            for menu_key in menu_keys:
-                menu = db.query(MenuDefinition).filter(MenuDefinition.menu_key == menu_key).first()
-
-                if menu:
-                    existing_access = db.query(MenuRoleAccess).filter(MenuRoleAccess.menu_id == menu.id, MenuRoleAccess.role_name == role_name).first()
-
-                    if not existing_access:
-                        access = MenuRoleAccess(menu_id=menu.id, role_name=role_name, can_view=True)
-                        db.add(access)
-
-        db.commit()
+        _, stale_count = sync_default_menu_definitions(
+            db,
+            prune_stale=True,
+            reset_role_access=True,
+        )
 
         return {
             "message": "Menu definitions initialized successfully",
@@ -262,6 +293,7 @@ async def get_all_menus(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only superadmin can manage menu access")
 
     try:
+        sync_default_menu_definitions(db)
         menus = db.query(MenuDefinition).order_by(MenuDefinition.section, MenuDefinition.sort_order).all()
 
         menu_list = []
@@ -399,6 +431,7 @@ async def get_user_menus(
 ):
     """Get menus accessible to the current user."""
     try:
+        sync_default_menu_definitions(db)
         # Determine user's role
         if is_superadmin(current_user):
             role = "admin"
@@ -449,6 +482,7 @@ async def get_guest_menus(
 ):
     """Get menus accessible to guest users."""
     try:
+        sync_default_menu_definitions(db)
         # Get all menus that guests can access
         accessible_menus = (
             db.query(MenuDefinition)

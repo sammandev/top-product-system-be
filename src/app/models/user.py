@@ -19,7 +19,7 @@ class UserRole(enum.StrEnum):
 
     - developer: Hardcoded identity, auto-assigned on login. Cannot be modified via UI. Full access.
     - superadmin: Granted by developer only. Full system access except modifying developer users.
-    - admin: All pages except System Cleanup, App Configuration, Roles & Permissions, Menu Access.
+    - admin: All pages except System Cleanup, App Configuration, and Menu Access.
     - user: Standard pages + Tools. No admin/system pages.
     - guest: Only Top Products Analysis + Data Explorer. Can be granted more via menu_permissions.
     """

@@ -65,6 +65,13 @@ def _round2(x: float) -> float:
     return round(x, 2)
 
 
+def _exceeds_max_deviation(deviation: float | None, max_deviation: float | None) -> bool:
+    """Check whether the scored deviation exceeds the configured maximum."""
+    if deviation is None or max_deviation is None:
+        return False
+    return abs(deviation) > max_deviation
+
+
 def _has_control_limits(test_item: dict) -> bool:
     """Check if test item has UCL or LCL control limits."""
     ucl_str = str(test_item.get("UCL", "")).strip()
@@ -699,6 +706,9 @@ def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> Tes
 
     # Normalize score to 0-1 range for storage (divide by 10)
     normalized_score = score / SCORE_MAX
+    max_deviation = config.max_deviation if config else None
+    exceeds_max_deviation = _exceeds_max_deviation(deviation, max_deviation)
+    below_min_score = bool(config and config.min_score is not None and normalized_score < config.min_score)
 
     return TestItemScoreResult(
         test_item_name=name,
@@ -712,6 +722,9 @@ def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> Tes
         deviation=deviation,
         weight=weight,
         target=target,
+        max_deviation=max_deviation,
+        exceeds_max_deviation=exceeds_max_deviation,
+        below_min_score=below_min_score,
     )
 
 
@@ -772,7 +785,7 @@ def score_record(record: dict, config_map: dict[str, ScoringConfig], include_bin
             value_weighted_scores.append((weighted_score, effective_weight))
             all_weighted_scores.append((weighted_score, effective_weight))
 
-        if result.status.upper() == "FAIL":
+        if result.status.upper() == "FAIL" or result.exceeds_max_deviation or result.below_min_score:
             failed_count += 1
 
     # Calculate aggregate scores using proper weighted average (sum of weighted scores / sum of weights)

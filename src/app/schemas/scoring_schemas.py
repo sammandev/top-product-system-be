@@ -99,7 +99,7 @@ class ScoringConfig(BaseModel):
     max_deviation: float | None = Field(
         default=None,
         ge=0,
-        description="Legacy: Maximum deviation for PER/MASK scoring (deprecated)"
+        description="Maximum allowed deviation before the DUT is marked as failed"
     )
 
 
@@ -117,6 +117,9 @@ class TestItemScoreResult(BaseModel):
     deviation: float | None = None
     weight: float = Field(default=1.0, description="Weight used for this test item in scoring")
     target: float | None = Field(default=None, description="Target value used for scoring")
+    max_deviation: float | None = Field(default=None, description="Configured maximum allowed deviation")
+    exceeds_max_deviation: bool = Field(default=False, description="Whether deviation exceeded the configured maximum")
+    below_min_score: bool = Field(default=False, description="Whether score fell below the configured minimum")
 
 
 class RecordScoreResult(BaseModel):

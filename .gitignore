@@ -37,6 +37,8 @@ pip-log.txt
 pip-delete-this-directory.txt
 .agents/
 .vscode/
+opencode.json
+skills-lock.json
 
 # PyInstaller
 *.manifest

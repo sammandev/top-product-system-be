@@ -59,6 +59,7 @@ from app.schemas.iplas_schemas import (
     IplasStation,
     IplasStationListRequest,
     IplasStationListResponse,
+    IplasServerTimeResponse,
     IplasStationsFromIsnBatchItem,
     IplasStationsFromIsnBatchRequest,
     IplasStationsFromIsnBatchResponse,
@@ -2528,6 +2529,18 @@ async def health_check():
     }
 
 
+@router.get(
+    "/server-time",
+    response_model=IplasServerTimeResponse,
+    summary="Get current iPLAS server time",
+    description="Fetches the current upstream iPLAS server time used for mirror-aligned date presets.",
+)
+async def get_server_time() -> IplasServerTimeResponse:
+    """Return the observable iPLAS server time in UTC."""
+    server_time = await _get_iplas_server_time()
+    return IplasServerTimeResponse(server_time=server_time.isoformat())
+
+
 # ============================================================================
 # iPLAS v2 API Proxy Endpoints
 # ============================================================================
@@ -2547,6 +2560,7 @@ async def health_check():
 )
 async def get_site_projects(
     data_type: Literal["simple", "strict"] = Query(default="simple", description="Data type filter"),
+    force_refresh: bool = Query(default=False, description="Bypass Redis and refresh site/project metadata cache"),
 ) -> IplasSiteProjectListResponse:
     """Get all site/project pairs with caching."""
     redis = get_redis_client()
@@ -2555,8 +2569,8 @@ async def get_site_projects(
     cached = False
     all_projects: list[SiteProject] = []
 
-    # Try cache first
-    if redis:
+    # Try cache first unless caller requests a refresh.
+    if redis and not force_refresh:
         try:
             cached_data = redis.get(cache_key)
             if cached_data:
@@ -2569,7 +2583,7 @@ async def get_site_projects(
 
     # Fetch from iPLAS if cache miss
     if not cached:
-        logger.debug(f"Cache MISS: {cache_key}")
+        logger.debug(f"Cache {'REFRESH' if force_refresh else 'MISS'}: {cache_key}")
 
         # Query all configured sites
         for site_name, site_config in IPLAS_SITES.items():

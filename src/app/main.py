@@ -38,6 +38,9 @@ except ImportError:  # pragma: no cover - optional dependency
     AuthConfig = None
     FastApiMCP = None
 
+# Load local env before importing app modules that read env at import time.
+load_dotenv()
+
 from app.dependencies.external_api_client import get_settings
 from app.dependencies.authz import get_current_user
 from app.utils.auth import validate_auth_configuration
@@ -47,8 +50,6 @@ from app.utils.helpers import _start_cleanup_worker
 warnings.filterwarnings("ignore", message="Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater", category=UserWarning, module="fastapi._compat.v1")
 
 logger = logging.getLogger(__name__)
-
-load_dotenv()
 
 
 class _JsonLogFormatter(logging.Formatter):

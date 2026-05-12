@@ -1,13 +1,22 @@
 import os
+from pathlib import Path
 
+from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
+
+# Load the project .env before resolving database settings. This module is
+# imported very early by auth/model dependencies, before app.main gets a chance
+# to call load_dotenv().
+load_dotenv(Path(__file__).resolve().parents[3] / ".env")
+
+DB_PASSWORD = os.environ.get("DB_PASSWORD", os.environ.get("DB_PASS", "test123"))
 
 # Build DATABASE_URL from env or use DATABASE_URL if provided
 DB_NAME = os.environ.get("DB_NAME", os.environ.get("DB", "postgres"))
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    f"postgresql+psycopg://{os.environ.get('DB_USER', 'postgres')}:{os.environ.get('DB_PASS', 'test123')}@{os.environ.get('DB_HOST', 'localhost')}:{os.environ.get('DB_PORT', '5432')}/{DB_NAME}",
+    f"postgresql+psycopg://{os.environ.get('DB_USER', 'postgres')}:{DB_PASSWORD}@{os.environ.get('DB_HOST', 'localhost')}:{os.environ.get('DB_PORT', '5432')}/{DB_NAME}",
 )
 
 # Lazy engine creation to avoid environment races (tests may set env vars before starting uvicorn)

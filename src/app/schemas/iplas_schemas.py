@@ -355,6 +355,12 @@ class IplasDeviceListResponse(BaseModel):
     cached: bool = Field(..., description="True if data was served from cache")
 
 
+class IplasServerTimeResponse(BaseModel):
+    """Response schema for iPLAS server time."""
+
+    server_time: str = Field(..., description="Current iPLAS server time in ISO-8601 UTC format")
+
+
 class IplasIsnSearchRequest(BaseModel):
     """Request schema for ISN search."""
 

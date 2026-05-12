@@ -1,8 +1,10 @@
 """Alembic environment configuration for FastAPI backend database migrations."""
 
 import os
+from pathlib import Path
 from logging.config import fileConfig
 
+from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 
 from alembic import context
@@ -10,6 +12,8 @@ from alembic import context
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
@@ -29,10 +33,11 @@ from app.models.user import User  # noqa: E402, F401
 target_metadata = Base.metadata
 
 # Get DATABASE_URL from environment (same logic as db/__init__.py)
+DB_PASSWORD = os.environ.get("DB_PASSWORD", os.environ.get("DB_PASS", "test123"))
 DB_NAME = os.environ.get("DB_NAME", os.environ.get("DB", "postgres"))
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    f"postgresql+psycopg://{os.environ.get('DB_USER', 'postgres')}:{os.environ.get('DB_PASS', 'test123')}@{os.environ.get('DB_HOST', 'localhost')}:{os.environ.get('DB_PORT', '5432')}/{DB_NAME}",
+    f"postgresql+psycopg://{os.environ.get('DB_USER', 'postgres')}:{DB_PASSWORD}@{os.environ.get('DB_HOST', 'localhost')}:{os.environ.get('DB_PORT', '5432')}/{DB_NAME}",
 )
 
 # Override the sqlalchemy.url in alembic.ini with our environment-based URL

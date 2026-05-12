@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha1
 from typing import Any, Literal
+from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -56,6 +57,12 @@ from app.schemas.iplas_schemas import (
     IplasRecordTestItemsRequest,
     IplasRecordTestItemsResponse,
     IplasSiteProjectListResponse,
+    IplasStationSearchRunCreateRequest,
+    IplasStationSearchRunRecordsRequest,
+    IplasStationSearchRunRecordsResponse,
+    IplasStationSearchRunResponse,
+    IplasStationSearchRunSelection,
+    IplasStationSearchRunStationSummary,
     IplasStation,
     IplasStationListRequest,
     IplasStationListResponse,
@@ -180,6 +187,7 @@ IPLAS_STATION_BUCKET_PARTIAL_TTL = int(os.getenv("IPLAS_STATION_BUCKET_PARTIAL_T
 IPLAS_STATION_BUCKET_HOT_TTL = int(os.getenv("IPLAS_STATION_BUCKET_HOT_TTL", "30"))
 IPLAS_STATION_BUCKET_EMPTY_HOT_TTL = int(os.getenv("IPLAS_STATION_BUCKET_EMPTY_HOT_TTL", "15"))
 IPLAS_STATION_BUCKET_LOCK_TTL = int(os.getenv("IPLAS_STATION_BUCKET_LOCK_TTL", "20"))
+IPLAS_STATION_SEARCH_RUN_TTL_SECONDS = int(os.getenv("IPLAS_STATION_SEARCH_RUN_TTL_SECONDS", "1800"))
 IPLAS_SERVER_TIME_URL = os.getenv("IPLAS_SERVER_TIME_URL", "http://10.176.33.93/cfs/servertime")
 
 # Fallback for legacy env vars
@@ -264,6 +272,8 @@ async def _cleanup_in_flight(cache_key: str, delay: float = 2.0) -> None:
 
 _http_client: httpx.AsyncClient | None = None
 _http_client_lock = asyncio.Lock()
+_station_search_runs: dict[str, StationSearchRunState] = {}
+_station_search_runs_lock = asyncio.Lock()
 
 
 async def _get_http_client() -> httpx.AsyncClient:
@@ -437,6 +447,53 @@ class StationRangeResponseMetadata:
     cache_coverage: Literal["full", "partial", "miss"]
     validated_until: datetime | None
     bucket_stats: list[StationRangeBucketStat]
+
+
+StationSearchRunStatus = Literal["pending", "running", "completed", "failed"]
+
+
+@dataclass(slots=True)
+class StationSearchRunSelectionEntry:
+    """Resolved station selection stored in a backend Station Search run."""
+
+    station: str
+    device_ids: list[str]
+    test_status: Literal["ALL", "PASS", "FAIL"]
+
+
+@dataclass(slots=True)
+class StationSearchRunStationResult:
+    """Per-station aggregate data stored for a Station Search run."""
+
+    station: str
+    requested_test_status: Literal["ALL", "PASS", "FAIL"]
+    selected_device_ids: list[str]
+    available_device_ids: list[str]
+    total_records: int
+
+
+@dataclass(slots=True)
+class StationSearchRunState:
+    """In-memory state for a backend-managed Station Search run."""
+
+    run_id: str
+    status: StationSearchRunStatus
+    site: str
+    project: str
+    begin_time: datetime
+    end_time: datetime
+    selections: list[StationSearchRunSelectionEntry]
+    total_records: int
+    total_stations: int
+    total_combinations: int
+    processed_combinations: int
+    possibly_truncated: bool
+    created_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+    error_message: str | None
+    station_results: list[StationSearchRunStationResult]
+    records: list[dict[str, Any]]
 
 
 def _ensure_utc_datetime(value: datetime) -> datetime:
@@ -1849,6 +1906,89 @@ def _extract_unique_test_items(records: list[dict[str, Any]]) -> list[IplasTestI
 
 
 @router.post(
+    "/station-search-runs",
+    response_model=IplasStationSearchRunResponse,
+    summary="Create a backend-managed Station Search run",
+    description="""
+    Creates an asynchronous Station Search run that fetches and deduplicates
+    records across multiple station and device selections. The frontend can poll
+    the run status and page the merged record set once the run completes.
+    """,
+)
+async def create_station_search_run(
+    request: IplasStationSearchRunCreateRequest,
+) -> IplasStationSearchRunResponse:
+    """Create a Station Search run and start it in the background."""
+    normalized_selections = [_normalize_station_search_selection(selection) for selection in request.selections]
+    run_id = uuid4().hex
+    now = datetime.now(UTC)
+    total_combinations = sum(max(len(selection.device_ids), 1) for selection in normalized_selections)
+
+    run = StationSearchRunState(
+        run_id=run_id,
+        status="pending",
+        site=request.site,
+        project=request.project,
+        begin_time=_ensure_utc_datetime(request.begin_time),
+        end_time=_ensure_utc_datetime(request.end_time),
+        selections=normalized_selections,
+        total_records=0,
+        total_stations=len(normalized_selections),
+        total_combinations=total_combinations,
+        processed_combinations=0,
+        possibly_truncated=False,
+        created_at=now,
+        started_at=None,
+        completed_at=None,
+        error_message=None,
+        station_results=[],
+        records=[],
+    )
+
+    async with _station_search_runs_lock:
+        _station_search_runs[run_id] = run
+
+    asyncio.create_task(_execute_station_search_run(run_id, request.token))
+    return _build_station_search_run_response(run)
+
+
+@router.get(
+    "/station-search-runs/{run_id}",
+    response_model=IplasStationSearchRunResponse,
+    summary="Get Station Search run status",
+)
+async def get_station_search_run(run_id: str) -> IplasStationSearchRunResponse:
+    """Return the current status of a Station Search run."""
+    run = await _get_station_search_run_or_404(run_id)
+    return _build_station_search_run_response(run)
+
+
+@router.post(
+    "/station-search-runs/{run_id}/records",
+    response_model=IplasStationSearchRunRecordsResponse,
+    summary="Get paginated records from a completed Station Search run",
+)
+async def get_station_search_run_records(
+    run_id: str,
+    request: IplasStationSearchRunRecordsRequest,
+) -> IplasStationSearchRunRecordsResponse:
+    """Filter and page compact records from a completed Station Search run."""
+    run = await _get_station_search_run_or_404(run_id)
+    if run.status != "completed":
+        raise HTTPException(status_code=409, detail="Station Search run is not completed yet")
+
+    filtered_records = _filter_station_search_run_records(run.records, request)
+    paginated_records = filtered_records[request.offset : request.offset + request.limit]
+    validated_records = [CompactCsvTestItemRecord.model_validate(record) for record in paginated_records]
+
+    return IplasStationSearchRunRecordsResponse(
+        data=validated_records,
+        total_records=len(filtered_records),
+        returned_records=len(validated_records),
+    )
+
+
+@router.post(
     "/csv-test-items",
     response_model=IplasCsvTestItemResponse,
     summary="Get filtered CSV test items from iPLAS",
@@ -1992,6 +2132,239 @@ def _build_bucket_stats_response(
         }
         for stat in response_metadata.bucket_stats
     ]
+
+
+def _compact_record_sort_value(record: dict[str, Any], sort_field: str) -> str:
+    """Normalize compact record sort values to strings for predictable ordering."""
+    value = record.get(sort_field)
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def _map_station_run_sort_field(sort_by: str | None) -> str:
+    """Map frontend sort field names to compact record keys."""
+    field_mapping = {
+        "TestStartTime": "Test Start Time",
+        "TestEndTime": "Test end Time",
+        "TestStatus": "Test Status",
+        "ISN": "ISN",
+        "DeviceId": "DeviceId",
+        "ErrorCode": "ErrorCode",
+        "ErrorName": "ErrorName",
+        "station": "station",
+        "Site": "Site",
+        "Project": "Project",
+    }
+    return field_mapping.get(sort_by or "TestStartTime", sort_by or "Test Start Time")
+
+
+def _normalize_station_search_selection(
+    selection: IplasStationSearchRunSelection,
+) -> StationSearchRunSelectionEntry:
+    """Normalize selection payloads before storing them in a run."""
+    normalized_device_ids = [device_id for device_id in selection.device_ids if device_id]
+    return StationSearchRunSelectionEntry(
+        station=selection.station,
+        device_ids=normalized_device_ids,
+        test_status=selection.test_status,
+    )
+
+
+def _build_station_search_run_response(
+    run: StationSearchRunState,
+) -> IplasStationSearchRunResponse:
+    """Convert internal run state into an API response model."""
+    return IplasStationSearchRunResponse(
+        run_id=run.run_id,
+        status=run.status,
+        site=run.site,
+        project=run.project,
+        begin_time=_bucket_cache_datetime_to_str(run.begin_time),
+        end_time=_bucket_cache_datetime_to_str(run.end_time),
+        total_records=run.total_records,
+        total_stations=run.total_stations,
+        total_combinations=run.total_combinations,
+        processed_combinations=run.processed_combinations,
+        possibly_truncated=run.possibly_truncated,
+        created_at=_bucket_cache_datetime_to_str(run.created_at),
+        started_at=_bucket_cache_datetime_to_str(run.started_at) or None,
+        completed_at=_bucket_cache_datetime_to_str(run.completed_at) or None,
+        error_message=run.error_message,
+        stations=[
+            IplasStationSearchRunStationSummary(
+                station=station_result.station,
+                requested_test_status=station_result.requested_test_status,
+                selected_device_ids=station_result.selected_device_ids,
+                available_device_ids=station_result.available_device_ids,
+                total_records=station_result.total_records,
+            )
+            for station_result in run.station_results
+        ],
+    )
+
+
+async def _get_station_search_run_or_404(run_id: str) -> StationSearchRunState:
+    """Return a Station Search run or raise 404 when it does not exist."""
+    await _cleanup_expired_station_search_runs()
+    async with _station_search_runs_lock:
+        run = _station_search_runs.get(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Station Search run not found")
+        return run
+
+
+async def _cleanup_expired_station_search_runs() -> None:
+    """Delete Station Search runs that have exceeded their in-memory TTL."""
+    now = datetime.now(UTC)
+    expired_run_ids: list[str] = []
+
+    async with _station_search_runs_lock:
+        for run_id, run in _station_search_runs.items():
+            expiry_anchor = run.completed_at or run.created_at
+            expires_at = expiry_anchor + timedelta(seconds=IPLAS_STATION_SEARCH_RUN_TTL_SECONDS)
+            if expires_at <= now:
+                expired_run_ids.append(run_id)
+
+        for run_id in expired_run_ids:
+            _station_search_runs.pop(run_id, None)
+
+
+def _filter_station_search_run_records(
+    records: list[dict[str, Any]],
+    request: IplasStationSearchRunRecordsRequest,
+) -> list[dict[str, Any]]:
+    """Apply station-search record filtering for a completed run."""
+    filtered = records
+
+    if request.station:
+        filtered = [record for record in filtered if record.get("station") == request.station]
+
+    if request.device_ids:
+        requested_device_ids = set(request.device_ids)
+        filtered = [record for record in filtered if record.get("DeviceId") in requested_device_ids]
+
+    if request.test_status != "ALL":
+        filtered = [record for record in filtered if record.get("Test Status") == request.test_status]
+
+    if request.search:
+        normalized_search = request.search.strip().lower()
+        if normalized_search:
+            filtered = [
+                record
+                for record in filtered
+                if normalized_search in str(record.get("ISN", "")).lower()
+                or normalized_search in str(record.get("DeviceId", "")).lower()
+                or normalized_search in str(record.get("ErrorCode", "")).lower()
+                or normalized_search in str(record.get("ErrorName", "")).lower()
+            ]
+
+    sort_field = _map_station_run_sort_field(request.sort_by)
+    filtered = sorted(
+        filtered,
+        key=lambda record: _compact_record_sort_value(record, sort_field),
+        reverse=request.sort_desc,
+    )
+
+    return filtered
+
+
+async def _execute_station_search_run(run_id: str, user_token: str | None) -> None:
+    """Populate a Station Search run asynchronously using existing bucket-cache fetchers."""
+    async with _station_search_runs_lock:
+        run = _station_search_runs.get(run_id)
+        if run is None:
+            return
+        run.status = "running"
+        run.started_at = datetime.now(UTC)
+        selections = list(run.selections)
+        site = run.site
+        project = run.project
+        begin_time = run.begin_time
+        end_time = run.end_time
+
+    redis = get_redis_client()
+    run_records: list[dict[str, Any]] = []
+    station_results: list[StationSearchRunStationResult] = []
+    processed_combinations = 0
+    possibly_truncated = False
+
+    try:
+        for selection in selections:
+            station_records: list[dict[str, Any]] = []
+            requested_device_ids = selection.device_ids if selection.device_ids else ["ALL"]
+
+            for device_id in requested_device_ids:
+                request = IplasCsvTestItemRequest(
+                    site=site,
+                    project=project,
+                    station=selection.station,
+                    device_id=device_id,
+                    begin_time=begin_time,
+                    end_time=end_time,
+                    test_status=selection.test_status,
+                    token=user_token,
+                )
+                records, truncated, _chunks_fetched, _total_chunks, _used_hybrid_strategy, _cached, _metadata = await _fetch_station_range_for_request(
+                    request,
+                    redis,
+                )
+                station_records.extend(records)
+                processed_combinations += 1
+                possibly_truncated = possibly_truncated or truncated
+
+                async with _station_search_runs_lock:
+                    current_run = _station_search_runs.get(run_id)
+                    if current_run is not None:
+                        current_run.processed_combinations = processed_combinations
+                        current_run.possibly_truncated = possibly_truncated
+
+            deduplicated_station_records = _deduplicate_station_records(station_records)
+            run_records.extend(deduplicated_station_records)
+            station_results.append(
+                StationSearchRunStationResult(
+                    station=selection.station,
+                    requested_test_status=selection.test_status,
+                    selected_device_ids=selection.device_ids,
+                    available_device_ids=sorted(
+                        {
+                            str(record.get("DeviceId", ""))
+                            for record in deduplicated_station_records
+                            if str(record.get("DeviceId", ""))
+                        }
+                    ),
+                    total_records=len(deduplicated_station_records),
+                )
+            )
+
+        deduplicated_run_records = _deduplicate_station_records(run_records)
+        compact_records = [_convert_to_compact_record_dict(record) for record in deduplicated_run_records]
+
+        async with _station_search_runs_lock:
+            current_run = _station_search_runs.get(run_id)
+            if current_run is None:
+                return
+            current_run.records = compact_records
+            current_run.station_results = station_results
+            current_run.total_records = len(compact_records)
+            current_run.processed_combinations = processed_combinations
+            current_run.possibly_truncated = possibly_truncated
+            current_run.status = "completed"
+            current_run.completed_at = datetime.now(UTC)
+            current_run.error_message = None
+    except Exception as exc:
+        logger.exception("Station Search run %s failed", run_id)
+        async with _station_search_runs_lock:
+            current_run = _station_search_runs.get(run_id)
+            if current_run is None:
+                return
+            current_run.processed_combinations = processed_combinations
+            current_run.possibly_truncated = possibly_truncated
+            current_run.status = "failed"
+            current_run.completed_at = datetime.now(UTC)
+            current_run.error_message = str(exc)
 
 
 @router.post(

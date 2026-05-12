@@ -286,6 +286,122 @@ class CompactCsvTestItemResponse(BaseModel):
 
 
 # ============================================================================
+# Station Search Run Schemas
+# ============================================================================
+
+
+class IplasStationSearchRunSelection(BaseModel):
+    """Station scope included in a backend-managed Station Search run."""
+
+    station: str = Field(..., description="Station display name")
+    device_ids: list[str] = Field(
+        default_factory=list,
+        description="Selected device IDs for this station. Empty means search all devices.",
+    )
+    test_status: Literal["ALL", "PASS", "FAIL"] = Field(
+        default="ALL",
+        description="Filter by test status for this station selection",
+    )
+
+
+class IplasStationSearchRunCreateRequest(BaseModel):
+    """Request schema for creating a backend-managed Station Search run."""
+
+    site: str = Field(..., description="Site identifier")
+    project: str = Field(..., description="Project identifier")
+    begin_time: datetime = Field(..., description="Start time for the query")
+    end_time: datetime = Field(..., description="End time for the query")
+    selections: list[IplasStationSearchRunSelection] = Field(
+        ...,
+        min_length=1,
+        description="Station selections to include in the run",
+    )
+    token: str | None = Field(
+        default=None,
+        description="Optional user-provided token. If not provided, uses backend default.",
+    )
+
+
+class IplasStationSearchRunStationSummary(BaseModel):
+    """Per-station summary returned for a Station Search run."""
+
+    station: str = Field(..., description="Station display name")
+    requested_test_status: Literal["ALL", "PASS", "FAIL"] = Field(
+        default="ALL",
+        description="Test status filter applied to this station selection",
+    )
+    selected_device_ids: list[str] = Field(
+        default_factory=list,
+        description="Device IDs explicitly requested for this station",
+    )
+    available_device_ids: list[str] = Field(
+        default_factory=list,
+        description="Distinct device IDs discovered in the run results for this station",
+    )
+    total_records: int = Field(default=0, description="Total records found for this station")
+
+
+class IplasStationSearchRunResponse(BaseModel):
+    """Status response for a backend-managed Station Search run."""
+
+    run_id: str = Field(..., description="Opaque Station Search run identifier")
+    status: Literal["pending", "running", "completed", "failed"] = Field(
+        ...,
+        description="Current lifecycle state of the run",
+    )
+    site: str = Field(..., description="Site identifier")
+    project: str = Field(..., description="Project identifier")
+    begin_time: str = Field(..., description="Run start time in ISO-8601 UTC format")
+    end_time: str = Field(..., description="Run end time in ISO-8601 UTC format")
+    total_records: int = Field(default=0, description="Total deduplicated records stored for the run")
+    total_stations: int = Field(default=0, description="Total station selections included in the run")
+    total_combinations: int = Field(default=0, description="Total station/device combinations queued for the run")
+    processed_combinations: int = Field(default=0, description="Number of station/device combinations processed so far")
+    possibly_truncated: bool = Field(
+        default=False,
+        description="True if any upstream request hit the 5000-row limit",
+    )
+    created_at: str = Field(..., description="Run creation time in ISO-8601 UTC format")
+    started_at: str | None = Field(default=None, description="Run execution start time in ISO-8601 UTC format")
+    completed_at: str | None = Field(default=None, description="Run completion time in ISO-8601 UTC format")
+    error_message: str | None = Field(default=None, description="Failure message when status is failed")
+    stations: list[IplasStationSearchRunStationSummary] = Field(
+        default_factory=list,
+        description="Per-station result summaries for the run",
+    )
+
+
+class IplasStationSearchRunRecordsRequest(BaseModel):
+    """Request schema for paginating records from a completed Station Search run."""
+
+    station: str | None = Field(default=None, description="Optional station filter")
+    device_ids: list[str] = Field(default_factory=list, description="Optional device ID filters")
+    test_status: Literal["ALL", "PASS", "FAIL"] = Field(
+        default="ALL",
+        description="Optional record status filter",
+    )
+    search: str | None = Field(
+        default=None,
+        description="Case-insensitive search across ISN, Device ID, Error Code, and Error Name",
+    )
+    limit: int = Field(default=25, ge=1, le=500, description="Maximum records to return")
+    offset: int = Field(default=0, ge=0, description="Number of records to skip")
+    sort_by: str | None = Field(
+        default="TestStartTime",
+        description="Field name to sort by (for example TestStartTime, TestEndTime, ISN, DeviceId)",
+    )
+    sort_desc: bool = Field(default=True, description="Sort descending when true")
+
+
+class IplasStationSearchRunRecordsResponse(BaseModel):
+    """Paginated compact records from a completed Station Search run."""
+
+    data: list[CompactCsvTestItemRecord] = Field(..., description="Compact station-search records")
+    total_records: int = Field(..., description="Total matching records before pagination")
+    returned_records: int = Field(..., description="Number of records returned in this page")
+
+
+# ============================================================================
 # iPLAS v2 API Schemas
 # ============================================================================
 

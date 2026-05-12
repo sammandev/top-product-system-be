@@ -272,7 +272,7 @@ async def _cleanup_in_flight(cache_key: str, delay: float = 2.0) -> None:
 
 _http_client: httpx.AsyncClient | None = None
 _http_client_lock = asyncio.Lock()
-_station_search_runs: dict[str, StationSearchRunState] = {}
+_station_search_runs: dict[str, "StationSearchRunState"] = {}
 _station_search_runs_lock = asyncio.Lock()
 
 

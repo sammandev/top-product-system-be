@@ -100,11 +100,40 @@ def _build_scoring_config_map(scoring_configs_json: str | None) -> dict[str, Sco
                     target=cfg.get("target"),
                     policy=ScoringPolicy(cfg.get("policy", "symmetrical")) if cfg.get("policy") else ScoringPolicy.SYMMETRICAL,
                     limit_score=cfg.get("limit_score"),
+                    alpha=cfg.get("alpha"),
+                    min_score=cfg.get("min_score"),
+                    max_deviation=cfg.get("max_deviation"),
                 )
     except (json.JSONDecodeError, ValueError) as e:
         logger.warning(f"Failed to parse scoring_configs JSON: {e}")
 
     return config_map
+
+
+def _has_meaningful_limit(limit: float | None) -> bool:
+    """Treat placeholder zero limits as absent for upload-log criteria decisions."""
+    return limit is not None and limit != 0
+
+
+def _should_score_upload_item(
+    test_item_name: str,
+    usl: float | None,
+    lsl: float | None,
+    config_map: dict[str, ScoringConfig],
+) -> bool:
+    config = config_map.get(test_item_name)
+    if config and not config.enabled:
+        return False
+
+    has_limits = _has_meaningful_limit(usl) or _has_meaningful_limit(lsl)
+    return has_limits or config is not None
+
+
+def _should_include_score_in_aggregate(score: float, config: ScoringConfig | None) -> bool:
+    if not config or config.min_score is None:
+        return True
+
+    return (score / 10.0) >= config.min_score
 
 
 def _raise_test_log_processing_error(detail: str, exc: Exception, status_code: int) -> None:
@@ -148,6 +177,9 @@ def _score_test_item_universal(
         "ucl": result.ucl,
         "lcl": result.lcl,
         "actual": result.value,
+        "below_min_score": result.below_min_score,
+        "max_deviation": result.max_deviation,
+        "exceeds_max_deviation": result.exceeds_max_deviation,
     }
 
     return {"score": score_0_10, "score_breakdown": breakdown}
@@ -164,11 +196,8 @@ def _apply_universal_scoring_to_parse_result(result: dict, config_map: dict[str,
     for item in result.get("parsed_items_enhanced", []):
         # Only score value-type items (not binary)
         if item.get("is_value_type") and item.get("numeric_value") is not None:
-            # UPDATED: By default, only score Criteria items (those with UCL or LCL).
-            # Non-Criteria items (no limits) are skipped unless user explicitly configured them.
-            has_limits = item.get("usl") is not None or item.get("lsl") is not None
-            has_explicit_config = item["test_item"] in config_map
-            if not has_limits and not has_explicit_config:
+            config = config_map.get(item["test_item"])
+            if not _should_score_upload_item(item["test_item"], item.get("usl"), item.get("lsl"), config_map):
                 item["score"] = None
                 item["score_breakdown"] = None
                 continue
@@ -182,7 +211,8 @@ def _apply_universal_scoring_to_parse_result(result: dict, config_map: dict[str,
             )
             item["score"] = scoring_result["score"]
             item["score_breakdown"] = scoring_result["score_breakdown"]
-            scored_values.append(scoring_result["score"])
+            if _should_include_score_in_aggregate(scoring_result["score"], config):
+                scored_values.append(scoring_result["score"])
         else:
             # Non-value items: binary scoring (PASS=10, FAIL=0)
             item["score"] = None
@@ -218,11 +248,13 @@ def _apply_universal_scoring_to_compare_result(result: dict, config_map: dict[st
             for per_isn in compare_item.get("per_isn_data", []):
                 # Try to score if we have a numeric value
                 if per_isn.get("is_value_type") and per_isn.get("numeric_value") is not None:
-                    # UPDATED: By default, only score Criteria items (those with UCL or LCL).
-                    # Non-Criteria items (no limits) are skipped unless user explicitly configured them.
-                    has_limits = compare_item.get("usl") is not None or compare_item.get("lsl") is not None
-                    has_explicit_config = compare_item["test_item"] in config_map
-                    if not has_limits and not has_explicit_config:
+                    config = config_map.get(compare_item["test_item"])
+                    if not _should_score_upload_item(
+                        compare_item["test_item"],
+                        compare_item.get("usl"),
+                        compare_item.get("lsl"),
+                        config_map,
+                    ):
                         per_isn["score"] = None
                         per_isn["score_breakdown"] = None
                         continue
@@ -236,7 +268,8 @@ def _apply_universal_scoring_to_compare_result(result: dict, config_map: dict[st
                     )
                     per_isn["score"] = scoring_result["score"]
                     per_isn["score_breakdown"] = scoring_result["score_breakdown"]
-                    item_scored_values.append(scoring_result["score"])
+                    if _should_include_score_in_aggregate(scoring_result["score"], config):
+                        item_scored_values.append(scoring_result["score"])
                 else:
                     per_isn["score"] = None
                     per_isn["score_breakdown"] = None
@@ -657,6 +690,8 @@ async def rescore_test_log_items(request: TestLogRescoreRequest) -> TestLogResco
                 policy=ScoringPolicy(cfg.get("policy", "symmetrical")) if cfg.get("policy") else ScoringPolicy.SYMMETRICAL,
                 limit_score=cfg.get("limit_score"),
                 alpha=cfg.get("alpha"),
+                min_score=cfg.get("min_score"),
+                max_deviation=cfg.get("max_deviation"),
             )
 
     # Score each test item
@@ -672,11 +707,27 @@ async def rescore_test_log_items(request: TestLogRescoreRequest) -> TestLogResco
         # Get config or use auto-detection
         config = config_map.get(name)
 
+        if config and not config.enabled:
+            item_scores.append(
+                TestLogRescoreItemResult(
+                    test_item=name,
+                    value=item.get("value"),
+                    usl=item.get("usl"),
+                    lsl=item.get("lsl"),
+                    status=item.get("status") or "PASS",
+                    scoring_type=config.scoring_type.value,
+                    policy=config.policy.value if config.policy else None,
+                    score=None,
+                    deviation=None,
+                    weight=config.weight,
+                    target=config.target,
+                )
+            )
+            continue
+
         # UPDATED: By default, only score Criteria items (those with UCL or LCL).
         # Non-Criteria items (no limits) are skipped unless user explicitly configured them.
-        has_limits = item.get("usl") is not None or item.get("lsl") is not None
-        has_explicit_config = name in config_map
-        if not has_limits and not has_explicit_config:
+        if not _should_score_upload_item(name, item.get("usl"), item.get("lsl"), config_map):
             # Return null score for non-criteria items without explicit config
             item_scores.append(
                 TestLogRescoreItemResult(
@@ -721,11 +772,12 @@ async def rescore_test_log_items(request: TestLogRescoreRequest) -> TestLogResco
         weight = result.weight
         effective_weight = weight * weight
         weighted_score = result.score * effective_weight
+        include_in_aggregate = _should_include_score_in_aggregate(score_0_10, config)
 
-        if result.scoring_type != ScoringType.BINARY:
+        if result.scoring_type != ScoringType.BINARY and include_in_aggregate:
             value_weighted_scores.append((weighted_score, effective_weight))
 
-        if result.scoring_type != ScoringType.BINARY or request.include_binary_in_overall:
+        if include_in_aggregate and (result.scoring_type != ScoringType.BINARY or request.include_binary_in_overall):
             all_weighted_scores.append((weighted_score, effective_weight))
 
     # Calculate aggregate scores

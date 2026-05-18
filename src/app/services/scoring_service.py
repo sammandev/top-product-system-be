@@ -613,6 +613,8 @@ def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> Tes
     value = _parse_float(value_str)
     ucl = _parse_float(ucl_str)
     lcl = _parse_float(lcl_str)
+    has_meaningful_ucl = ucl is not None and ucl != 0
+    has_meaningful_lcl = lcl is not None and lcl != 0
 
     # Determine scoring type
     scoring_type = config.scoring_type if config else detect_scoring_type(test_item)
@@ -639,7 +641,7 @@ def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> Tes
 
     elif scoring_type == ScoringType.PER_MASK:
         # PER/MASK scoring: UCL-only, lower is better (best=0)
-        if ucl is not None:
+        if has_meaningful_ucl:
             score, deviation = score_per_mask(value, ucl, limit_score)
             target = 0.0  # Target is 0 for PER/MASK (lower is better)
         else:
@@ -649,7 +651,7 @@ def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> Tes
 
     elif scoring_type == ScoringType.EVM:
         # EVM scoring: UCL-only, lower is better with gentle decay (best=-35)
-        if ucl is not None:
+        if has_meaningful_ucl:
             # Get EVM-specific parameters from config or defaults
             defaults = SCORING_TYPE_DEFAULTS.get(ScoringType.EVM, {})
             reference_best = defaults.get("reference_best", -35.0)
@@ -662,16 +664,16 @@ def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> Tes
             scoring_type = ScoringType.BINARY
 
     elif scoring_type == ScoringType.SYMMETRICAL:
-        if ucl is not None and lcl is not None:
+        if has_meaningful_ucl and has_meaningful_lcl:
             score, deviation = score_symmetrical(value, ucl, lcl, limit_score)
             target = (ucl + lcl) / 2  # Target is center for symmetrical
-        elif ucl is not None:
+        elif has_meaningful_ucl:
             # UCL-only: treat as if LCL is far below (value item, higher is better up to UCL)
             # Use value as lower bound if value < ucl
             inferred_lcl = min(value - abs(ucl - value), value * 0.5) if value is not None else ucl - 10
             score, deviation = score_symmetrical(value, ucl, inferred_lcl, limit_score)
             target = (ucl + inferred_lcl) / 2  # Target is center
-        elif lcl is not None:
+        elif has_meaningful_lcl:
             # LCL-only: treat as if UCL is far above (higher is better)
             inferred_ucl = max(value + abs(value - lcl), value * 1.5) if value is not None else lcl + 10
             score, deviation = score_symmetrical(value, inferred_ucl, lcl, limit_score)
@@ -682,7 +684,7 @@ def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> Tes
             scoring_type = ScoringType.BINARY
 
     elif scoring_type == ScoringType.ASYMMETRICAL:
-        if ucl is not None and lcl is not None:
+        if has_meaningful_ucl and has_meaningful_lcl:
             target = _get_config_param(config, "target", scoring_type)
             if target is None:
                 target = (ucl + lcl) / 2  # Fall back to center if no target specified
@@ -696,7 +698,7 @@ def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> Tes
     # UPDATED: Added throughput scoring case
     elif scoring_type == ScoringType.THROUGHPUT:
         # Throughput scoring: higher is better, target=UCL
-        if ucl is not None:
+        if has_meaningful_ucl:
             score, deviation = score_throughput(value, ucl, lcl, limit_score)
             target = ucl  # Target is UCL for throughput (higher is better)
         else:

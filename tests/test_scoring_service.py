@@ -58,3 +58,39 @@ def test_score_record_counts_deviation_fail_as_failed_item() -> None:
 
     assert result.failed_items == 1
     assert result.test_item_scores[0].exceeds_max_deviation is True
+
+
+def test_score_test_item_zero_only_limit_falls_back_to_binary_fail() -> None:
+    config = ScoringConfig(
+        test_item_name='ZERO_LIMIT_ITEM',
+        scoring_type=ScoringType.SYMMETRICAL,
+    )
+
+    result = score_test_item({
+        'NAME': 'ZERO_LIMIT_ITEM',
+        'STATUS': 'FAIL',
+        'VALUE': '0',
+        'UCL': '0',
+        'LCL': '',
+    }, config)
+
+    assert result.scoring_type == ScoringType.BINARY
+    assert result.score == 0.0
+
+
+def test_score_test_item_with_real_limit_and_zero_boundary_still_scores() -> None:
+    config = ScoringConfig(
+        test_item_name='ONE_REAL_LIMIT',
+        scoring_type=ScoringType.SYMMETRICAL,
+    )
+
+    result = score_test_item({
+        'NAME': 'ONE_REAL_LIMIT',
+        'STATUS': 'PASS',
+        'VALUE': '5',
+        'UCL': '10',
+        'LCL': '0',
+    }, config)
+
+    assert result.scoring_type == ScoringType.SYMMETRICAL
+    assert result.score == 1.0

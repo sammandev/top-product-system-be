@@ -274,6 +274,7 @@ _http_client: httpx.AsyncClient | None = None
 _http_client_lock = asyncio.Lock()
 _station_search_runs: dict[str, "StationSearchRunState"] = {}
 _station_search_runs_lock = asyncio.Lock()
+_station_search_tasks: set[asyncio.Task[None]] = set()
 
 
 async def _get_http_client() -> httpx.AsyncClient:
@@ -1948,7 +1949,9 @@ async def create_station_search_run(
     async with _station_search_runs_lock:
         _station_search_runs[run_id] = run
 
-    asyncio.create_task(_execute_station_search_run(run_id, request.token))
+    task = asyncio.create_task(_execute_station_search_run(run_id, request.token))
+    _station_search_tasks.add(task)
+    task.add_done_callback(_station_search_tasks.discard)
     return _build_station_search_run_response(run)
 
 

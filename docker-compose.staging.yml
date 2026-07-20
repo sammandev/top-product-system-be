@@ -15,6 +15,7 @@ services:
     network_mode: "host"
     environment:
       - PYTHONPATH=/app/src
+      - DUT_API_BASE_URL=http://172.18.220.56:9001
     env_file:
       - .env.staging
     volumes:

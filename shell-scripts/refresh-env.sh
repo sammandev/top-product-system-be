@@ -3,8 +3,8 @@
 # Usage: ./refresh-env.sh
 # Note: Edit .env.staging file first, then run this script
 #
-# This script restarts the backend service to pick up new environment variables.
-# It does NOT rebuild the Docker image.
+# This script recreates the backend container to pick up new environment variables.
+# It does NOT rebuild the Docker image or recreate dependent services.
 
 set -e
 
@@ -49,10 +49,11 @@ fi
 
 echo "✅ Containers are running"
 
-# Restart services to pick up new environment variables
+# Recreate the container so Docker injects the current .env.staging values.
+# `docker compose restart` only restarts the existing container and keeps its old environment.
 echo ""
-echo "♻️  Restarting ${SERVICE_NAME} service..."
-docker compose -f ${COMPOSE_FILE} restart ${SERVICE_NAME}
+echo "♻️  Recreating ${SERVICE_NAME} service..."
+docker compose -f ${COMPOSE_FILE} up -d --no-deps --force-recreate ${SERVICE_NAME}
 
 echo ""
 echo "⏳ Waiting for service to be ready..."
@@ -79,5 +80,6 @@ echo "-----------------------------------"
 echo "DB_HOST: $(docker compose -f ${COMPOSE_FILE} exec -T ${SERVICE_NAME} printenv DB_HOST 2>/dev/null || echo 'Not set')"
 echo "DB_NAME: $(docker compose -f ${COMPOSE_FILE} exec -T ${SERVICE_NAME} printenv DB_NAME 2>/dev/null || echo 'Not set')"
 echo "REDIS_HOST: $(docker compose -f ${COMPOSE_FILE} exec -T ${SERVICE_NAME} printenv REDIS_HOST 2>/dev/null || echo 'Not set')"
+echo "DUT_API_BASE_URL: $(docker compose -f ${COMPOSE_FILE} exec -T ${SERVICE_NAME} printenv DUT_API_BASE_URL 2>/dev/null || echo 'Not set')"
 echo "LOG_LEVEL: $(docker compose -f ${COMPOSE_FILE} exec -T ${SERVICE_NAME} printenv LOG_LEVEL 2>/dev/null || echo 'Not set')"
 echo "=================================================="

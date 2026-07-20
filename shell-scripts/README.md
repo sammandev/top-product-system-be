@@ -62,7 +62,7 @@ git pull
 ---
 
 ### 3. `refresh-env.sh` - Apply Environment Variable Changes
-Restart services to pick up new environment variables. **Does NOT rebuild.**
+Recreate the backend container to pick up new environment variables. **Does NOT rebuild.**
 
 ```bash
 # 1. Edit .env.staging file
@@ -74,7 +74,7 @@ nano .env.staging
 
 **What it does:**
 - 🔍 Verifies `.env.staging` exists
-- ♻️ Restarts service to pick up new env vars
+- ♻️ Recreates the service to inject new env vars
 - 📊 Shows current environment settings
 
 ---
@@ -181,7 +181,7 @@ nano .env.staging
 | Action | Old Way (Rebuild) | New Way (Hot Reload) |
 |--------|-------------------|----------------------|
 | Code change | `docker compose up --build` | `./update-code.sh` (just restart) |
-| Env change | Recreate container | `./refresh-env.sh` (just restart) |
+| Env change | Recreate container | `./refresh-env.sh` (force recreate, no build) |
 | Dependency change | Rebuild required | `./deploy-staging.sh` (rebuild) |
 | Time for code deploy | ~1-2 minutes | ~5-10 seconds |
 

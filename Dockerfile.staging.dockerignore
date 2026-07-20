@@ -1,0 +1,9 @@
+# The staging Dockerfile only needs project metadata and application source.
+# Keeping deployment files and runtime-mounted directories out of the context
+# reduces upload time and prevents staging secrets from reaching the builder.
+*
+!pyproject.toml
+!uv.lock
+!src/
+!src/**
+src/backend_fastapi.egg-info/

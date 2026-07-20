@@ -203,8 +203,15 @@ DB_NAME=top_products_db
 DB_USER=ptb
 DB_PASSWORD=ptb#1234
 
-# Redis (external, on host)
-REDIS_URL=redis://10.176.2.139:7071/0
+# Redis (existing host container)
+REDIS_URL=redis://127.0.0.1:6380/0
+```
+
+The staging Compose file reuses the existing `redis:alpine` container instead of creating `ast-tools-redis`. Verify that container and port before starting the backend:
+
+```bash
+docker exec redis-alpine redis-cli ping
+ss -lntp | grep ':6380'
 ```
 
 ---
@@ -218,8 +225,9 @@ The container can't reach PostgreSQL. Check:
 3. Is the firewall allowing connections?
 
 ### "Redis connection refused"
-1. Is Redis running on the host? `redis-cli -p 7071 ping`
-2. Is the `REDIS_URL` correct in `.env.staging`?
+1. Is the existing Redis container running? `docker exec redis-alpine redis-cli ping`
+2. Is port `6380` published? `ss -lntp | grep ':6380'`
+3. Is the `REDIS_URL` correct in `.env.staging`?
 
 ### Container not starting
 ```bash

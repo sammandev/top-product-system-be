@@ -1,5 +1,6 @@
+# syntax=docker/dockerfile:1.7
 # Staging Dockerfile with Hot Reload Support
-# Multi-stage build to reduce image size
+# Multi-stage build to reduce image size and keep dependency layers cacheable.
 
 FROM python:3.13-slim AS builder
 
@@ -15,15 +16,23 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy dependency files and minimal source structure for build
-COPY pyproject.toml ./
-COPY src/ ./src/
+# Install the build tool and dependency metadata before application source.
+# Source edits therefore do not invalidate the expensive dependency layer.
+RUN pip install --no-cache-dir uv==0.11.8
+COPY pyproject.toml uv.lock ./
 
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir .
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv export --frozen --no-dev --no-install-project --format requirements.txt \
+        --output-file /tmp/requirements.txt && \
+    uv pip install --python /opt/venv/bin/python \
+        --requirements /tmp/requirements.txt
+
+# Install the local package after dependencies so this layer stays cheap to rebuild.
+COPY src/ ./src/
+RUN uv pip install --python /opt/venv/bin/python --no-deps .
 
 
 FROM python:3.13-slim

@@ -52,33 +52,8 @@ services:
     command: >-
       sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 7070 --reload --reload-dir /app/src"
 
-  # Redis service - hosted by this project, shared with Django project
-  redis:
-    image: redis:7-alpine
-    container_name: ast-tools-redis
-    restart: unless-stopped
-    network_mode: "host"
-    command: redis-server --appendonly yes --port 7071
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "-p", "7071", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    labels:
-      - "com.ast-tools.service=redis"
-      - "com.ast-tools.environment=staging"
-    logging:
-      driver: json-file
-      options:
-        max-size: "75m"
-        max-file: "1000"
-
 volumes:
   upload_data:
     driver: local
   log_data:
-    driver: local
-  redis_data:
     driver: local

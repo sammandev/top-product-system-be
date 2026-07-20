@@ -171,7 +171,6 @@ dependencies = [
     { name = "orjson" },
     { name = "packaging" },
     { name = "pandas" },
-    { name = "pip-review" },
     { name = "pluggy" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pwdlib", extra = ["argon2"] },
@@ -182,8 +181,6 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "pygments" },
     { name = "pyjwt" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
     { name = "python-dateutil" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
@@ -195,7 +192,6 @@ dependencies = [
     { name = "rich" },
     { name = "rich-toolkit" },
     { name = "rignore" },
-    { name = "ruff" },
     { name = "sentry-sdk" },
     { name = "shellingham" },
     { name = "six" },
@@ -209,7 +205,6 @@ dependencies = [
     { name = "tzdata" },
     { name = "ujson" },
     { name = "urllib3" },
-    { name = "uv" },
     { name = "uvicorn" },
     { name = "watchfiles" },
     { name = "websockets" },
@@ -217,14 +212,22 @@ dependencies = [
 
 [package.dev-dependencies]
 all = [
+    { name = "pip-review" },
     { name = "pytest" },
+    { name = "pytest-asyncio" },
     { name = "ruff" },
+    { name = "uv" },
 ]
 dev = [
+    { name = "pip-review" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
     { name = "ruff" },
+    { name = "uv" },
 ]
 test = [
     { name = "pytest" },
+    { name = "pytest-asyncio" },
 ]
 
 [package.metadata]
@@ -265,7 +268,6 @@ requires-dist = [
     { name = "orjson" },
     { name = "packaging" },
     { name = "pandas" },
-    { name = "pip-review" },
     { name = "pluggy" },
     { name = "psycopg", extras = ["binary"] },
     { name = "pwdlib", extras = ["argon2"] },
@@ -276,8 +278,6 @@ requires-dist = [
     { name = "pydantic-settings" },
     { name = "pygments" },
     { name = "pyjwt" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
     { name = "python-dateutil" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
@@ -289,7 +289,6 @@ requires-dist = [
     { name = "rich" },
     { name = "rich-toolkit" },
     { name = "rignore" },
-    { name = "ruff" },
     { name = "sentry-sdk" },
     { name = "shellingham" },
     { name = "six" },
@@ -303,7 +302,6 @@ requires-dist = [
     { name = "tzdata" },
     { name = "ujson" },
     { name = "urllib3" },
-    { name = "uv" },
     { name = "uvicorn" },
     { name = "watchfiles" },
     { name = "websockets" },
@@ -311,11 +309,23 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 all = [
+    { name = "pip-review" },
     { name = "pytest" },
+    { name = "pytest-asyncio" },
     { name = "ruff" },
+    { name = "uv" },
 ]
-dev = [{ name = "ruff" }]
-test = [{ name = "pytest" }]
+dev = [
+    { name = "pip-review" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+    { name = "uv" },
+]
+test = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
 
 [[package]]
 name = "backports-zstd"

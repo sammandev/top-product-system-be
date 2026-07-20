@@ -211,7 +211,7 @@ DATABASE_URL=postgresql+psycopg://postgres:password@localhost:5432/test123
 REDIS_URL=redis://localhost:6379/0
 JWT_SECRET=change_me
 UPLOAD_PERSIST=1
-DUT_API_BASE_URL=http://172.18.220.56:9001
+DUT_API_BASE_URL=http://10.176.2.139:9001
 ```
 
 The `ARGON2_*` settings feed directly into the `pwdlib` Argon2 hasher, so you can dial CPU and memory requirements per environment.

@@ -197,14 +197,14 @@ nano .env.staging
 ### Environment Variables (in `.env.staging`)
 ```bash
 # Database (external PostgreSQL)
-DB_HOST=172.18.220.56
+DB_HOST=10.176.2.139
 DB_PORT=5432
 DB_NAME=top_products_db
 DB_USER=ptb
 DB_PASSWORD=ptb#1234
 
 # Redis (external, on host)
-REDIS_URL=redis://172.18.220.56:7071/0
+REDIS_URL=redis://10.176.2.139:7071/0
 ```
 
 ---

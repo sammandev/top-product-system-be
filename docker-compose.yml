@@ -14,14 +14,14 @@ services:
       - APP_NAME=${APP_NAME:-AST_Parser_Staging}
       - DEBUG=${DEBUG:-False}
       - DATABASE_URL=postgresql+psycopg://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}
-      - REDIS_URL=${REDIS_URL:-redis://172.18.220.56:6379/0}
+      - REDIS_URL=${REDIS_URL:-redis://10.176.2.139:6379/0}
       - JWT_SECRET=${JWT_SECRET}
       - JWT_ALGORITHM=HS256
       - ACCESS_TOKEN_EXPIRE_MINUTES=1440
       - REFRESH_TOKEN_EXPIRE_DAYS=30
       - UPLOAD_PERSIST=1
       - UPLOAD_TTL_SECONDS=3600
-      - DUT_API_BASE_URL=${DUT_API_BASE_URL:-http://172.18.220.56:9001}
+      - DUT_API_BASE_URL=${DUT_API_BASE_URL:-http://10.176.2.139:9001}
       - CORS_ORIGINS=${CORS_ORIGINS}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     env_file:

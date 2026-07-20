@@ -918,7 +918,7 @@ def get_user_dut_client(current_user=dut_get_current_user_dependency) -> DUTAPIC
 
 
 def _build_dut_client_from_token_bundle(token_bundle: dict[str, Any]) -> DUTAPIClient:
-    client = DUTAPIClient(base_url=os.getenv("DUT_API_BASE_URL", "http://172.18.220.56:9001"))
+    client = DUTAPIClient(base_url=os.getenv("DUT_API_BASE_URL", "http://10.176.2.139:9001"))
     client.access_token = token_bundle.get("access")
     client.refresh_token = token_bundle.get("refresh")
 

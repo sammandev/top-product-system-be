@@ -37,7 +37,7 @@ async def close_shared_clients() -> None:
 class DUTAPIClient:
     """Async client for interacting with the DUT Information API."""
 
-    def __init__(self, base_url: str = "http://10.176.2.139:9001"):
+    def __init__(self, base_url: str = "http://172.18.220.56:9001"):
         self.base_url = base_url.rstrip("/")
         self.access_token: str | None = None
         self.refresh_token: str | None = None

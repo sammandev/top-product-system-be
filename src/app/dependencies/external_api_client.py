@@ -22,7 +22,7 @@ def _get_cached_client(base_url: str) -> DUTAPIClient:
 
 
 class Settings(BaseSettings):
-    dut_api_base_url: str = "http://10.176.2.139:9001"
+    dut_api_base_url: str = "http://172.18.220.56:9001"
     dut_api_username: str | None = None
     dut_api_password: str | None = None
     app_name: str = "DUT Management API"

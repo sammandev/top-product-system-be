@@ -4,8 +4,8 @@ Modern FastAPI service for uploading and analysing wireless test data, comparing
 
 [![Python](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.124+-green.svg)](https://fastapi.tiangolo.com/)
-[![Tests](https://img.shields.io/badge/tests-239%20passing-brightgreen.svg)](./tests/)
-[![Code Style](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+[![Tests](<https://img.shields.io/badge/tests-239%20passing-brightgreen.svg>)](./tests/)
+[![Code Style](<https://img.shields.io/badge/code%20style-ruff-000000.svg>)](https://github.com/astral-sh/ruff)
 
 ---
 
@@ -211,7 +211,7 @@ DATABASE_URL=postgresql+psycopg://postgres:password@localhost:5432/test123
 REDIS_URL=redis://localhost:6379/0
 JWT_SECRET=change_me
 UPLOAD_PERSIST=1
-DUT_API_BASE_URL=http://10.176.2.139:9001
+DUT_API_BASE_URL=http://172.18.220.56:9001
 ```
 
 The `ARGON2_*` settings feed directly into the `pwdlib` Argon2 hasher, so you can dial CPU and memory requirements per environment.
@@ -280,6 +280,7 @@ make test             # uv run pytest -v
 ```
 
 **Test Suite Status (December 2025)**:
+
 - ✅ **239 passing** unit tests (98% coverage)
 - ⏭️ **5 skipped** integration tests (require live server)
 - ❌ **0 failures**
@@ -287,6 +288,7 @@ make test             # uv run pytest -v
 - 🎯 **Production ready**
 
 **Recent Improvements (December 2025)**:
+
 - ✅ Fixed all Pydantic V2 deprecation warnings
 - ✅ Updated datetime handling to use `datetime.now(UTC)` (Python 3.13+ compatible)
 - ✅ Resolved scoring function return value unpacking (2→3 values)
@@ -299,6 +301,7 @@ make test             # uv run pytest -v
 - ✅ Fixed Score Breakdown type definitions for PA vs standard measurements
 
 To include DUT-router integration tests (requires intranet access and live server on port 8002):
+
 ```bash
 pytest -m integration  # Run only integration tests
 pytest -m "not integration"  # Skip integration tests (default behavior)
@@ -333,16 +336,16 @@ backend_fastapi/
 
 ## Common Commands
 
-| Command          | Description                                              |
-| ---------------- | -------------------------------------------------------- |
-| `make install`   | Install project in editable mode (`uv pip install -e .`) |
-| `make dev`       | Hot-reload dev server on <http://127.0.0.1:8001>         |
-| `make start`     | Uvicorn without reload (staging/production)              |
-| `make format`    | Ruff format (`uv run ruff format`)                       |
-| `make lint`      | Ruff lint (`uv run ruff check`)                          |
-| `make fix`       | Ruff lint (`uv run ruff check --fix`)                    |
-| `make test`      | Run pytest (`uv run pytest -v`)                          |
-| `uv run uv lock` | Refresh `uv.lock` and `requirements.txt`                 |
+| Command            | Description                                                           |
+| ------------------ | --------------------------------------------------------------------- |
+| `make install`   | Install project in editable mode (`uv pip install -e .`)            |
+| `make dev`       | Hot-reload dev server on[http://127.0.0.1:8001](http://127.0.0.1:8001) |
+| `make start`     | Uvicorn without reload (staging/production)                           |
+| `make format`    | Ruff format (`uv run ruff format`)                                  |
+| `make lint`      | Ruff lint (`uv run ruff check`)                                     |
+| `make fix`       | Ruff lint (`uv run ruff check --fix`)                               |
+| `make test`      | Run pytest (`uv run pytest -v`)                                     |
+| `uv run uv lock` | Refresh`uv.lock` and `requirements.txt`                           |
 
 ---
 
@@ -402,17 +405,18 @@ uv run alembic revision --autogenerate -m "add new column to users table"
 
 ### Migration Commands
 
-| Command | Description |
-|---------|-------------|
-| `make upgrade` | Apply all pending migrations |
-| `make downgrade` | Rollback the last migration |
-| `make migrate-history` | View migration history |
-| `make migrate-current` | Show current migration version |
-| `uv run alembic downgrade <revision>` | Rollback to specific revision |
-| `uv run alembic history --verbose` | Inspect the revision graph with timestamps |
-| `uv run alembic stamp head` | Mark the database as up-to-date without running migrations |
+| Command                                 | Description                                                |
+| --------------------------------------- | ---------------------------------------------------------- |
+| `make upgrade`                        | Apply all pending migrations                               |
+| `make downgrade`                      | Rollback the last migration                                |
+| `make migrate-history`                | View migration history                                     |
+| `make migrate-current`                | Show current migration version                             |
+| `uv run alembic downgrade <revision>` | Rollback to specific revision                              |
+| `uv run alembic history --verbose`    | Inspect the revision graph with timestamps                 |
+| `uv run alembic stamp head`           | Mark the database as up-to-date without running migrations |
 
 #### Alembic workflow tips
+
 1. **Generate:** run `uv run alembic revision --autogenerate -m "short message"` and inspect the generated file under `alembic/versions/…`. Fine‑tune it before proceeding.
 2. **Upgrade locally:** apply the revision with `uv run alembic upgrade head` and verify the schema/data changes.
 3. **Rollback if needed:** use `uv run alembic downgrade -1` (or a specific revision) during testing.
@@ -433,32 +437,37 @@ uv run python scripts/bootstrap_rbac.py
 ```
 
 ### RBAC quickstart
+
 1. **Bootstrap canonical roles/permissions**
+
    ```bash
    uv run python scripts/bootstrap_rbac.py \
      --admin-password "<AdminPass123>" \
      --analyst-password "<AnalystPass123>" \
      --viewer-password "<ViewerPass123>"
    ```
-   This creates the base `read`, `write`, `analyze`, `manage_users` permissions, three roles (`admin`, `analyst`, `viewer`), and optional seed users.
 
+   This creates the base `read`, `write`, `analyze`, `manage_users` permissions, three roles (`admin`, `analyst`, `viewer`), and optional seed users.
 2. **Create additional users**
+
    ```bash
    uv run python scripts/create_user.py --username qa_user --password "<StrongPass!>" 
    uv run python scripts/create_user.py --username ops_admin --admin
    ```
-   The script prints whether the user was created or updated and sets the `is_admin` flag when `--admin` is provided.
 
+   The script prints whether the user was created or updated and sets the `is_admin` flag when `--admin` is provided.
 3. **Create custom roles or permissions via API (requires an admin token)**
+
    ```bash
    curl -X POST http://127.0.0.1:8001/api/rbac/roles \
      -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>" \
      -F "name=data_scientist" \
      -F "description=Access to comparison and analytics endpoints"
    ```
-   Grant specific permissions with `/api/rbac/roles/{role_id}/grant`.
 
+   Grant specific permissions with `/api/rbac/roles/{role_id}/grant`.
 4. **Assign a role to a user**
+
    - Find the user ID (e.g., `SELECT id, username FROM app_user;` in PostgreSQL or a quick Python snippet).
    - Call the assignment endpoint:
      ```bash
@@ -466,6 +475,7 @@ uv run python scripts/bootstrap_rbac.py
        -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>" \
        -F "role_id=3"
      ```
+
    Use `/api/rbac/users/{user_id}/remove-role` to detach roles when needed.
 
 ---
@@ -487,6 +497,7 @@ All responses are JSON unless otherwise noted. Most endpoints require authentica
 **Authentication:** None required
 
 **Response:**
+
 ```json
 {
   "message": "DUT Management API"
@@ -494,6 +505,7 @@ All responses are JSON unless otherwise noted. Most endpoints require authentica
 ```
 
 **Example Request:**
+
 ```bash
 curl http://127.0.0.1:8001/
 ```
@@ -529,12 +541,14 @@ curl http://127.0.0.1:8001/
 **Authentication:** None required
 
 **Request Body (Form Data):**
-| Field | Type | Required | Description | Example |
-|-------|------|----------|-------------|---------|
-| `username` | string | Yes | Username for authentication | `admin` |
-| `password` | string | Yes | User password | `admin123` |
+
+| Field        | Type   | Required | Description                 | Example      |
+| ------------ | ------ | -------- | --------------------------- | ------------ |
+| `username` | string | Yes      | Username for authentication | `admin`    |
+| `password` | string | Yes      | User password               | `admin123` |
 
 **Response:**
+
 ```json
 {
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
@@ -544,11 +558,13 @@ curl http://127.0.0.1:8001/
 ```
 
 **Response Fields:**
+
 - `access_token`: JWT token for authenticating API requests (expires in 24 hours)
 - `refresh_token`: JWT token for obtaining new access tokens (expires in 7 days)
 - `token_type`: Always "bearer"
 
 **Example Request:**
+
 ```bash
 curl -X POST http://127.0.0.1:8001/api/auth/login \
   -F "username=admin" \
@@ -556,6 +572,7 @@ curl -X POST http://127.0.0.1:8001/api/auth/login \
 ```
 
 **Status Codes:**
+
 - `200 OK`: Successful authentication
 - `401 Unauthorized`: Invalid credentials
 
@@ -568,12 +585,14 @@ curl -X POST http://127.0.0.1:8001/api/auth/login \
 **Authentication:** None required
 
 **Request Body (Form Data):**
-| Field | Type | Required | Description | Example |
-|-------|------|----------|-------------|---------|
-| `username` | string | Yes | DUT API username | `oa_username` |
-| `password` | string | Yes | DUT API password | `oa_password` |
+
+| Field        | Type   | Required | Description      | Example         |
+| ------------ | ------ | -------- | ---------------- | --------------- |
+| `username` | string | Yes      | DUT API username | `oa_username` |
+| `password` | string | Yes      | DUT API password | `oa_password` |
 
 **Response:**
+
 ```json
 {
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
@@ -583,6 +602,7 @@ curl -X POST http://127.0.0.1:8001/api/auth/login \
 ```
 
 **Example Request:**
+
 ```bash
 curl -X POST http://127.0.0.1:8001/api/auth/external-login \
   -F "username=dut_user" \
@@ -590,12 +610,14 @@ curl -X POST http://127.0.0.1:8001/api/auth/external-login \
 ```
 
 **Notes:**
+
 - Creates/updates local user account if doesn't exist
 - Stores upstream DUT tokens in Redis (or in-memory cache)
 - Returns local JWT tokens for this API
 - Requires connectivity to DUT API server
 
 **Status Codes:**
+
 - `200 OK`: Successful authentication
 - `401 Unauthorized`: External authentication failed
 - `500 Internal Server Error`: DUT API connection error
@@ -609,11 +631,13 @@ curl -X POST http://127.0.0.1:8001/api/auth/external-login \
 **Authentication:** Bearer token required
 
 **Request Headers:**
+
 ```
 Authorization: Bearer <access_token>
 ```
 
 **Response:**
+
 ```json
 {
   "username": "admin",
@@ -623,17 +647,20 @@ Authorization: Bearer <access_token>
 ```
 
 **Response Fields:**
+
 - `username`: User's username
 - `is_admin`: Boolean indicating admin privileges
 - `roles`: Array of role names assigned to the user
 
 **Example Request:**
+
 ```bash
 curl http://127.0.0.1:8001/api/auth/me \
   -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 ```
 
 **Status Codes:**
+
 - `200 OK`: Successfully retrieved user info
 - `401 Unauthorized`: Invalid or expired token
 
@@ -646,11 +673,13 @@ curl http://127.0.0.1:8001/api/auth/me \
 **Authentication:** None required (uses refresh token in request body)
 
 **Request Body (Form Data):**
-| Field | Type | Required | Description | Example |
-|-------|------|----------|-------------|---------|
-| `refresh_token` | string | Yes | Valid JWT refresh token | `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...` |
+
+| Field             | Type   | Required | Description             | Example                                     |
+| ----------------- | ------ | -------- | ----------------------- | ------------------------------------------- |
+| `refresh_token` | string | Yes      | Valid JWT refresh token | `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...` |
 
 **Response:**
+
 ```json
 {
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
@@ -660,17 +689,20 @@ curl http://127.0.0.1:8001/api/auth/me \
 ```
 
 **Example Request:**
+
 ```bash
 curl -X POST http://127.0.0.1:8001/api/auth/token/refresh \
   -F "refresh_token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 ```
 
 **Notes:**
+
 - Both tokens are rotated (new tokens issued)
 - Old tokens become invalid after refresh
 - Token versioning enforces revocation
 
 **Status Codes:**
+
 - `200 OK`: Tokens refreshed successfully
 - `401 Unauthorized`: Invalid or expired refresh token
 
@@ -683,18 +715,21 @@ curl -X POST http://127.0.0.1:8001/api/auth/token/refresh \
 **Authentication:** Bearer token required (Admin only)
 
 **Request Headers:**
+
 ```
 Authorization: Bearer <admin_access_token>
 ```
 
 **Request Body (Form Data):**
-| Field | Type | Required | Description | Example |
-|-------|------|----------|-------------|---------|
-| `username` | string | Yes | Username for new user | `analyst_01` |
-| `password` | string | Yes | User password | `SecurePass123` |
-| `is_admin` | boolean | No | Grant admin privileges (default: false) | `true` |
+
+| Field        | Type    | Required | Description                             | Example           |
+| ------------ | ------- | -------- | --------------------------------------- | ----------------- |
+| `username` | string  | Yes      | Username for new user                   | `analyst_01`    |
+| `password` | string  | Yes      | User password                           | `SecurePass123` |
+| `is_admin` | boolean | No       | Grant admin privileges (default: false) | `true`          |
 
 **Response:**
+
 ```json
 {
   "username": "analyst_01",
@@ -703,6 +738,7 @@ Authorization: Bearer <admin_access_token>
 ```
 
 **Example Request:**
+
 ```bash
 curl -X POST http://127.0.0.1:8001/api/auth/users/create \
   -H "Authorization: Bearer <ADMIN_TOKEN>" \
@@ -712,11 +748,13 @@ curl -X POST http://127.0.0.1:8001/api/auth/users/create \
 ```
 
 **Notes:**
+
 - Passwords are hashed using Argon2
 - If user exists, updates their information
 - Admin flag can be toggled via this endpoint
 
 **Status Codes:**
+
 - `200 OK`: User created/updated successfully
 - `401 Unauthorized`: Not authenticated
 - `403 Forbidden`: Not an admin user
@@ -730,17 +768,20 @@ curl -X POST http://127.0.0.1:8001/api/auth/users/create \
 **Authentication:** Bearer token required
 
 **Request Headers:**
+
 ```
 Authorization: Bearer <access_token>
 ```
 
 **Request Body (Form Data):**
-| Field | Type | Required | Description | Example |
-|-------|------|----------|-------------|---------|
-| `username` | string | Yes | Username to change password for | `analyst_01` |
-| `new_password` | string | Yes | New password | `UpdatedPass456` |
+
+| Field            | Type   | Required | Description                     | Example            |
+| ---------------- | ------ | -------- | ------------------------------- | ------------------ |
+| `username`     | string | Yes      | Username to change password for | `analyst_01`     |
+| `new_password` | string | Yes      | New password                    | `UpdatedPass456` |
 
 **Response:**
+
 ```json
 {
   "username": "analyst_01",
@@ -750,11 +791,13 @@ Authorization: Bearer <access_token>
 ```
 
 **Response Fields:**
+
 - `username`: Username that was updated
 - `changed`: Boolean confirming password change
 - `revoked_tokens`: Boolean confirming all tokens were invalidated
 
 **Example Request:**
+
 ```bash
 # Change own password
 curl -X POST http://127.0.0.1:8001/api/auth/users/change-password \
@@ -770,10 +813,12 @@ curl -X POST http://127.0.0.1:8001/api/auth/users/change-password \
 ```
 
 **Notes:**
+
 - All existing tokens for the user are revoked (token version incremented)
 - User must re-authenticate after password change
 
 **Status Codes:**
+
 - `200 OK`: Password changed successfully
 - `401 Unauthorized`: Not authenticated
 - `403 Forbidden`: Not authorized (not admin and not changing own password)
@@ -788,16 +833,19 @@ curl -X POST http://127.0.0.1:8001/api/auth/users/change-password \
 **Authentication:** Bearer token required (Admin only)
 
 **Request Headers:**
+
 ```
 Authorization: Bearer <admin_access_token>
 ```
 
 **Path Parameters:**
-| Parameter | Type | Required | Description | Example |
-|-----------|------|----------|-------------|---------|
-| `username` | string | Yes | Username to delete | `analyst_01` |
+
+| Parameter    | Type   | Required | Description        | Example        |
+| ------------ | ------ | -------- | ------------------ | -------------- |
+| `username` | string | Yes      | Username to delete | `analyst_01` |
 
 **Response:**
+
 ```json
 {
   "deleted": "analyst_01"
@@ -805,12 +853,14 @@ Authorization: Bearer <admin_access_token>
 ```
 
 **Example Request:**
+
 ```bash
 curl -X DELETE http://127.0.0.1:8001/api/auth/users/analyst_01 \
   -H "Authorization: Bearer <ADMIN_TOKEN>"
 ```
 
 **Status Codes:**
+
 - `200 OK`: User deleted successfully
 - `401 Unauthorized`: Not authenticated
 - `403 Forbidden`: Not an admin user
@@ -825,16 +875,19 @@ curl -X DELETE http://127.0.0.1:8001/api/auth/users/analyst_01 \
 **Authentication:** Bearer token required (Admin only)
 
 **Request Headers:**
+
 ```
 Authorization: Bearer <admin_access_token>
 ```
 
 **Request Body (Form Data):**
-| Field | Type | Required | Description | Example |
-|-------|------|----------|-------------|---------|
-| `username` | string | Yes | Username to revoke tokens for | `analyst_01` |
+
+| Field        | Type   | Required | Description                   | Example        |
+| ------------ | ------ | -------- | ----------------------------- | -------------- |
+| `username` | string | Yes      | Username to revoke tokens for | `analyst_01` |
 
 **Response:**
+
 ```json
 {
   "revoked": "analyst_01",
@@ -843,10 +896,12 @@ Authorization: Bearer <admin_access_token>
 ```
 
 **Response Fields:**
+
 - `revoked`: Username whose tokens were revoked
 - `token_version`: New token version number
 
 **Example Request:**
+
 ```bash
 curl -X POST http://127.0.0.1:8001/api/auth/users/revoke \
   -H "Authorization: Bearer <ADMIN_TOKEN>" \
@@ -854,11 +909,13 @@ curl -X POST http://127.0.0.1:8001/api/auth/users/revoke \
 ```
 
 **Notes:**
+
 - All existing tokens become invalid immediately
 - User must re-authenticate to get new tokens
 - Token version is checked on every request
 
 **Status Codes:**
+
 - `200 OK`: Tokens revoked successfully
 - `401 Unauthorized`: Not authenticated
 - `403 Forbidden`: Not an admin user
@@ -873,17 +930,20 @@ curl -X POST http://127.0.0.1:8001/api/auth/users/revoke \
 **Authentication:** Bearer token required (Admin only)
 
 **Request Headers:**
+
 ```
 Authorization: Bearer <admin_access_token>
 ```
 
 **Request Body (Form Data):**
-| Field | Type | Required | Description | Example |
-|-------|------|----------|-------------|---------|
-| `username` | string | No | DUT API username (uses service account if omitted) | `service_account` |
-| `password` | string | No | DUT API password (uses service account if omitted) | `ServicePass789` |
+
+| Field        | Type   | Required | Description                                        | Example             |
+| ------------ | ------ | -------- | -------------------------------------------------- | ------------------- |
+| `username` | string | No       | DUT API username (uses service account if omitted) | `service_account` |
+| `password` | string | No       | DUT API password (uses service account if omitted) | `ServicePass789`  |
 
 **Response:**
+
 ```json
 {
   "access": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
@@ -891,9 +951,11 @@ Authorization: Bearer <admin_access_token>
 ```
 
 **Response Fields:**
+
 - `access`: External DUT API access token
 
 **Example Request:**
+
 ```bash
 # Using service account credentials from environment
 curl -X POST http://127.0.0.1:8001/api/auth/external-token \
@@ -907,6 +969,7 @@ curl -X POST http://127.0.0.1:8001/api/auth/external-token \
 ```
 
 **Status Codes:**
+
 - `200 OK`: Token retrieved successfully
 - `401 Unauthorized`: Not authenticated
 - `403 Forbidden`: Not an admin user
@@ -925,17 +988,20 @@ Role-Based Access Control (RBAC) endpoints for managing roles, permissions, and 
 **Authentication:** Bearer token required (Admin only)
 
 **Request Headers:**
+
 ```
 Authorization: Bearer <admin_access_token>
 ```
 
 **Request Body (Form Data):**
-| Field | Type | Required | Description | Example |
-|-------|------|----------|-------------|---------|
-| `name` | string | Yes | Unique role name | `data_analyst` |
-| `description` | string | No | Role description | `Can review dashboards and reports` |
+
+| Field           | Type   | Required | Description      | Example                               |
+| --------------- | ------ | -------- | ---------------- | ------------------------------------- |
+| `name`        | string | Yes      | Unique role name | `data_analyst`                      |
+| `description` | string | No       | Role description | `Can review dashboards and reports` |
 
 **Response:**
+
 ```json
 {
   "id": 3,
@@ -945,6 +1011,7 @@ Authorization: Bearer <admin_access_token>
 ```
 
 **Example Request:**
+
 ```bash
 curl -X POST http://127.0.0.1:8001/api/rbac/roles \
   -H "Authorization: Bearer <ADMIN_TOKEN>" \
@@ -953,6 +1020,7 @@ curl -X POST http://127.0.0.1:8001/api/rbac/roles \
 ```
 
 **Status Codes:**
+
 - `200 OK`: Role created successfully
 - `401 Unauthorized`: Not authenticated
 - `403 Forbidden`: Not an admin user
@@ -967,11 +1035,13 @@ curl -X POST http://127.0.0.1:8001/api/rbac/roles \
 **Authentication:** Bearer token required (Admin only)
 
 **Request Headers:**
+
 ```
 Authorization: Bearer <admin_access_token>
 ```
 
 **Response:**
+
 ```json
 {
   "roles": [
@@ -990,12 +1060,14 @@ Authorization: Bearer <admin_access_token>
 ```
 
 **Example Request:**
+
 ```bash
 curl http://127.0.0.1:8001/api/rbac/roles \
   -H "Authorization: Bearer <ADMIN_TOKEN>"
 ```
 
 **Status Codes:**
+
 - `200 OK`: Roles retrieved successfully
 - `401 Unauthorized`: Not authenticated
 - `403 Forbidden`: Not an admin user
@@ -1009,16 +1081,19 @@ curl http://127.0.0.1:8001/api/rbac/roles \
 **Authentication:** Bearer token required (Admin only)
 
 **Request Headers:**
+
 ```
 Authorization: Bearer <admin_access_token>
 ```
 
 **Path Parameters:**
-| Parameter | Type | Required | Description | Example |
-|-----------|------|----------|-------------|---------|
-| `role_id` | integer | Yes | Role ID to delete | `3` |
+
+| Parameter   | Type    | Required | Description       | Example |
+| ----------- | ------- | -------- | ----------------- | ------- |
+| `role_id` | integer | Yes      | Role ID to delete | `3`   |
 
 **Response:**
+
 ```json
 {
   "deleted": 3
@@ -1026,12 +1101,14 @@ Authorization: Bearer <admin_access_token>
 ```
 
 **Example Request:**
+
 ```bash
 curl -X DELETE http://127.0.0.1:8001/api/rbac/roles/3 \
   -H "Authorization: Bearer <ADMIN_TOKEN>"
 ```
 
 **Status Codes:**
+
 - `200 OK`: Role deleted successfully
 - `401 Unauthorized`: Not authenticated
 - `403 Forbidden`: Not an admin user
@@ -1046,17 +1123,20 @@ curl -X DELETE http://127.0.0.1:8001/api/rbac/roles/3 \
 **Authentication:** Bearer token required (Admin only)
 
 **Request Headers:**
+
 ```
 Authorization: Bearer <admin_access_token>
 ```
 
 **Request Body (Form Data):**
-| Field | Type | Required | Description | Example |
-|-------|------|----------|-------------|---------|
-| `name` | string | Yes | Unique permission name | `read_reports` |
-| `description` | string | No | Permission description | `Allows viewing report data` |
+
+| Field           | Type   | Required | Description            | Example                        |
+| --------------- | ------ | -------- | ---------------------- | ------------------------------ |
+| `name`        | string | Yes      | Unique permission name | `read_reports`               |
+| `description` | string | No       | Permission description | `Allows viewing report data` |
 
 **Response:**
+
 ```json
 {
   "id": 5,
@@ -1066,6 +1146,7 @@ Authorization: Bearer <admin_access_token>
 ```
 
 **Example Request:**
+
 ```bash
 curl -X POST http://127.0.0.1:8001/api/rbac/permissions \
   -H "Authorization: Bearer <ADMIN_TOKEN>" \
@@ -1074,6 +1155,7 @@ curl -X POST http://127.0.0.1:8001/api/rbac/permissions \
 ```
 
 **Status Codes:**
+
 - `200 OK`: Permission created successfully
 - `401 Unauthorized`: Not authenticated
 - `403 Forbidden`: Not an admin user
@@ -1088,11 +1170,13 @@ curl -X POST http://127.0.0.1:8001/api/rbac/permissions \
 **Authentication:** Bearer token required (Admin only)
 
 **Request Headers:**
+
 ```
 Authorization: Bearer <admin_access_token>
 ```
 
 **Response:**
+
 ```json
 {
   "permissions": [
@@ -1113,12 +1197,14 @@ Authorization: Bearer <admin_access_token>
 ```
 
 **Example Request:**
+
 ```bash
 curl http://127.0.0.1:8001/api/rbac/permissions \
   -H "Authorization: Bearer <ADMIN_TOKEN>"
 ```
 
 **Status Codes:**
+
 - `200 OK`: Permissions retrieved successfully
 - `401 Unauthorized`: Not authenticated
 - `403 Forbidden`: Not an admin user
@@ -1132,16 +1218,19 @@ curl http://127.0.0.1:8001/api/rbac/permissions \
 **Authentication:** Bearer token required (Admin only)
 
 **Request Headers:**
+
 ```
 Authorization: Bearer <admin_access_token>
 ```
 
 **Path Parameters:**
-| Parameter | Type | Required | Description | Example |
-|-----------|------|----------|-------------|---------|
-| `perm_id` | integer | Yes | Permission ID to delete | `5` |
+
+| Parameter   | Type    | Required | Description             | Example |
+| ----------- | ------- | -------- | ----------------------- | ------- |
+| `perm_id` | integer | Yes      | Permission ID to delete | `5`   |
 
 **Response:**
+
 ```json
 {
   "deleted": 5
@@ -1149,12 +1238,14 @@ Authorization: Bearer <admin_access_token>
 ```
 
 **Example Request:**
+
 ```bash
 curl -X DELETE http://127.0.0.1:8001/api/rbac/permissions/5 \
   -H "Authorization: Bearer <ADMIN_TOKEN>"
 ```
 
 **Status Codes:**
+
 - `200 OK`: Permission deleted successfully
 - `401 Unauthorized`: Not authenticated
 - `403 Forbidden`: Not an admin user
@@ -1169,21 +1260,25 @@ curl -X DELETE http://127.0.0.1:8001/api/rbac/permissions/5 \
 **Authentication:** Bearer token required (Admin only)
 
 **Request Headers:**
+
 ```
 Authorization: Bearer <admin_access_token>
 ```
 
 **Path Parameters:**
-| Parameter | Type | Required | Description | Example |
-|-----------|------|----------|-------------|---------|
-| `role_id` | integer | Yes | Role ID to grant permission to | `2` |
+
+| Parameter   | Type    | Required | Description                    | Example |
+| ----------- | ------- | -------- | ------------------------------ | ------- |
+| `role_id` | integer | Yes      | Role ID to grant permission to | `2`   |
 
 **Request Body (Form Data):**
-| Field | Type | Required | Description | Example |
-|-------|------|----------|-------------|---------|
-| `perm_id` | integer | Yes | Permission ID to grant | `5` |
+
+| Field       | Type    | Required | Description            | Example |
+| ----------- | ------- | -------- | ---------------------- | ------- |
+| `perm_id` | integer | Yes      | Permission ID to grant | `5`   |
 
 **Response:**
+
 ```json
 {
   "role": "analyst",
@@ -1192,6 +1287,7 @@ Authorization: Bearer <admin_access_token>
 ```
 
 **Example Request:**
+
 ```bash
 curl -X POST http://127.0.0.1:8001/api/rbac/roles/2/grant \
   -H "Authorization: Bearer <ADMIN_TOKEN>" \
@@ -1199,6 +1295,7 @@ curl -X POST http://127.0.0.1:8001/api/rbac/roles/2/grant \
 ```
 
 **Status Codes:**
+
 - `200 OK`: Permission granted successfully
 - `401 Unauthorized`: Not authenticated
 - `403 Forbidden`: Not an admin user
@@ -1213,21 +1310,25 @@ curl -X POST http://127.0.0.1:8001/api/rbac/roles/2/grant \
 **Authentication:** Bearer token required (Admin only)
 
 **Request Headers:**
+
 ```
 Authorization: Bearer <admin_access_token>
 ```
 
 **Path Parameters:**
-| Parameter | Type | Required | Description | Example |
-|-----------|------|----------|-------------|---------|
-| `role_id` | integer | Yes | Role ID to revoke permission from | `2` |
+
+| Parameter   | Type    | Required | Description                       | Example |
+| ----------- | ------- | -------- | --------------------------------- | ------- |
+| `role_id` | integer | Yes      | Role ID to revoke permission from | `2`   |
 
 **Request Body (Form Data):**
-| Field | Type | Required | Description | Example |
-|-------|------|----------|-------------|---------|
-| `perm_id` | integer | Yes | Permission ID to revoke | `5` |
+
+| Field       | Type    | Required | Description             | Example |
+| ----------- | ------- | -------- | ----------------------- | ------- |
+| `perm_id` | integer | Yes      | Permission ID to revoke | `5`   |
 
 **Response:**
+
 ```json
 {
   "role": "analyst",
@@ -1236,6 +1337,7 @@ Authorization: Bearer <admin_access_token>
 ```
 
 **Example Request:**
+
 ```bash
 curl -X POST http://127.0.0.1:8001/api/rbac/roles/2/revoke \
   -H "Authorization: Bearer <ADMIN_TOKEN>" \
@@ -1243,6 +1345,7 @@ curl -X POST http://127.0.0.1:8001/api/rbac/roles/2/revoke \
 ```
 
 **Status Codes:**
+
 - `200 OK`: Permission revoked successfully
 - `401 Unauthorized`: Not authenticated
 - `403 Forbidden`: Not an admin user
@@ -1257,21 +1360,25 @@ curl -X POST http://127.0.0.1:8001/api/rbac/roles/2/revoke \
 **Authentication:** Bearer token required (Admin only)
 
 **Request Headers:**
+
 ```
 Authorization: Bearer <admin_access_token>
 ```
 
 **Path Parameters:**
-| Parameter | Type | Required | Description | Example |
-|-----------|------|----------|-------------|---------|
-| `user_id` | integer | Yes | User ID to assign role to | `5` |
+
+| Parameter   | Type    | Required | Description               | Example |
+| ----------- | ------- | -------- | ------------------------- | ------- |
+| `user_id` | integer | Yes      | User ID to assign role to | `5`   |
 
 **Request Body (Form Data):**
-| Field | Type | Required | Description | Example |
-|-------|------|----------|-------------|---------|
-| `role_id` | integer | Yes | Role ID to assign | `2` |
+
+| Field       | Type    | Required | Description       | Example |
+| ----------- | ------- | -------- | ----------------- | ------- |
+| `role_id` | integer | Yes      | Role ID to assign | `2`   |
 
 **Response:**
+
 ```json
 {
   "user": "analyst_01",
@@ -1281,6 +1388,7 @@ Authorization: Bearer <admin_access_token>
 ```
 
 **Example Request:**
+
 ```bash
 curl -X POST http://127.0.0.1:8001/api/rbac/users/5/assign-role \
   -H "Authorization: Bearer <ADMIN_TOKEN>" \
@@ -1288,6 +1396,7 @@ curl -X POST http://127.0.0.1:8001/api/rbac/users/5/assign-role \
 ```
 
 **Status Codes:**
+
 - `200 OK`: Role assigned successfully
 - `401 Unauthorized`: Not authenticated
 - `403 Forbidden`: Not an admin user
@@ -1302,21 +1411,25 @@ curl -X POST http://127.0.0.1:8001/api/rbac/users/5/assign-role \
 **Authentication:** Bearer token required (Admin only)
 
 **Request Headers:**
+
 ```
 Authorization: Bearer <admin_access_token>
 ```
 
 **Path Parameters:**
-| Parameter | Type | Required | Description | Example |
-|-----------|------|----------|-------------|---------|
-| `user_id` | integer | Yes | User ID to remove role from | `5` |
+
+| Parameter   | Type    | Required | Description                 | Example |
+| ----------- | ------- | -------- | --------------------------- | ------- |
+| `user_id` | integer | Yes      | User ID to remove role from | `5`   |
 
 **Request Body (Form Data):**
-| Field | Type | Required | Description | Example |
-|-------|------|----------|-------------|---------|
-| `role_id` | integer | Yes | Role ID to remove | `2` |
+
+| Field       | Type    | Required | Description       | Example |
+| ----------- | ------- | -------- | ----------------- | ------- |
+| `role_id` | integer | Yes      | Role ID to remove | `2`   |
 
 **Response:**
+
 ```json
 {
   "user": "analyst_01",
@@ -1326,6 +1439,7 @@ Authorization: Bearer <admin_access_token>
 ```
 
 **Example Request:**
+
 ```bash
 curl -X POST http://127.0.0.1:8001/api/rbac/users/5/remove-role \
   -H "Authorization: Bearer <ADMIN_TOKEN>" \
@@ -1333,6 +1447,7 @@ curl -X POST http://127.0.0.1:8001/api/rbac/users/5/remove-role \
 ```
 
 **Status Codes:**
+
 - `200 OK`: Role removed successfully
 - `401 Unauthorized`: Not authenticated
 - `403 Forbidden`: Not an admin user
@@ -1347,11 +1462,13 @@ curl -X POST http://127.0.0.1:8001/api/rbac/users/5/remove-role \
 **Authentication:** Bearer token required (requires 'read' permission)
 
 **Request Headers:**
+
 ```
 Authorization: Bearer <access_token>
 ```
 
 **Response:**
+
 ```json
 {
   "ok": true,
@@ -1360,12 +1477,14 @@ Authorization: Bearer <access_token>
 ```
 
 **Example Request:**
+
 ```bash
 curl http://127.0.0.1:8001/api/rbac/demo/needs-read \
   -H "Authorization: Bearer <TOKEN_WITH_READ_PERMISSION>"
 ```
 
 **Status Codes:**
+
 - `200 OK`: User has required permission
 - `401 Unauthorized`: Not authenticated
 - `403 Forbidden`: User lacks 'read' permission
@@ -1381,14 +1500,16 @@ curl http://127.0.0.1:8001/api/rbac/demo/needs-read \
 **Authentication:** None required
 
 **Request Body (Multipart Form Data):**
-| Field | Type | Required | Description | Example |
-|-------|------|----------|-------------|---------|
-| `file` | file | Yes | CSV or Excel file to upload | `sample.csv` |
-| `has_header` | boolean | No | Whether first row contains headers (default: true) | `true` |
-| `delimiter` | string | No | CSV delimiter (auto-detected if not provided) | `,` |
-| `persist` | boolean | No | Override environment persistence setting | `false` |
+
+| Field          | Type    | Required | Description                                        | Example        |
+| -------------- | ------- | -------- | -------------------------------------------------- | -------------- |
+| `file`       | file    | Yes      | CSV or Excel file to upload                        | `sample.csv` |
+| `has_header` | boolean | No       | Whether first row contains headers (default: true) | `true`       |
+| `delimiter`  | string  | No       | CSV delimiter (auto-detected if not provided)      | `,`          |
+| `persist`    | boolean | No       | Override environment persistence setting           | `false`      |
 
 **Response:**
+
 ```json
 {
   "file_id": "abcd1234ef567890_sample.csv",
@@ -1412,12 +1533,14 @@ curl http://127.0.0.1:8001/api/rbac/demo/needs-read \
 ```
 
 **Response Fields:**
+
 - `file_id`: Unique identifier for the uploaded file (use in subsequent requests)
 - `filename`: Original filename
 - `columns`: Array of column names
 - `preview`: Array of row objects (max 20 rows)
 
 **Example Request:**
+
 ```bash
 # Upload CSV with headers
 curl -X POST http://127.0.0.1:8001/api/upload-preview \
@@ -1432,12 +1555,14 @@ curl -X POST http://127.0.0.1:8001/api/upload-preview \
 ```
 
 **Notes:**
+
 - Supports CSV and Excel (.xls, .xlsx) files
 - Auto-detects CSV delimiter if not specified
 - File is stored in-memory or on disk based on `UPLOAD_PERSIST` env var
 - Background cleanup worker removes expired uploads based on TTL
 
 **Status Codes:**
+
 - `200 OK`: File uploaded and previewed successfully
 - `400 Bad Request`: Invalid file format or parsing error
 - `500 Internal Server Error`: Failed to process file
@@ -1451,16 +1576,18 @@ curl -X POST http://127.0.0.1:8001/api/upload-preview \
 **Authentication:** None required
 
 **Request Body (Form Data):**
-| Field | Type | Required | Description | Example |
-|-------|------|----------|-------------|---------|
-| `file_id` | string | Yes | File identifier from upload-preview | `abcd1234ef567890_sample.csv` |
-| `mode` | string | Yes | Selection mode: `columns`, `rows`, or `both` | `columns` |
-| `selected_columns` | string | No | JSON array of column names/indices to include | `["ISN", "Result"]` or `[0, 2]` |
-| `selected_rows` | string | No | JSON array of row indices to include | `[0, 2, 4]` |
-| `exclude_columns` | string | No | JSON array of column names/indices to exclude | `["Timestamp"]` |
-| `exclude_rows` | string | No | JSON array of row indices to exclude | `[1, 3]` |
+
+| Field                | Type   | Required | Description                                       | Example                             |
+| -------------------- | ------ | -------- | ------------------------------------------------- | ----------------------------------- |
+| `file_id`          | string | Yes      | File identifier from upload-preview               | `abcd1234ef567890_sample.csv`     |
+| `mode`             | string | Yes      | Selection mode:`columns`, `rows`, or `both` | `columns`                         |
+| `selected_columns` | string | No       | JSON array of column names/indices to include     | `["ISN", "Result"]` or `[0, 2]` |
+| `selected_rows`    | string | No       | JSON array of row indices to include              | `[0, 2, 4]`                       |
+| `exclude_columns`  | string | No       | JSON array of column names/indices to exclude     | `["Timestamp"]`                   |
+| `exclude_rows`     | string | No       | JSON array of row indices to exclude              | `[1, 3]`                          |
 
 **Response:**
+
 ```json
 {
   "columns": ["ISN", "Result"],
@@ -1478,10 +1605,12 @@ curl -X POST http://127.0.0.1:8001/api/upload-preview \
 ```
 
 **Response Fields:**
+
 - `columns`: Selected column names
 - `rows`: Array of row objects with selected columns
 
 **Example Requests:**
+
 ```bash
 # Select specific columns
 curl -X POST http://127.0.0.1:8001/api/parse \
@@ -1505,12 +1634,14 @@ curl -X POST http://127.0.0.1:8001/api/parse \
 ```
 
 **Notes:**
+
 - Columns can be specified by name or index (0-based)
 - Rows are specified by index (0-based)
 - Exclusions are applied after selections
 - Missing values are filled with empty strings
 
 **Status Codes:**
+
 - `200 OK`: Data parsed successfully
 - `400 Bad Request`: Invalid selection parameters or file not found
 - `500 Internal Server Error`: Parsing error
@@ -1530,12 +1661,14 @@ Same parameters as `/api/parse` endpoint.
 CSV file download with selected data.
 
 **Response Headers:**
+
 ```
 Content-Type: text/csv
 Content-Disposition: attachment; filename="parsed.csv"
 ```
 
 **Example Request:**
+
 ```bash
 curl -X POST http://127.0.0.1:8001/api/parse-download \
   -F "file_id=abcd1234_sample.csv" \
@@ -1545,6 +1678,7 @@ curl -X POST http://127.0.0.1:8001/api/parse-download \
 ```
 
 **Status Codes:**
+
 - `200 OK`: CSV downloaded successfully
 - `400 Bad Request`: Invalid parameters or file not found
 
@@ -1557,12 +1691,14 @@ curl -X POST http://127.0.0.1:8001/api/parse-download \
 **Authentication:** Admin key required (if `ASTPARSER_ADMIN_KEY` is set in environment)
 
 **Request Body (Form Data):**
-| Field | Type | Required | Description | Example |
-|-------|------|----------|-------------|---------|
-| `admin_key` | string | Conditional | Admin key (required if ASTPARSER_ADMIN_KEY is set) | `supersecretkey` |
-| `ttl` | integer | No | Time-to-live override in seconds | `3600` |
+
+| Field         | Type    | Required    | Description                                        | Example            |
+| ------------- | ------- | ----------- | -------------------------------------------------- | ------------------ |
+| `admin_key` | string  | Conditional | Admin key (required if ASTPARSER_ADMIN_KEY is set) | `supersecretkey` |
+| `ttl`       | integer | No          | Time-to-live override in seconds                   | `3600`           |
 
 **Response:**
+
 ```json
 {
   "removed": [
@@ -1573,9 +1709,11 @@ curl -X POST http://127.0.0.1:8001/api/parse-download \
 ```
 
 **Response Fields:**
+
 - `removed`: Array of removed file identifiers
 
 **Example Requests:**
+
 ```bash
 # Cleanup with default TTL
 curl -X POST http://127.0.0.1:8001/api/cleanup-uploads \
@@ -1591,12 +1729,14 @@ curl -X POST http://127.0.0.1:8001/api/cleanup-uploads
 ```
 
 **Notes:**
+
 - Background cleanup worker runs automatically
 - This endpoint allows manual cleanup on-demand
 - Default TTL from `UPLOAD_TTL_SECONDS` env var
 - Admin key check is skipped in test environments
 
 **Status Codes:**
+
 - `200 OK`: Cleanup completed
 - `403 Forbidden`: Invalid admin key
 
@@ -1611,23 +1751,25 @@ curl -X POST http://127.0.0.1:8001/api/cleanup-uploads
 **Authentication:** None required
 
 **Request Body (Form Data):**
-| Field | Type | Required | Description | Example |
-|-------|------|----------|-------------|---------|
-| `file_a` | string | Yes | First file identifier | `abc123_fileA.csv` |
-| `file_b` | string | Yes | Second file identifier | `def456_fileB.csv` |
-| `mode` | string | Yes | Comparison mode: `columns`, `rows`, or `both` | `both` |
-| `a_selected_columns` | string | No | JSON array of columns to select from file A | `["ISN", "Result"]` |
-| `a_selected_rows` | string | No | JSON array of row indices from file A | `[0, 1, 2]` |
-| `a_exclude_columns` | string | No | JSON array of columns to exclude from file A | `["Timestamp"]` |
-| `a_exclude_rows` | string | No | JSON array of row indices to exclude from file A | `[5, 6]` |
-| `b_selected_columns` | string | No | JSON array of columns to select from file B | `["ISN", "Result"]` |
-| `b_selected_rows` | string | No | JSON array of row indices from file B | `[0, 1, 2]` |
-| `b_exclude_columns` | string | No | JSON array of columns to exclude from file B | `["Operator"]` |
-| `b_exclude_rows` | string | No | JSON array of row indices to exclude from file B | `[3, 4]` |
-| `a_join_on` | string | No | Column(s) to join on in file A | `["ISN"]` or `"ISN"` |
-| `b_join_on` | string | No | Column(s) to join on in file B | `["ISN"]` or `"ISN"` |
+
+| Field                  | Type   | Required | Description                                        | Example                  |
+| ---------------------- | ------ | -------- | -------------------------------------------------- | ------------------------ |
+| `file_a`             | string | Yes      | First file identifier                              | `abc123_fileA.csv`     |
+| `file_b`             | string | Yes      | Second file identifier                             | `def456_fileB.csv`     |
+| `mode`               | string | Yes      | Comparison mode:`columns`, `rows`, or `both` | `both`                 |
+| `a_selected_columns` | string | No       | JSON array of columns to select from file A        | `["ISN", "Result"]`    |
+| `a_selected_rows`    | string | No       | JSON array of row indices from file A              | `[0, 1, 2]`            |
+| `a_exclude_columns`  | string | No       | JSON array of columns to exclude from file A       | `["Timestamp"]`        |
+| `a_exclude_rows`     | string | No       | JSON array of row indices to exclude from file A   | `[5, 6]`               |
+| `b_selected_columns` | string | No       | JSON array of columns to select from file B        | `["ISN", "Result"]`    |
+| `b_selected_rows`    | string | No       | JSON array of row indices from file B              | `[0, 1, 2]`            |
+| `b_exclude_columns`  | string | No       | JSON array of columns to exclude from file B       | `["Operator"]`         |
+| `b_exclude_rows`     | string | No       | JSON array of row indices to exclude from file B   | `[3, 4]`               |
+| `a_join_on`          | string | No       | Column(s) to join on in file A                     | `["ISN"]` or `"ISN"` |
+| `b_join_on`          | string | No       | Column(s) to join on in file B                     | `["ISN"]` or `"ISN"` |
 
 **Response:**
+
 ```json
 {
   "rows": [
@@ -1656,6 +1798,7 @@ curl -X POST http://127.0.0.1:8001/api/cleanup-uploads
 ```
 
 **Response Fields:**
+
 - `rows`: Array of comparison results
   - `status`: `match`, `different`, `only_in_a`, or `only_in_b`
   - `differences`: Array of column names with differences (if status is `different`)
@@ -1667,6 +1810,7 @@ curl -X POST http://127.0.0.1:8001/api/cleanup-uploads
   - `only_in_b`: Rows only in second file
 
 **Example Requests:**
+
 ```bash
 # Simple column comparison
 curl -X POST http://127.0.0.1:8001/api/compare \
@@ -1698,12 +1842,14 @@ curl -X POST http://127.0.0.1:8001/api/compare \
 ```
 
 **Notes:**
+
 - Join functionality matches rows based on specified columns
 - Columns are matched by name or position
 - Cell-by-cell comparison for differing values
 - Handles missing columns gracefully
 
 **Status Codes:**
+
 - `200 OK`: Comparison completed successfully
 - `400 Bad Request`: Invalid parameters or files not found
 - `500 Internal Server Error`: Comparison error
@@ -1723,12 +1869,14 @@ Same parameters as `/api/compare` endpoint.
 CSV file download with comparison results.
 
 **Response Headers:**
+
 ```
 Content-Type: text/csv
 Content-Disposition: attachment; filename="compare.csv"
 ```
 
 **Example Request:**
+
 ```bash
 curl -X POST http://127.0.0.1:8001/api/compare-download \
   -F "file_a=abc123_test1.csv" \
@@ -1742,6 +1890,7 @@ curl -X POST http://127.0.0.1:8001/api/compare-download \
 ```
 
 **Status Codes:**
+
 - `200 OK`: CSV downloaded successfully
 - `400 Bad Request`: Invalid parameters or files not found
 
@@ -1756,20 +1905,22 @@ curl -X POST http://127.0.0.1:8001/api/compare-download \
 **Authentication:** None required
 
 **Request Body (Multipart Form Data):**
-| Field | Type | Required | Description | Example |
-|-------|------|----------|-------------|---------|
-| `master_file` | file | Yes | MasterControl format test file | `MC2_data.csv` |
-| `dvt_file` | file | Yes | DVT format test file | `DVT_Golden_SN.csv` |
-| `threshold` | float | No | Comparison tolerance threshold | `1.0` |
-| `margin_threshold` | float | No | Pass/fail margin threshold override | `0.5` |
-| `spec_file` | file | No | JSON specification file (uses default if omitted) | `compare_format_config.json` |
-| `freq_tol` | float | No | Frequency tolerance in MHz (default: 2.0) | `2.0` |
-| `human` | boolean | No | Return human-readable CSV/XLSX instead of JSON | `true` |
-| `return_xlsx` | boolean | No | Return XLSX format (requires human=true) | `true` |
+
+| Field                | Type    | Required | Description                                       | Example                        |
+| -------------------- | ------- | -------- | ------------------------------------------------- | ------------------------------ |
+| `master_file`      | file    | Yes      | MasterControl format test file                    | `MC2_data.csv`               |
+| `dvt_file`         | file    | Yes      | DVT format test file                              | `DVT_Golden_SN.csv`          |
+| `threshold`        | float   | No       | Comparison tolerance threshold                    | `1.0`                        |
+| `margin_threshold` | float   | No       | Pass/fail margin threshold override               | `0.5`                        |
+| `spec_file`        | file    | No       | JSON specification file (uses default if omitted) | `compare_format_config.json` |
+| `freq_tol`         | float   | No       | Frequency tolerance in MHz (default: 2.0)         | `2.0`                        |
+| `human`            | boolean | No       | Return human-readable CSV/XLSX instead of JSON    | `true`                       |
+| `return_xlsx`      | boolean | No       | Return XLSX format (requires human=true)          | `true`                       |
 
 **Spec Format:** JSON only. The file must match the structure used in `data/sample_data_config/compare_format_config.json` (per-standard arrays describing `frequency`, `bw`, `mod`, `tx_target_power`, the associated limits, and optional `tx_target_tolerance`). INI/criteria files are **not** accepted on this endpoint.
 
 **Response (JSON mode):**
+
 ```json
 {
   "rows": [
@@ -1801,11 +1952,13 @@ curl -X POST http://127.0.0.1:8001/api/compare-download \
 
 **Response (CSV/XLSX mode):**
 CSV or Excel file with columns:
+
 - Antenna, Test Mode, Metric, Freq, Standard, DataRate, BW
 - USL, LSL, MC2 Value, MC2 & Spec Diff, MC2 Result
 - DVT Value, DVT & Spec Diff, DVT Result, MC2 & DVT Diff
 
 **Response Fields:**
+
 - `antenna_dvt`: Antenna number (0-based)
 - `metric`: Test metric (POW, EVM, MASK, FREQ, etc.)
 - `freq`: Frequency in MHz
@@ -1823,6 +1976,7 @@ CSV or Excel file with columns:
 - `mc2_dvt_diff`: Difference between MC2 and DVT values
 
 **Example Requests:**
+
 ```bash
 # JSON comparison
 curl -X POST http://127.0.0.1:8001/api/compare-formats \
@@ -1851,6 +2005,7 @@ curl -X POST http://127.0.0.1:8001/api/compare-formats \
 ```
 
 **Notes:**
+
 - Automatically matches test entries by frequency (within tolerance)
 - Categorizes tests by mode: TX, RX, or Others
 - Applies USL/LSL limits from spec file
@@ -1860,6 +2015,7 @@ curl -X POST http://127.0.0.1:8001/api/compare-formats \
 - Output filename includes UTC+7 timestamp
 
 **Status Codes:**
+
 - `200 OK`: Comparison completed successfully
 - `400 Bad Request`: File parsing error or invalid format
 - `500 Internal Server Error`: Comparison failed
@@ -1875,13 +2031,15 @@ curl -X POST http://127.0.0.1:8001/api/compare-formats \
 **Authentication:** None required
 
 **Request Body (Multipart Form Data):**
-| Field | Type | Required | Description | Example |
-|-------|------|----------|-------------|---------|
-| `dvt_file` | file | Yes | DVT format CSV file to convert | `DVT_Golden_SN_9403.csv` |
-| `spec_json` | file | Yes | JSON specification file defining test parameters | `spec_config.json` |
-| `output_format` | string | No | Output format: `csv` or `xlsx` (default: csv) | `xlsx` |
+
+| Field             | Type   | Required | Description                                      | Example                    |
+| ----------------- | ------ | -------- | ------------------------------------------------ | -------------------------- |
+| `dvt_file`      | file   | Yes      | DVT format CSV file to convert                   | `DVT_Golden_SN_9403.csv` |
+| `spec_json`     | file   | Yes      | JSON specification file defining test parameters | `spec_config.json`       |
+| `output_format` | string | No       | Output format:`csv` or `xlsx` (default: csv) | `xlsx`                   |
 
 **Spec JSON Structure:**
+
 ```json
 {
   "test_mode_tests": {
@@ -1904,6 +2062,7 @@ curl -X POST http://127.0.0.1:8001/api/compare-formats \
 
 **Response (CSV mode):**
 CSV file with MasterControl format columns:
+
 - Antenna, Test Mode, Metric, Freq, Standard, DataRate, BW
 - Value, USL, LSL, Result, Spec Diff
 
@@ -1911,12 +2070,14 @@ CSV file with MasterControl format columns:
 Excel file with formatted columns and conditional highlighting.
 
 **Response Headers:**
+
 ```
 Content-Type: text/csv  # or application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
 Content-Disposition: attachment; filename="MC2_converted_<timestamp>.csv"
 ```
 
 **Example Requests:**
+
 ```bash
 # Convert to CSV
 curl -X POST http://127.0.0.1:8001/api/convert-dvt-to-mc2 \
@@ -1934,6 +2095,7 @@ curl -X POST http://127.0.0.1:8001/api/convert-dvt-to-mc2 \
 ```
 
 **Notes:**
+
 - Extracts test results from DVT CSV format
 - Maps to MasterControl columns using spec file
 - Generates USL/LSL based on test specifications
@@ -1942,6 +2104,7 @@ curl -X POST http://127.0.0.1:8001/api/convert-dvt-to-mc2 \
 - Output filename includes UTC+7 timestamp
 
 **Status Codes:**
+
 - `200 OK`: Conversion completed successfully
 - `400 Bad Request`: Invalid DVT file or spec JSON format
 - `500 Internal Server Error`: Conversion failed
@@ -1957,13 +2120,15 @@ curl -X POST http://127.0.0.1:8001/api/convert-dvt-to-mc2 \
 **Authentication:** None
 
 **Request Body (Multipart Form Data):**
-| Field | Type | Required | Description | Example |
-|-------|------|----------|-------------|---------|
-| `mc2_file` | file | Yes | MC2 CSV/XLSX multi-DUT report | `2025_09_18_Wireless_Test_2_5G_Sampling_HH5K.csv` |
-| `spec_file` | file | Yes | Spec definition (`*.json` format or DUT-style criteria `*.ini`) | `multi-dut_all_specs.json` |
+
+| Field         | Type | Required | Description                                                         | Example                                             |
+| ------------- | ---- | -------- | ------------------------------------------------------------------- | --------------------------------------------------- |
+| `mc2_file`  | file | Yes      | MC2 CSV/XLSX multi-DUT report                                       | `2025_09_18_Wireless_Test_2_5G_Sampling_HH5K.csv` |
+| `spec_file` | file | Yes      | Spec definition (`*.json` format or DUT-style criteria `*.ini`) | `multi-dut_all_specs.json`                        |
 
 **Response:**
 Excel file with multiple sheets:
+
 1. **Summary**: Overall pass/fail statistics per DUT
 2. **TX Tests**: Transmit test results with criteria
 3. **RX Tests**: Receive test results with criteria
@@ -1971,6 +2136,7 @@ Excel file with multiple sheets:
 5. **Failures**: Aggregated list of all failures
 
 **Response Headers:**
+
 ```
 Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
 Content-Disposition: attachment; filename="MultiDUT_Analysis_<timestamp>.xlsx"
@@ -1979,17 +2145,20 @@ Content-Disposition: attachment; filename="MultiDUT_Analysis_<timestamp>.xlsx"
 **Excel Output Structure:**
 
 **Summary Sheet:**
-| DUT Serial | Total Tests | Passed | Failed | Pass Rate % |
-|------------|-------------|--------|--------|-------------|
-| 260884980003907 | 150 | 148 | 2 | 98.67% |
-| 260884980003908 | 150 | 145 | 5 | 96.67% |
+
+| DUT Serial      | Total Tests | Passed | Failed | Pass Rate % |
+| --------------- | ----------- | ------ | ------ | ----------- |
+| 260884980003907 | 150         | 148    | 2      | 98.67%      |
+| 260884980003908 | 150         | 145    | 5      | 96.67%      |
 
 **Test Results Sheets:**
-| DUT Serial | Metric | Standard | DataRate | BW | Freq | Value | USL | LSL | Result | Margin |
-|------------|--------|----------|----------|----|----|-------|-----|-----|--------|--------|
-| 260884980003907 | POW | 11AX | MCS11 | B20 | 2412 | 19.5 | 22.0 | 18.0 | PASS | 2.5 |
+
+| DUT Serial      | Metric | Standard | DataRate | BW  | Freq | Value | USL  | LSL  | Result | Margin |
+| --------------- | ------ | -------- | -------- | --- | ---- | ----- | ---- | ---- | ------ | ------ |
+| 260884980003907 | POW    | 11AX     | MCS11    | B20 | 2412 | 19.5  | 22.0 | 18.0 | PASS   | 2.5    |
 
 **Example Requests:**
+
 ```bash
 # Analyze with JSON spec
 curl -X POST http://127.0.0.1:8001/api/analyze-multi-dut \
@@ -2005,12 +2174,14 @@ curl -X POST http://127.0.0.1:8001/api/analyze-multi-dut \
 ```
 
 **Notes:**
+
 - Accepts a single MC2 CSV/XLSX export containing multiple DUT measurements
 - `spec_file` supports the legacy JSON structure *or* DUT criteria INI with regex rules
 - Output workbook includes summary sheets plus value/non-value data with computed margins
 - Automatically timestamps the filename when none is provided in the request
 
 **Status Codes:**
+
 - `200 OK`: Analysis completed successfully
 - `400 Bad Request`: Invalid file/spec format or parsing error
 - `500 Internal Server Error`: Analysis processing error
@@ -2020,11 +2191,13 @@ curl -X POST http://127.0.0.1:8001/api/analyze-multi-dut \
 ## 9. 🌐 DUT Management & External API (`/api/dut/*`)
 
 ### Overview
+
 Integration with upstream Device Under Test (DUT) management system. Provides metadata, test records, history, and analytics for devices tested in production.
 
 **Authentication:** All DUT endpoints require Bearer token (uses cached DUT credentials)
 
 **Request Headers:**
+
 ```
 Authorization: Bearer <ACCESS_TOKEN>
 ```
@@ -2040,6 +2213,7 @@ Authorization: Bearer <ACCESS_TOKEN>
 **Description:** List all manufacturing sites.
 
 **Response:**
+
 ```json
 [
   {
@@ -2056,12 +2230,14 @@ Authorization: Bearer <ACCESS_TOKEN>
 ```
 
 **Example Request:**
+
 ```bash
 curl -X GET http://127.0.0.1:8001/api/dut/sites \
   -H "Authorization: Bearer <ACCESS_TOKEN>"
 ```
 
 **Status Codes:**
+
 - `200 OK`: Sites retrieved successfully
 - `401 Unauthorized`: Missing/invalid token
 - `503 Service Unavailable`: Upstream DUT API unavailable
@@ -2073,11 +2249,13 @@ curl -X GET http://127.0.0.1:8001/api/dut/sites \
 **Description:** List all device models for a specific site. Accepts site ID or name.
 
 **Path Parameters:**
-| Parameter | Type | Description | Example |
-|-----------|------|-------------|---------|
+
+| Parameter   | Type       | Description     | Example                   |
+| ----------- | ---------- | --------------- | ------------------------- |
 | `site_id` | int/string | Site ID or name | `1` or `Site_Bangkok` |
 
 **Response:**
+
 ```json
 [
   {
@@ -2090,6 +2268,7 @@ curl -X GET http://127.0.0.1:8001/api/dut/sites \
 ```
 
 **Example Requests:**
+
 ```bash
 # By site ID
 curl -X GET http://127.0.0.1:8001/api/dut/sites/1/models \
@@ -2101,6 +2280,7 @@ curl -X GET http://127.0.0.1:8001/api/dut/sites/Site_Bangkok/models \
 ```
 
 **Status Codes:**
+
 - `200 OK`: Models retrieved successfully
 - `404 Not Found`: Site not found
 - `401 Unauthorized`: Missing/invalid token
@@ -2112,11 +2292,13 @@ curl -X GET http://127.0.0.1:8001/api/dut/sites/Site_Bangkok/models \
 **Description:** List all test stations for a specific device model. Accepts model ID or name.
 
 **Path Parameters:**
-| Parameter | Type | Description | Example |
-|-----------|------|-------------|---------|
+
+| Parameter    | Type       | Description      | Example                        |
+| ------------ | ---------- | ---------------- | ------------------------------ |
 | `model_id` | int/string | Model ID or name | `101` or `RTL8852BE_WiFi7` |
 
 **Response:**
+
 ```json
 [
   {
@@ -2130,6 +2312,7 @@ curl -X GET http://127.0.0.1:8001/api/dut/sites/Site_Bangkok/models \
 ```
 
 **Example Requests:**
+
 ```bash
 # By model ID
 curl -X GET http://127.0.0.1:8001/api/dut/models/101/stations \
@@ -2141,6 +2324,7 @@ curl -X GET "http://127.0.0.1:8001/api/dut/models/RTL8852BE_WiFi7/stations" \
 ```
 
 **Status Codes:**
+
 - `200 OK`: Stations retrieved successfully
 - `404 Not Found`: Model not found
 - `401 Unauthorized`: Missing/invalid token
@@ -2156,19 +2340,22 @@ curl -X GET "http://127.0.0.1:8001/api/dut/models/RTL8852BE_WiFi7/stations" \
 > ⚡ **Performance Note** — When `site_identifier` / `model_identifier` are omitted the API now streams the upstream DUT payload directly so the `record` array preserves the provider’s ordering (`test_date`, `station`, `device`, `isn`, `error_item`, …) without extra catalog lookups. Supplying those filters still enforces validation (ensuring the station belongs to the supplied site/model) and enriches the response with the authoritative metadata.
 
 **Path Parameters:**
-| Parameter | Type | Description | Example |
-|-----------|------|-------------|---------|
-| `station_id` | int/string | Station ID or name | `1001` or `Station_TX_Power` |
-| `dut_id` | int/string | DUT ID or serial number | `50001` or `260884980003907` |
+
+| Parameter      | Type       | Description             | Example                          |
+| -------------- | ---------- | ----------------------- | -------------------------------- |
+| `station_id` | int/string | Station ID or name      | `1001` or `Station_TX_Power` |
+| `dut_id`     | int/string | DUT ID or serial number | `50001` or `260884980003907` |
 
 **Query Parameters:**
-| Parameter | Type | Required | Description | Example |
-|-----------|------|----------|-------------|---------|
-| `start_date` | string | No | Start date (ISO 8601) | `2024-10-15T00:00:00Z` |
-| `end_date` | string | No | End date (ISO 8601) | `2024-10-20T23:59:59Z` |
-| `limit` | int | No | Maximum results (default: 100) | `50` |
+
+| Parameter      | Type   | Required | Description                    | Example                  |
+| -------------- | ------ | -------- | ------------------------------ | ------------------------ |
+| `start_date` | string | No       | Start date (ISO 8601)          | `2024-10-15T00:00:00Z` |
+| `end_date`   | string | No       | End date (ISO 8601)            | `2024-10-20T23:59:59Z` |
+| `limit`      | int    | No       | Maximum results (default: 100) | `50`                   |
 
 **Response:**
+
 ```json
 {
   "station": {
@@ -2196,6 +2383,7 @@ curl -X GET "http://127.0.0.1:8001/api/dut/models/RTL8852BE_WiFi7/stations" \
 ```
 
 **Example Requests:**
+
 ```bash
 # By IDs
 curl -X GET http://127.0.0.1:8001/api/dut/records/1001/50001 \
@@ -2211,6 +2399,7 @@ curl -X GET http://127.0.0.1:8001/api/dut/records/142/9410441 \
 ```
 
 **Status Codes:**
+
 - `200 OK`: Records retrieved successfully
 - `404 Not Found`: Station or DUT not found
 - `401 Unauthorized`: Missing/invalid token
@@ -2220,6 +2409,7 @@ curl -X GET http://127.0.0.1:8001/api/dut/records/142/9410441 \
 **Description:** Return the latest set of value-based measurements plus non-value and non-value-bin checks for multiple stations on a DUT.
 
 **Highlights:**
+
 - Accepts `{ "dut_isn": "...", "station_identifiers": ["Wireless_Test_6G", 142] }` and optional `site_identifier` / `model_identifier` hints.
 - Each station block now returns the buckets in this order:
 
@@ -2254,11 +2444,13 @@ curl -X GET http://127.0.0.1:8001/api/dut/records/142/9410441 \
 **Description:** Get all ISNs (Internal Serial Numbers) tested within a time range.
 
 **Query Parameters:**
-| Parameter | Type | Required | Description | Example |
-|-----------|------|----------|-------------|---------|
-| `dut_isn` | string | Yes | Device ISN to query variants for | `260884980003907` |
+
+| Parameter   | Type   | Required | Description                      | Example             |
+| ----------- | ------ | -------- | -------------------------------- | ------------------- |
+| `dut_isn` | string | Yes      | Device ISN to query variants for | `260884980003907` |
 
 **Response:**
+
 ```json
 {
   "isns": [
@@ -2271,12 +2463,14 @@ curl -X GET http://127.0.0.1:8001/api/dut/records/142/9410441 \
 ```
 
 **Example Request:**
+
 ```bash
 curl -X GET "http://127.0.0.1:8001/api/dut/history/isns?dut_isn=260884980003907" \
   -H "Authorization: Bearer <ACCESS_TOKEN>"
 ```
 
 **Status Codes:**
+
 - `200 OK`: ISNs retrieved successfully
 - `400 Bad Request`: Missing ISN parameter
 - `401 Unauthorized`: Missing/invalid token
@@ -2288,11 +2482,13 @@ curl -X GET "http://127.0.0.1:8001/api/dut/history/isns?dut_isn=260884980003907"
 **Description:** List DUT IDs observed for the provided ISN (per station).
 
 **Query Parameters:**
-| Parameter | Type | Required | Description | Example |
-|-----------|------|----------|-------------|---------|
-| `dut_isn` | string | Yes | Device ISN | `260884980003907` |
+
+| Parameter   | Type   | Required | Description | Example             |
+| ----------- | ------ | -------- | ----------- | ------------------- |
+| `dut_isn` | string | Yes      | Device ISN  | `260884980003907` |
 
 **Response:**
+
 ```json
 {
   "identifiers": [
@@ -2309,12 +2505,14 @@ curl -X GET "http://127.0.0.1:8001/api/dut/history/isns?dut_isn=260884980003907"
 ```
 
 **Example Request:**
+
 ```bash
 curl -X GET "http://127.0.0.1:8001/api/dut/history/identifiers?dut_isn=260884980003907" \
   -H "Authorization: Bearer <ACCESS_TOKEN>"
 ```
 
 **Status Codes:**
+
 - `200 OK`: Identifiers retrieved successfully
 - `400 Bad Request`: Missing ISN parameter
 - `401 Unauthorized`: Missing/invalid token
@@ -2326,11 +2524,13 @@ curl -X GET "http://127.0.0.1:8001/api/dut/history/identifiers?dut_isn=260884980
 **Description:** Show which stations have recorded runs for the DUT (tested flag).
 
 **Query Parameters:**
-| Parameter | Type | Required | Description | Example |
-|-----------|------|----------|-------------|---------|
-| `dut_isn` | string | Yes | Device ISN | `260884980003907` |
+
+| Parameter   | Type   | Required | Description | Example             |
+| ----------- | ------ | -------- | ----------- | ------------------- |
+| `dut_isn` | string | Yes      | Device ISN  | `260884980003907` |
 
 **Response:**
+
 ```json
 {
   "isn": "260884980003907",
@@ -2350,12 +2550,14 @@ curl -X GET "http://127.0.0.1:8001/api/dut/history/identifiers?dut_isn=260884980
 ```
 
 **Example Request:**
+
 ```bash
 curl -X GET "http://127.0.0.1:8001/api/dut/history/progression?dut_isn=260884980003907" \
   -H "Authorization: Bearer <ACCESS_TOKEN>"
 ```
 
 **Status Codes:**
+
 - `200 OK`: Progression retrieved successfully
 - `400 Bad Request`: Missing ISN parameter
 - `404 Not Found`: ISN not found
@@ -2368,11 +2570,13 @@ curl -X GET "http://127.0.0.1:8001/api/dut/history/progression?dut_isn=260884980
 **Description:** Count passes/fails per station with per-run status.
 
 **Query Parameters:**
-| Parameter | Type | Required | Description | Example |
-|-----------|------|----------|-------------|---------|
-| `dut_isn` | string | Yes | Device ISN | `260884980003907` |
+
+| Parameter   | Type   | Required | Description | Example             |
+| ----------- | ------ | -------- | ----------- | ------------------- |
+| `dut_isn` | string | Yes      | Device ISN  | `260884980003907` |
 
 **Response:**
+
 ```json
 {
   "isn": "260884980003907",
@@ -2395,12 +2599,14 @@ curl -X GET "http://127.0.0.1:8001/api/dut/history/progression?dut_isn=260884980
 ```
 
 **Example Request:**
+
 ```bash
 curl -X GET "http://127.0.0.1:8001/api/dut/history/results?dut_isn=260884980003907" \
   -H "Authorization: Bearer <ACCESS_TOKEN>"
 ```
 
 **Status Codes:**
+
 - `200 OK`: Results retrieved successfully
 - `400 Bad Request`: Missing ISN parameter
 - `404 Not Found`: ISN not found
@@ -2417,22 +2623,25 @@ curl -X GET "http://127.0.0.1:8001/api/dut/history/results?dut_isn=2608849800039
 **Authentication:** Bearer token required
 
 **Query Parameters:**
-| Parameter | Type | Required | Description | Example |
-|-----------|------|----------|-------------|---------|
-| `dut_isn` | string[] | Yes | List of DUT ISNs to analyze (multiple values) | `dut_isn=ISN1&dut_isn=ISN2` |
-| `station` | string[] | No | Filter by station IDs or names | `station=148&station=Wireless_Test_6G` |
-| `site_identifier` | string | No | Site ID or name for validation | `PTB` or `2` |
-| `model_identifier` | string | No | Model ID or name for validation | `HH5K` or `44` |
-| `device_identifier` | string[] | No | Device IDs or names to filter | `device_identifier=614660` |
-| `test_item_filter` | string[] | No | Regex patterns to include specific measurements | `test_item_filter=WiFi_TX_POW.*` |
-| `exclude_test_item_filter` | string[] | No | Regex patterns to exclude measurements | `exclude_test_item_filter=.*OLD.*` |
+
+| Parameter                    | Type     | Required | Description                                     | Example                                  |
+| ---------------------------- | -------- | -------- | ----------------------------------------------- | ---------------------------------------- |
+| `dut_isn`                  | string[] | Yes      | List of DUT ISNs to analyze (multiple values)   | `dut_isn=ISN1&dut_isn=ISN2`            |
+| `station`                  | string[] | No       | Filter by station IDs or names                  | `station=148&station=Wireless_Test_6G` |
+| `site_identifier`          | string   | No       | Site ID or name for validation                  | `PTB` or `2`                         |
+| `model_identifier`         | string   | No       | Model ID or name for validation                 | `HH5K` or `44`                       |
+| `device_identifier`        | string[] | No       | Device IDs or names to filter                   | `device_identifier=614660`             |
+| `test_item_filter`         | string[] | No       | Regex patterns to include specific measurements | `test_item_filter=WiFi_TX_POW.*`       |
+| `exclude_test_item_filter` | string[] | No       | Regex patterns to exclude measurements          | `exclude_test_item_filter=.*OLD.*`     |
 
 **Form Data:**
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `criteria_file` | file | No | INI file with scoring criteria (uses defaults if omitted) |
+
+| Field             | Type | Required | Description                                               |
+| ----------------- | ---- | -------- | --------------------------------------------------------- |
+| `criteria_file` | file | No       | INI file with scoring criteria (uses defaults if omitted) |
 
 **Response:**
+
 ```json
 {
   "results": [
@@ -2463,6 +2672,7 @@ curl -X GET "http://127.0.0.1:8001/api/dut/history/results?dut_isn=2608849800039
 ```
 
 **Example Request:**
+
 ```bash
 curl -X POST "http://127.0.0.1:8001/api/dut/top-product?dut_isn=ISN1&dut_isn=ISN2&station=148" \
   -H "Authorization: Bearer <ACCESS_TOKEN>" \
@@ -2470,6 +2680,7 @@ curl -X POST "http://127.0.0.1:8001/api/dut/top-product?dut_isn=ISN1&dut_isn=ISN
 ```
 
 **Status Codes:**
+
 - `200 OK`: Analysis completed successfully
 - `400 Bad Request`: Invalid parameters or missing required ISNs
 - `401 Unauthorized`: Missing/invalid token
@@ -2483,6 +2694,7 @@ curl -X POST "http://127.0.0.1:8001/api/dut/top-product?dut_isn=ISN1&dut_isn=ISN
 **⚡ Performance:** Uses parallel ISN processing with `asyncio.gather()` for 3-5x faster execution compared to sequential processing. Cache duration: 300 seconds.
 
 **Use Cases:**
+
 - Analyze products with PA (Power Amplifier) calibration data
 - Compare standard measurements + PA adjustments in single request
 - Production quality verification with power calibration trends
@@ -2492,28 +2704,32 @@ curl -X POST "http://127.0.0.1:8001/api/dut/top-product?dut_isn=ISN1&dut_isn=ISN
 **Authentication:** Bearer token required
 
 **Query Parameters:**
-| Parameter | Type | Required | Description | Example |
-|-----------|------|----------|-------------|---------|
-| `dut_isn` | string[] | Yes | List of DUT ISNs to analyze | `dut_isn=ISN1&dut_isn=ISN2` |
-| `station` | string[] | No | Filter by station IDs or names | `station=148` |
-| `site_identifier` | string | No | Site ID or name | `PTB` or `2` |
-| `model_identifier` | string | No | Model ID or name | `HH5K` or `44` |
-| `device_identifier` | string[] | No | Device IDs or names | `device_identifier=614660` |
-| `test_item_filter` | string[] | No | Include patterns | `test_item_filter=WiFi_PA.*` |
-| `exclude_test_item_filter` | string[] | No | Exclude patterns | `exclude_test_item_filter=.*OLD$` |
+
+| Parameter                    | Type     | Required | Description                    | Example                             |
+| ---------------------------- | -------- | -------- | ------------------------------ | ----------------------------------- |
+| `dut_isn`                  | string[] | Yes      | List of DUT ISNs to analyze    | `dut_isn=ISN1&dut_isn=ISN2`       |
+| `station`                  | string[] | No       | Filter by station IDs or names | `station=148`                     |
+| `site_identifier`          | string   | No       | Site ID or name                | `PTB` or `2`                    |
+| `model_identifier`         | string   | No       | Model ID or name               | `HH5K` or `44`                  |
+| `device_identifier`        | string[] | No       | Device IDs or names            | `device_identifier=614660`        |
+| `test_item_filter`         | string[] | No       | Include patterns               | `test_item_filter=WiFi_PA.*`      |
+| `exclude_test_item_filter` | string[] | No       | Exclude patterns               | `exclude_test_item_filter=.*OLD$` |
 
 **Form Data:**
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `criteria_file` | file | No | JSON scoring criteria file |
+
+| Field             | Type | Required | Description                |
+| ----------------- | ---- | -------- | -------------------------- |
+| `criteria_file` | file | No       | JSON scoring criteria file |
 
 **PA Trend Integration:**
+
 - Automatically fetches PA trend data for test items matching `PA{1-4}_SROM_OLD` and `PA{1-4}_SROM_NEW` patterns
 - Pairs OLD/NEW items and calculates adjusted power: `(NEW - OLD) / 256`
 - Creates synthetic `PA{1-4}_ADJUSTED_POW` test items with adjusted values
 - Applies specialized scoring for PA-adjusted measurements
 
 **Response Format:**
+
 ```json
 {
   "results": [
@@ -2557,6 +2773,7 @@ curl -X POST "http://127.0.0.1:8001/api/dut/top-product?dut_isn=ISN1&dut_isn=ISN
 ```
 
 **PA Measurement Fields:**
+
 - `comparison`: Relationship to trend ("within", "above", "below")
 - `threshold`: Acceptable deviation threshold (default: 0.5)
 - `current_value`: Calculated adjusted power for this DUT
@@ -2567,18 +2784,21 @@ curl -X POST "http://127.0.0.1:8001/api/dut/top-product?dut_isn=ISN1&dut_isn=ISN
 - `score`: PA-specific score (0-10 scale)
 
 **Example Request:**
+
 ```bash
 curl -X POST "http://127.0.0.1:8001/api/dut/top-product/with-pa-trends?dut_isn=DM2520270073965&station=145" \
   -H "Authorization: Bearer <ACCESS_TOKEN>"
 ```
 
 **Performance Notes:**
+
 - **Parallel Processing:** Multiple ISNs processed concurrently
 - **Benchmark:** 3 ISNs × 5 stations: ~7.5s → ~2.5s (3x faster)
 - **Cache:** 300-second cache for PA trend data
 - **Overhead:** ~200-500ms per station for PA trend API calls
 
 **Status Codes:**
+
 - `200 OK`: Analysis completed successfully (may include partial errors in `errors` array)
 - `400 Bad Request`: Invalid parameters
 - `401 Unauthorized`: Missing/invalid token
@@ -2595,6 +2815,7 @@ curl -X POST "http://127.0.0.1:8001/api/dut/top-product/with-pa-trends?dut_isn=D
 **Query Parameters:** Same as `/top-product` and `/top-product/with-pa-trends`
 
 **Response Structure:**
+
 ```json
 {
   "results": [
@@ -2628,6 +2849,7 @@ curl -X POST "http://127.0.0.1:8001/api/dut/top-product/with-pa-trends?dut_isn=D
 ```
 
 **Example Request:**
+
 ```bash
 curl -X POST "http://127.0.0.1:8001/api/dut/top-product/hierarchical?dut_isn=ISN1" \
   -H "Authorization: Bearer <ACCESS_TOKEN>"
@@ -2640,11 +2862,13 @@ curl -X POST "http://127.0.0.1:8001/api/dut/top-product/hierarchical?dut_isn=ISN
 **Description:** Aggregated station/device results for a specific DUT ISN.
 
 **Query Parameters:**
-| Parameter | Type | Required | Description | Example |
-|-----------|------|----------|-------------|---------|
-| `dut_isn` | string | Yes | Device ISN | `260884980003907` |
+
+| Parameter   | Type   | Required | Description | Example             |
+| ----------- | ------ | -------- | ----------- | ------------------- |
+| `dut_isn` | string | Yes      | Device ISN  | `260884980003907` |
 
 **Response:**
+
 ```json
 {
   "isn": "260884980003907",
@@ -2670,12 +2894,14 @@ curl -X POST "http://127.0.0.1:8001/api/dut/top-product/hierarchical?dut_isn=ISN
 ```
 
 **Example Request:**
+
 ```bash
 curl -X GET "http://127.0.0.1:8001/api/dut/summary?dut_isn=260884980003907" \
   -H "Authorization: Bearer <ACCESS_TOKEN>"
 ```
 
 **Status Codes:**
+
 - `200 OK`: Summary retrieved successfully
 - `400 Bad Request`: Missing ISN parameter
 - `404 Not Found`: ISN not found
@@ -2688,31 +2914,36 @@ curl -X GET "http://127.0.0.1:8001/api/dut/summary?dut_isn=260884980003907" \
 **Description:** Retrieve and rank the top-performing DUT products for a specific test station within a given time window. Products are scored based on test criteria and sorted by overall data score (highest first). Results can be limited to return only the best N products.
 
 **Path Parameters:**
-| Parameter | Type | Required | Description | Example |
-|-----------|------|----------|-------------|---------|
-| `station_id` | string/int | Yes | Station ID or name | `148` or `Wireless_2_5G_Test` |
+
+| Parameter      | Type       | Required | Description        | Example                           |
+| -------------- | ---------- | -------- | ------------------ | --------------------------------- |
+| `station_id` | string/int | Yes      | Station ID or name | `148` or `Wireless_2_5G_Test` |
 
 **Query Parameters:**
-| Parameter | Type | Required | Default | Constraints | Description | Example |
-|-----------|------|----------|---------|-------------|-------------|---------|
-| `site_id` | string/int | Yes | - | - | Site ID or name | `2` or `PTB` |
-| `model_id` | string/int | Yes | - | - | Model ID or name | `32` or `CALIX_EXPRESSO2-R` |
-| `start_time` | datetime | Yes | - | ISO 8601 format | Start of time window (UTC) | `2025-01-01T00:00:00Z` |
-| `end_time` | datetime | Yes | - | ISO 8601 format, ≤7 days from start | End of time window (UTC) | `2025-01-03T00:00:00Z` |
-| `criteria_score` | string | Yes | - | - | Minimum score threshold | `6` |
-| `limit` | int | No | 5 | 1-100 | Maximum number of top products to return | `10` |
+
+| Parameter          | Type       | Required | Default | Constraints                          | Description                              | Example                         |
+| ------------------ | ---------- | -------- | ------- | ------------------------------------ | ---------------------------------------- | ------------------------------- |
+| `site_id`        | string/int | Yes      | -       | -                                    | Site ID or name                          | `2` or `PTB`                |
+| `model_id`       | string/int | Yes      | -       | -                                    | Model ID or name                         | `32` or `CALIX_EXPRESSO2-R` |
+| `start_time`     | datetime   | Yes      | -       | ISO 8601 format                      | Start of time window (UTC)               | `2025-01-01T00:00:00Z`        |
+| `end_time`       | datetime   | Yes      | -       | ISO 8601 format, ≤7 days from start | End of time window (UTC)                 | `2025-01-03T00:00:00Z`        |
+| `criteria_score` | string     | Yes      | -       | -                                    | Minimum score threshold                  | `6`                           |
+| `limit`          | int        | No       | 5       | 1-100                                | Maximum number of top products to return | `10`                          |
 
 **Form Data:**
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `criteria_file` | file | No | INI file with test criteria (uses defaults if omitted) |
+
+| Field             | Type | Required | Description                                            |
+| ----------------- | ---- | -------- | ------------------------------------------------------ |
+| `criteria_file` | file | No       | INI file with test criteria (uses defaults if omitted) |
 
 **Time Window Validation:**
+
 - Maximum allowed time window: **7 days**
 - Exceeding 7 days returns `400 Bad Request` with error message
 - Exactly 7 days is accepted
 
 **Response:**
+
 ```json
 {
   "site_name": "PTB",
@@ -2791,6 +3022,7 @@ curl -X POST "http://127.0.0.1:8001/api/dut/stations/Wireless_2_5G_Test/top-prod
 ```
 
 **Status Codes:**
+
 - `200 OK`: Top products retrieved successfully
 - `400 Bad Request`: Time window exceeds 7 days or invalid parameters
 - `404 Not Found`: Station, site, or model not found
@@ -2798,6 +3030,7 @@ curl -X POST "http://127.0.0.1:8001/api/dut/stations/Wireless_2_5G_Test/top-prod
 - `401 Unauthorized`: Missing/invalid token
 
 **Implementation Notes:**
+
 - Results are **sorted by `overall_data_score`** in descending order (highest scores first)
 - Then sorted by `test_date` in descending order (newest first) for equal scores
 - The `limit` parameter controls how many top products are returned after scoring
@@ -2807,6 +3040,7 @@ curl -X POST "http://127.0.0.1:8001/api/dut/stations/Wireless_2_5G_Test/top-prod
 - Maximum time window enforced to ensure reasonable query performance
 
 **Status Codes:**
+
 - `200 OK`: Top products retrieved successfully
 - `400 Bad Request`: Invalid time window (exceeds 7 days) or missing required parameters
 - `401 Unauthorized`: Missing/invalid token
@@ -2822,11 +3056,13 @@ curl -X POST "http://127.0.0.1:8001/api/dut/stations/Wireless_2_5G_Test/top-prod
 **Authentication:** Bearer token required
 
 **Request Headers:**
+
 ```
 Authorization: Bearer <access_token>
 ```
 
 **Request Body (JSON):**
+
 ```json
 {
   "start_time": "2025-11-15T08:22:21.00Z",
@@ -2841,20 +3077,23 @@ Authorization: Bearer <access_token>
 ```
 
 **Request Fields:**
-| Field | Type | Required | Description | Example |
-|-------|------|----------|-------------|---------|
-| `start_time` | datetime | Yes | Start of date range (ISO 8601, UTC) | `2025-11-15T08:22:21.00Z` |
-| `end_time` | datetime | Yes | End of date range (≤7 days from start) | `2025-11-17T08:22:21.00Z` |
-| `station_id` | integer | Yes | Station ID to query | `145` |
-| `test_items` | string[] | Yes | List of PA test item names (must include both OLD and NEW variants) | `["WiFi_PA1_SROM_OLD_5985_11AX_MCS9_B80", "WiFi_PA1_SROM_NEW_5985_11AX_MCS9_B80"]` |
-| `model` | string | No | Model filter (empty string or "ALL") | `""` |
+
+| Field          | Type     | Required | Description                                                         | Example                                                                              |
+| -------------- | -------- | -------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `start_time` | datetime | Yes      | Start of date range (ISO 8601, UTC)                                 | `2025-11-15T08:22:21.00Z`                                                          |
+| `end_time`   | datetime | Yes      | End of date range (≤7 days from start)                             | `2025-11-17T08:22:21.00Z`                                                          |
+| `station_id` | integer  | Yes      | Station ID to query                                                 | `145`                                                                              |
+| `test_items` | string[] | Yes      | List of PA test item names (must include both OLD and NEW variants) | `["WiFi_PA1_SROM_OLD_5985_11AX_MCS9_B80", "WiFi_PA1_SROM_NEW_5985_11AX_MCS9_B80"]` |
+| `model`      | string   | No       | Model filter (empty string or "ALL")                                | `""`                                                                               |
 
 **Time Window Constraints:**
+
 - Maximum allowed time window: **7 days**
 - Exceeding 7 days returns `400 Bad Request`
 - `end_time` must be after `start_time`
 
 **Test Item Pairing:**
+
 - Test items must follow pattern: `{prefix}_PA{1-4}_SROM_{OLD|NEW}_{suffix}`
 - OLD and NEW items are paired by matching their base names (after removing SROM_OLD/SROM_NEW)
 - Example pair:
@@ -2862,6 +3101,7 @@ Authorization: Bearer <access_token>
   - `WiFi_PA1_SROM_NEW_5985_11AX_MCS9_B80` → base: `WiFi_PA1_5985_11AX_MCS9_B80`
 
 **Calculation Formula:**
+
 ```python
 adjusted_mid = (NEW_mid - OLD_mid) / 256
 adjusted_mean = (NEW_mean - OLD_mean) / 256
@@ -2869,6 +3109,7 @@ adjusted_mean = (NEW_mean - OLD_mean) / 256
 ```
 
 **Response:**
+
 ```json
 {
   "station_id": 145,
@@ -2901,6 +3142,7 @@ adjusted_mean = (NEW_mean - OLD_mean) / 256
 ```
 
 **Response Fields:**
+
 - `station_id`: Station ID from request
 - `start_time`, `end_time`: Date range from request
 - `items`: Array of adjusted power calculations
@@ -2920,6 +3162,7 @@ adjusted_mean = (NEW_mean - OLD_mean) / 256
 **Example Calculation:**
 
 Given trend data from external API:
+
 ```json
 {
   "WiFi_PA1_SROM_OLD_5985_11AX_MCS9_B80": {
@@ -2934,6 +3177,7 @@ Given trend data from external API:
 ```
 
 Adjusted power calculation:
+
 ```
 Adjusted Mid Power:
   11313.0 - 11219.0 = 94.0
@@ -2947,6 +3191,7 @@ Adjusted Mean Power:
 ```
 
 **Example Request:**
+
 ```bash
 curl -X POST http://127.0.0.1:8001/api/dut/pa-test-items/adjusted-power \
   -H "Authorization: Bearer <ACCESS_TOKEN>" \
@@ -2966,6 +3211,7 @@ curl -X POST http://127.0.0.1:8001/api/dut/pa-test-items/adjusted-power \
 ```
 
 **Status Codes:**
+
 - `200 OK`: Adjusted power calculated successfully
 - `400 Bad Request`: Invalid time window (exceeds 7 days) or end_time before start_time
 - `401 Unauthorized`: Missing/invalid token
@@ -2973,11 +3219,13 @@ curl -X POST http://127.0.0.1:8001/api/dut/pa-test-items/adjusted-power \
 - `500 Internal Server Error`: External API error or calculation failure
 
 **Error Handling:**
+
 - **Missing pairs:** If only OLD or NEW variant is found, the item appears in `unpaired_items` and has an error message
 - **Missing values:** If mid or mean is null, adjusted value will be null (calculation skipped for that field)
 - **External API errors:** Returns appropriate HTTP status with error details
 
 **Use Cases:**
+
 - **Power Calibration Analysis:** Compare SROM OLD vs NEW to detect calibration drift
 - **Firmware Validation:** Verify power adjustments after firmware updates
 - **Quality Assurance:** Track power consistency across production batches
@@ -2992,6 +3240,7 @@ The top-products endpoints use an intelligent, physics-aware scoring system that
 ### Overview
 
 **Core Principles:**
+
 1. **Category-Aware:** Different measurement types (EVM, PER, POW, etc.) are scored using specialized algorithms
 2. **Spec-Based:** Scoring considers USL (Upper Spec Limit), LSL (Lower Spec Limit), and Target values
 3. **0-10 Scale:** All measurements use a normalized 0-10 scale where higher scores indicate better performance
@@ -3011,18 +3260,20 @@ All Measurements → Overall Score (Average) → Ranking → Top N Products
 The system automatically detects measurement categories by parsing test item names:
 
 **Pattern Recognition:**
+
 - Test items follow naming convention: `{Prefix}_{Category}_{Frequency}_{Protocol}_{Details}`
 - Category is extracted from the second or third component
 - Case-insensitive matching (EVM, evm, Evm all work)
 
 **Examples:**
-| Test Item Name | Detected Category | Scoring Method |
-|----------------|-------------------|----------------|
-| `WiFi_TX1_EVM_6185_11AX_MCS11_B160` | EVM | EVM Specialized |
-| `WiFi_RX1_PER_6185_11AX_MCS11_B160` | PER | PER Specialized |
-| `WiFi_PA1_POW_2422_11AC_MCS7_B40` | POW | Default |
-| `WiFi_MASK_2422_11N_MCS0_B20` | MASK | Default |
-| `WiFi_TX_FREQ_5180_11AC_B80` | FREQ | Default |
+
+| Test Item Name                        | Detected Category | Scoring Method  |
+| ------------------------------------- | ----------------- | --------------- |
+| `WiFi_TX1_EVM_6185_11AX_MCS11_B160` | EVM               | EVM Specialized |
+| `WiFi_RX1_PER_6185_11AX_MCS11_B160` | PER               | PER Specialized |
+| `WiFi_PA1_POW_2422_11AC_MCS7_B40`   | POW               | Default         |
+| `WiFi_MASK_2422_11N_MCS0_B20`       | MASK              | Default         |
+| `WiFi_TX_FREQ_5180_11AC_B80`        | FREQ              | Default         |
 
 **Implementation:** `_detect_measurement_category(test_item)` in `external_api_client.py`
 
@@ -3033,6 +3284,7 @@ The system automatically detects measurement categories by parsing test item nam
 Used for: POW (Power), FREQ (Frequency), MASK, and other standard measurements where "closer to target is better".
 
 **Spec Limits:**
+
 - **USL** (Upper Spec Limit): Maximum acceptable value
 - **LSL** (Lower Spec Limit): Minimum acceptable value
 - **Target**: Ideal value (calculated from USL/LSL if not provided)
@@ -3040,6 +3292,7 @@ Used for: POW (Power), FREQ (Frequency), MASK, and other standard measurements w
 **Scoring Logic:**
 
 1. **Calculate Target:**
+
    ```python
    if target is None:
        if USL and LSL:
@@ -3049,18 +3302,18 @@ Used for: POW (Power), FREQ (Frequency), MASK, and other standard measurements w
        elif USL:
            target = USL - (some reasonable offset)
    ```
-
 2. **Check Spec Compliance:**
+
    - If `actual > USL`: **FAIL** (exceeds upper limit)
    - If `actual < LSL`: **FAIL** (below lower limit)
    - Otherwise: **PASS**
-
 3. **Calculate Deviation:**
+
    ```python
    deviation = abs(actual - target)
    ```
-
 4. **Score Calculation:**
+
    - Perfect score (10.0): `actual == target` (zero deviation)
    - Good scores (7-9): Small deviation from target
    - Acceptable scores (5-7): Moderate deviation
@@ -3068,6 +3321,7 @@ Used for: POW (Power), FREQ (Frequency), MASK, and other standard measurements w
    - Failing scores (<0): Exceeds spec limits
 
 **Example:**
+
 ```python
 # Power measurement
 USL = 25.0 dBm
@@ -3081,6 +3335,7 @@ Pass = True (within 17-25 range)
 ```
 
 Other example:
+
 ```
 USL = 25
 LSL = 17
@@ -3097,6 +3352,7 @@ Score = 10 − (0.05 × 10) = 10 − 0.5 = 9.5
 ### EVM Scoring (Error Vector Magnitude)
 
 **Physics Background:**
+
 - EVM measures signal quality in decibels (dB)
 - Values are **negative** (e.g., -20 dB, -5 dB)
 - **Lower values are better** (more negative = better signal quality)
@@ -3104,6 +3360,7 @@ Score = 10 − (0.05 × 10) = 10 − 0.5 = 9.5
 - USL defines the worst acceptable value (e.g., -3 dB)
 
 **Why Specialized Scoring?**
+
 - Default "closer to target" logic doesn't work for EVM
 - EVM has a natural floor (-60 dB) and no meaningful ceiling
 - Lower values should get higher scores, not lower scores
@@ -3111,16 +3368,16 @@ Score = 10 − (0.05 × 10) = 10 − 0.5 = 9.5
 **Scoring Logic:**
 
 1. **Default USL:** If not provided, uses **-3 dB** as default
-
 2. **Exceeds USL (Fails Spec):**
+
    ```python
    if actual > USL:  # e.g., -1 dB > -3 dB (worse)
        deviation = actual - USL  # e.g., 2.0
        score = 6.0 - (deviation * 2.0)  # Penalty
        pass_flag = False
    ```
-
 3. **Within Spec (Passes):**
+
    ```python
    if actual <= USL:  # e.g., -20 dB <= -3 dB (better)
        # Map position in [USL, -60] range to [6.0, 10.0] score
@@ -3131,8 +3388,8 @@ Score = 10 − (0.05 × 10) = 10 − 0.5 = 9.5
        deviation = 0.0  # Within spec
        pass_flag = True
    ```
-
 4. **Bonus Scoring (Exceptional Performance):**
+
    ```python
    if actual < (USL - 10):  # e.g., -20 < -13
        bonus = (abs(actual - USL) - 10) * 0.1
@@ -3140,6 +3397,7 @@ Score = 10 − (0.05 × 10) = 10 − 0.5 = 9.5
    ```
 
 **Score Ranges:**
+
 - **10.0+**: Exceptional (near -60 dB theoretical minimum)
 - **8.0-10.0**: Excellent (significantly better than USL)
 - **6.0-8.0**: Good (better than USL, passes spec)
@@ -3176,6 +3434,7 @@ pass_flag = False  ✗
 ```
 
 **Real-World Interpretation:**
+
 - **-40 dB**: Excellent signal quality, modern high-performance chipsets
 - **-20 dB**: Very good signal quality, typical for quality production
 - **-10 dB**: Good signal quality, acceptable for most applications
@@ -3189,6 +3448,7 @@ pass_flag = False  ✗
 ### PER Scoring (Packet Error Rate)
 
 **Physics Background:**
+
 - PER measures packet transmission reliability
 - Values range from **0.0 to 1.0** (0% to 100% error rate)
 - **0.0 is perfect** (no packet errors)
@@ -3196,6 +3456,7 @@ pass_flag = False  ✗
 - Typical acceptable rates: <1% (0.01) for production
 
 **Why Specialized Scoring?**
+
 - PER = 0 should get perfect score (10.0)
 - Small increases from 0 matter more than changes at high error rates
 - Non-linear penalty: 1% error is much worse than 0.1% error
@@ -3203,19 +3464,20 @@ pass_flag = False  ✗
 **Scoring Logic:**
 
 1. **Target Determination:**
+
    ```python
    target = LSL if LSL else 0.0
    ```
-
 2. **At or Below Target (Perfect):**
+
    ```python
    if actual <= target:  # e.g., 0.0
        score = 10.0
        deviation = 0.0
        pass_flag = True
    ```
-
 3. **Low Error Range (0 - 10%):**
+
    ```python
    if 0 < actual <= 0.1:  # 0% to 10% error rate
        # Linear decrease from 10.0 to 5.0
@@ -3223,8 +3485,8 @@ pass_flag = False  ✗
        deviation = actual - target
        pass_flag = True  # Still acceptable
    ```
-
 4. **High Error Range (>10%):**
+
    ```python
    if actual > 0.1:  # More than 10% error rate
        # Rapid decrease below 5.0
@@ -3235,6 +3497,7 @@ pass_flag = False  ✗
    ```
 
 **Score Ranges:**
+
 - **10.0**: Perfect (PER = 0, no errors)
 - **9.0-10.0**: Excellent (PER < 0.01, <1% error)
 - **7.0-9.0**: Good (PER 0.01-0.05, 1-5% error)
@@ -3283,6 +3546,7 @@ score = 5.0 - 2.0 = 3.0  ✗ (poor)
 ```
 
 **Real-World Interpretation:**
+
 - **0.000**: Perfect transmission, lab-grade performance
 - **0.001**: Excellent (0.1% loss), production quality
 - **0.01**: Good (1% loss), typical consumer-grade
@@ -3299,23 +3563,24 @@ score = 5.0 - 2.0 = 3.0  ✗ (poor)
 **Process:**
 
 1. **Score Each Measurement:**
+
    - Apply appropriate scoring logic (Default/EVM/PER)
    - Get individual score (0-10 scale)
-
 2. **Calculate Overall Score:**
+
    ```python
    overall_data_score = average(all_measurement_scores)
    ```
-
 3. **Filter by Criteria:**
+
    - Only include DUTs where `overall_data_score >= criteria_score`
    - Default `criteria_score` is typically 6.0 or 7.0
-
 4. **Rank and Sort:**
+
    - Primary: `overall_data_score` (descending, highest first)
    - Secondary: `test_date` (descending, newest first)
-
 5. **Apply Limit:**
+
    - Return top N products based on `limit` parameter (default: 5, max: 100)
 
 **Example:**
@@ -3342,6 +3607,7 @@ overall_data_score = (8.5 + 9.6 + 9.2 + 10.0) / 4 = 9.325
 Optionally, you can provide a JSON configuration file to customize scoring thresholds:
 
 **Example `criteria.json`:**
+
 ```json
 {
   "criteria": [
@@ -3368,6 +3634,7 @@ Optionally, you can provide a JSON configuration file to customize scoring thres
 ```
 
 **Notes:**
+
 - If criteria file not provided, system uses spec limits from database
 - Criteria file overrides database values
 - Missing sections use default scoring logic
@@ -3395,6 +3662,7 @@ Each product in the response includes:
 ```
 
 **Field Meanings:**
+
 - **overall_data_score**: Average of all measurement scores (determines ranking)
 - **test_item**: Measurement name (used for category detection)
 - **usl/lsl/target**: Specification limits (from database or criteria file)
@@ -3407,23 +3675,27 @@ Each product in the response includes:
 ### Practical Usage Tips
 
 **1. Understanding The Results:**
+
 - Score ≥8.0: Excellent DUTs, top-product.
 - Score 7.0-8.0: Good DUTs, acceptable quality
 - Score 6.0-7.0: Marginal DUTs, may need review
 - Score <6.0: Poor DUTs, likely have issues
 
 **2. Setting Criteria Score:**
+
 - **criteria_score=8.0**: Strict, only high-quality DUTs
 - **criteria_score=6.0**: Standard, production-grade DUTs
 - **criteria_score=5.0**: Lenient, includes marginal DUTs
 
 **3. Analyzing Mixed Categories:**
+
 - Check individual scores in `latest_data` array
 - Identify which measurements are failing
 - EVM and PER scores reflect different physics
 - Don't directly compare EVM vs POW scores
 
 **4. Troubleshooting Low Scores:**
+
 - **Low EVM scores**: Signal quality issues, check RF components
 - **Low PER scores**: Transmission problems, check antennas/receivers
 - **Low POW scores**: Power calibration issues, check amplifiers
@@ -3435,10 +3707,10 @@ Each product in the response includes:
 
 The scoring system provides intelligent, physics-aware evaluation of DUT performance:
 
-✅ **Automatic**: No configuration needed, works from test item names  
-✅ **Accurate**: Specialized scoring reflects measurement physics  
-✅ **Flexible**: Supports criteria files for custom thresholds  
-✅ **Comprehensive**: Combines multiple measurements into overall score  
+✅ **Automatic**: No configuration needed, works from test item names
+✅ **Accurate**: Specialized scoring reflects measurement physics
+✅ **Flexible**: Supports criteria files for custom thresholds
+✅ **Comprehensive**: Combines multiple measurements into overall score
 ✅ **Actionable**: Clear pass/fail and ranking for decision-making
 
 ---

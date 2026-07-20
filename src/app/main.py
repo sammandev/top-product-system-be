@@ -353,7 +353,7 @@ async def health_check():
 # Set up CORS middleware
 cors_origins_env = os.getenv(
     "CORS_ORIGINS",
-    "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173,http://10.176.2.139,http://10.176.2.139:3000,http://10.176.2.139:9090,http://ast-tools-frontend.localhost,http://ast-tools-frontend.localhost:3000"
+    "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173,http://10.176.2.139,http://10.176.2.139:3000,http://10.176.2.139:9090,http://172.18.220.56:9001,http://ast-tools-frontend.localhost,http://ast-tools-frontend.localhost:3000"
 )
 cors_origins = [origin.strip() for origin in cors_origins_env.split(",")]
 

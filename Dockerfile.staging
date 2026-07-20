@@ -55,7 +55,7 @@ EXPOSE 7070
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:7070/health || exit 1
+    CMD curl -f http://127.0.0.1:7070/health || exit 1
 
 # Default command (will be overridden in docker-compose for hot reload)
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7070", "--reload", "--reload-dir", "/app/src"]

@@ -35,6 +35,19 @@ fi
 
 echo "✅ Found $ENV_FILE file"
 
+# Check the external PostgreSQL port before replacing a working container.
+DB_HOST="$(sed -n 's/^DB_HOST=//p' "$ENV_FILE" | head -n 1)"
+DB_PORT="$(sed -n 's/^DB_PORT=//p' "$ENV_FILE" | head -n 1)"
+if [ -n "$DB_HOST" ] && [ -n "$DB_PORT" ] && command -v nc >/dev/null 2>&1; then
+    echo "🔌 Checking PostgreSQL connectivity at ${DB_HOST}:${DB_PORT}..."
+    if ! nc -z -w 5 "$DB_HOST" "$DB_PORT"; then
+        echo "❌ Cannot reach PostgreSQL at ${DB_HOST}:${DB_PORT} from this server."
+        echo "Check routing, the database listen address, pg_hba.conf, and firewall rules before recreating the backend."
+        exit 1
+    fi
+    echo "✅ PostgreSQL port is reachable"
+fi
+
 # Check if Docker is running
 if ! docker info &> /dev/null; then
     echo "❌ Error: Docker is not running. Please start Docker first."

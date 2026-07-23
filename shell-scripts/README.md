@@ -202,6 +202,9 @@ DB_PORT=5432
 DB_NAME=top_products_db
 DB_USER=ptb
 DB_PASSWORD=ptb#1234
+DB_POOL_PRE_PING=true
+DB_POOL_RECYCLE_SECONDS=1800
+DB_CONNECT_TIMEOUT=10
 
 # Redis (existing host container)
 REDIS_URL=redis://127.0.0.1:6380/0

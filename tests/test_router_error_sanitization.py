@@ -320,6 +320,16 @@ def test_test_log_compare_hides_internal_error(monkeypatch):
     assert "secret" not in response.json()["detail"].lower()
 
 
+def test_test_log_compare_returns_bad_request_for_invalid_test_log():
+    response = client.post(
+        "/api/test-log/compare",
+        files=[("files", ("sample.txt", b"not a supported test log", "text/plain"))],
+    )
+
+    assert response.status_code == 400
+    assert "No valid test log files found for comparison" in response.json()["detail"]
+
+
 def test_scoring_preview_hides_internal_error(monkeypatch):
     import app.services.scoring_service as scoring_service
 

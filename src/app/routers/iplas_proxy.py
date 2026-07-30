@@ -195,6 +195,59 @@ IPLAS_V1_BASE_URL = os.getenv("DUT2_API_BASE_URL", "http://10.176.33.89:32678/ap
 IPLAS_TOKEN = os.getenv("DUT2_API_TOKEN", "")
 
 
+def _is_configured_value(value: str | None) -> bool:
+    """Treat blank and example placeholder values as not configured."""
+    if value is None:
+        return False
+
+    stripped = value.strip()
+    return bool(stripped) and not (stripped.startswith("<") and stripped.endswith(">"))
+
+
+def _build_iplas_site_config(base_url: str, token: str) -> dict[str, str]:
+    return {
+        "base_url": base_url,
+        "token": token,
+        "v1_url": f"{base_url}:{IPLAS_PORT}{IPLAS_V1_VERSION}",
+        "v2_url": f"{base_url}:{IPLAS_PORT}{IPLAS_V2_VERSION}",
+    }
+
+
+def _get_active_app_config_iplas_site() -> tuple[str, dict[str, str]] | None:
+    """Return the single active iPLAS site configured from App Configuration."""
+    try:
+        from app.db import SessionLocal
+        from app.models.app_config import IplasToken
+        from app.utils.encryption import decrypt_value
+
+        with SessionLocal() as db:
+            active = (
+                db.query(IplasToken)
+                .filter(IplasToken.is_active.is_(True))
+                .order_by(IplasToken.updated_at.desc(), IplasToken.id.desc())
+                .first()
+            )
+            if not active:
+                return None
+
+            base_url = active.base_url
+            token = decrypt_value(active.token_value) if active.token_value else ""
+            if not _is_configured_value(base_url) or not _is_configured_value(token):
+                logger.warning("Active iPLAS token for site %s is incomplete and will not be used", active.site)
+                return None
+
+            return active.site.upper(), _build_iplas_site_config(base_url, token)
+    except Exception as e:
+        logger.debug(f"Could not load active iPLAS token from App Configuration: {e}")
+        return None
+
+
+def _iter_active_iplas_sites() -> list[tuple[str, dict[str, str]]]:
+    """Return the active App Configuration iPLAS site used by broad searches."""
+    active_site = _get_active_app_config_iplas_site()
+    return [active_site] if active_site else []
+
+
 # ============================================================================
 # Request Deduplication (In-Flight Request Coalescing)
 # ============================================================================
@@ -2889,7 +2942,7 @@ async def health_check():
     redis_status = "connected" if redis else "unavailable"
 
     # Check configured sites
-    configured_sites = [site for site, config in IPLAS_SITES.items() if config["token"]]
+    configured_sites = [site for site, _config in _iter_active_iplas_sites()]
 
     return {
         "status": "ok",
@@ -2962,13 +3015,9 @@ async def get_site_projects(
         logger.debug(f"Cache {'REFRESH' if force_refresh else 'MISS'}: {cache_key}")
 
         # Query all configured sites
-        for site_name, site_config in IPLAS_SITES.items():
-            if not site_config["token"]:
-                continue
-
+        for site_name, site_config in _iter_active_iplas_sites():
             try:
-                v2_url = f"{site_config['base_url']}:{IPLAS_PORT}{IPLAS_V2_VERSION}"
-                url = f"{v2_url}/site_project_list"
+                url = f"{site_config['v2_url']}/site_project_list"
 
                 async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
                     response = await client.get(
@@ -3234,7 +3283,7 @@ async def search_by_isn(
                 return site_name, []
 
             # Execute all site searches in parallel
-            tasks = [search_site(site_name, site_cfg) for site_name, site_cfg in IPLAS_SITES.items()]
+            tasks = [search_site(site_name, site_cfg) for site_name, site_cfg in _iter_active_iplas_sites()]
             site_results = await asyncio.gather(*tasks, return_exceptions=True)
 
             # Collect results from first site that has data
@@ -3355,7 +3404,7 @@ async def search_by_isn_batch(
                         return site_name, []
 
                     # Execute all site searches in parallel
-                    site_tasks = [search_site_for_isn(site_name, site_cfg) for site_name, site_cfg in IPLAS_SITES.items()]
+                    site_tasks = [search_site_for_isn(site_name, site_cfg) for site_name, site_cfg in _iter_active_iplas_sites()]
                     site_results = await asyncio.gather(*site_tasks, return_exceptions=True)
 
                     # Collect results from first site that has data
@@ -3479,16 +3528,12 @@ async def _search_isn_for_project(
             logger.warning(f"Failed to search ISN with user token: {e}")
     else:
         # Query all configured sites until we find results
-        for site_name, site_config in IPLAS_SITES.items():
-            if not site_config["token"]:
-                continue
-
+        for site_name, site_config in _iter_active_iplas_sites():
             if site and project:
                 break  # Found results, stop querying
 
             try:
-                v2_url = f"{site_config['base_url']}:{IPLAS_PORT}{IPLAS_V2_VERSION}"
-                url = f"{v2_url}/isn_search"
+                url = f"{site_config['v2_url']}/isn_search"
 
                 async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
                     response = await client.get(

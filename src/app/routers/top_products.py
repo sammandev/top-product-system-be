@@ -4,11 +4,12 @@ Router for Top Product database management and viewing.
 
 import logging
 from datetime import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from fastapi_cache.decorator import cache
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import desc, func
+from sqlalchemy import case, desc, func
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -233,12 +234,20 @@ async def get_top_products_list(
         total_pages = (total + page_size - 1) // page_size
 
         top_products = query.limit(page_size).offset(offset).all()
+        product_ids = [product.id for product in top_products]
+        measurement_counts = dict(
+            db.query(
+                TopProductMeasurement.top_product_id,
+                func.count(TopProductMeasurement.id),
+            )
+            .filter(TopProductMeasurement.top_product_id.in_(product_ids))
+            .group_by(TopProductMeasurement.top_product_id)
+            .all()
+        ) if product_ids else {}
 
         # Add measurements count for each product
         products_with_count = []
         for product in top_products:
-            measurement_count = db.query(func.count(TopProductMeasurement.id)).filter(TopProductMeasurement.top_product_id == product.id).scalar()
-
             product_dict = {
                 "id": product.id,
                 "dut_isn": product.dut_isn,
@@ -255,7 +264,7 @@ async def get_top_products_list(
                 "retest_count": product.retest_count,
                 "score": product.score,
                 "created_at": product.created_at,
-                "measurements_count": measurement_count,
+                "measurements_count": measurement_counts.get(product.id, 0),
             }
             products_with_count.append(TopProductSchema(**product_dict))
 
@@ -363,32 +372,30 @@ async def get_top_products_stats(
         twenty_four_hours_ago = now - timedelta(hours=24)
         seven_days_ago = now - timedelta(days=7)
 
-        total_products = db.query(func.count(TopProduct.id)).scalar() or 0
-        total_unique_isns = db.query(func.count(func.distinct(TopProduct.dut_isn))).scalar() or 0
-        total_projects = db.query(func.count(func.distinct(TopProduct.project_name))).filter(TopProduct.project_name.isnot(None)).scalar() or 0
-
-        avg_score = db.query(func.avg(TopProduct.score)).scalar()
-        max_score = db.query(func.max(TopProduct.score)).scalar()
-        min_score = db.query(func.min(TopProduct.score)).scalar()
-
-        total_pass = db.query(func.sum(TopProduct.pass_count)).scalar() or 0
-        total_fail = db.query(func.sum(TopProduct.fail_count)).scalar() or 0
-
-        recent_24h = db.query(func.count(TopProduct.id)).filter(TopProduct.created_at >= twenty_four_hours_ago).scalar() or 0
-
-        recent_7d = db.query(func.count(TopProduct.id)).filter(TopProduct.created_at >= seven_days_ago).scalar() or 0
+        stats_row = db.query(
+            func.count(TopProduct.id).label("total_products"),
+            func.count(func.distinct(TopProduct.dut_isn)).label("total_unique_isns"),
+            func.count(func.distinct(TopProduct.project_name)).label("total_projects"),
+            func.avg(TopProduct.score).label("avg_score"),
+            func.max(TopProduct.score).label("max_score"),
+            func.min(TopProduct.score).label("min_score"),
+            func.sum(TopProduct.pass_count).label("total_pass"),
+            func.sum(TopProduct.fail_count).label("total_fail"),
+            func.sum(case((TopProduct.created_at >= twenty_four_hours_ago, 1), else_=0)).label("recent_24h"),
+            func.sum(case((TopProduct.created_at >= seven_days_ago, 1), else_=0)).label("recent_7d"),
+        ).one()
 
         return TopProductStatsResponse(
-            total_products=total_products,
-            total_unique_isns=total_unique_isns,
-            total_projects=total_projects,
-            avg_score=float(avg_score) if avg_score else None,
-            max_score=float(max_score) if max_score else None,
-            min_score=float(min_score) if min_score else None,
-            total_pass=total_pass,
-            total_fail=total_fail,
-            recent_products_24h=recent_24h,
-            recent_products_7d=recent_7d,
+            total_products=stats_row.total_products or 0,
+            total_unique_isns=stats_row.total_unique_isns or 0,
+            total_projects=stats_row.total_projects or 0,
+            avg_score=float(stats_row.avg_score) if stats_row.avg_score else None,
+            max_score=float(stats_row.max_score) if stats_row.max_score else None,
+            min_score=float(stats_row.min_score) if stats_row.min_score else None,
+            total_pass=stats_row.total_pass or 0,
+            total_fail=stats_row.total_fail or 0,
+            recent_products_24h=stats_row.recent_24h or 0,
+            recent_products_7d=stats_row.recent_7d or 0,
         )
 
     except Exception as e:
@@ -439,13 +446,21 @@ async def get_unique_projects(
 )
 @cache(expire=300)  # Cache for 5 minutes (very stable metadata)
 async def get_unique_stations(
+    projects: Annotated[
+        list[str] | None,
+        Query(description="Filter station options by selected project names"),
+    ] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Get unique station names with project associations."""
     try:
         # Get unique station-project combinations
-        stations = db.query(TopProduct.station_name, TopProduct.project_name).distinct().order_by(TopProduct.station_name, TopProduct.project_name).all()
+        query = db.query(TopProduct.station_name, TopProduct.project_name)
+        if projects:
+            query = query.filter(TopProduct.project_name.in_(projects))
+
+        stations = query.distinct().order_by(TopProduct.station_name, TopProduct.project_name).all()
 
         # Group by station and collect projects
         station_map = {}

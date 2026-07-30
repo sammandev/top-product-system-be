@@ -915,3 +915,108 @@ def test_station_top_products_sorted_by_score_descending(client, tmp_path):
         scores = [item["overall_data_score"] for item in payload["requested_data"]]
         # Verify descending order (highest scores first)
         assert scores == sorted(scores, reverse=True), "Results should be sorted by score descending"
+
+
+def _seed_top_product_record(
+    *,
+    dut_isn: str,
+    project_name: str,
+    station_name: str,
+    measurements_count: int = 0,
+) -> None:
+    db = SessionLocal()
+    try:
+        product = TopProduct(
+            dut_isn=dut_isn,
+            dut_id=None,
+            site_name="PTB",
+            project_name=project_name,
+            model_name="Model-A",
+            station_name=station_name,
+            device_name="Device-A",
+            test_date=datetime(2026, 1, 1, tzinfo=UTC),
+            test_duration=12.5,
+            pass_count=measurements_count,
+            fail_count=0,
+            retest_count=0,
+            score=9.5,
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        db.add(product)
+        db.flush()
+
+        for index in range(measurements_count):
+            db.add(
+                TopProductMeasurement(
+                    top_product_id=product.id,
+                    test_item=f"TEST_{index}",
+                    usl=10.0,
+                    lsl=0.0,
+                    target_value=5.0,
+                    actual_value=5.0,
+                    deviation=0.0,
+                )
+            )
+
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_top_product_database_list_includes_measurement_counts(client):
+    _seed_top_product_record(
+        dut_isn="COUNT-001",
+        project_name="Project Count",
+        station_name="Station Count",
+        measurements_count=3,
+    )
+    _seed_top_product_record(
+        dut_isn="COUNT-002",
+        project_name="Project Count",
+        station_name="Station Count",
+        measurements_count=0,
+    )
+
+    try:
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(username="tester")
+        response = client.get(
+            "/api/top-products/list",
+            params={"page_size": 100, "sort_by": "dut_isn", "sort_desc": False},
+        )
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == 200, response.json()
+    counts_by_isn = {
+        item["dut_isn"]: item["measurements_count"]
+        for item in response.json()["top_products"]
+    }
+    assert counts_by_isn["COUNT-001"] == 3
+    assert counts_by_isn["COUNT-002"] == 0
+
+
+def test_top_product_database_station_filters_are_project_scoped(client):
+    _seed_top_product_record(
+        dut_isn="STATION-001",
+        project_name="Project Alpha",
+        station_name="Station Alpha",
+    )
+    _seed_top_product_record(
+        dut_isn="STATION-002",
+        project_name="Project Beta",
+        station_name="Station Beta",
+    )
+
+    try:
+        app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(username="tester")
+        response = client.get(
+            "/api/top-products/filters/stations",
+            params=[("projects", "Project Alpha")],
+        )
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == 200, response.json()
+    assert response.json() == [
+        {"value": "Station Alpha", "label": "Station Alpha (Project Alpha)", "project": "Project Alpha"}
+    ]

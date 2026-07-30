@@ -585,6 +585,8 @@ async def compare_test_logs(
 
         return response
 
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
@@ -623,7 +625,7 @@ class TestLogRescoreItemResult(BaseModel):
     """Score result for a single test item."""
 
     test_item: str
-    value: float | None = None
+    value: float | str | None = None
     usl: float | None = None
     lsl: float | None = None
     status: str

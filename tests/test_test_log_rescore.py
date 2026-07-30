@@ -64,6 +64,32 @@ def test_test_log_rescore_honors_disabled_and_min_score_filters_aggregate() -> N
     assert payload['overall_score'] == 10.0
 
 
+def test_test_log_rescore_preserves_non_numeric_non_criteria_value() -> None:
+    response = client.post(
+        '/api/test-log/rescore',
+        json={
+            'test_items': [
+                {
+                    'test_item': 'SERIAL_NUMBER',
+                    'value': 'QS2627174001924',
+                    'usl': None,
+                    'lsl': None,
+                    'status': 'PASS',
+                }
+            ],
+            'scoring_configs': [],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    [item_score] = payload['test_item_scores']
+    assert item_score['test_item'] == 'SERIAL_NUMBER'
+    assert item_score['value'] == 'QS2627174001924'
+    assert item_score['score'] is None
+    assert payload['overall_score'] == 0.0
+
+
 def test_test_log_parse_honors_explicit_include_scope() -> None:
     result = {
         'parsed_items_enhanced': [

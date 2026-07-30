@@ -112,6 +112,13 @@ def _format_iplas_token(token: IplasToken) -> IplasTokenResponse:
     )
 
 
+def _deactivate_other_iplas_tokens(db: Session, active_token_id: int | None = None) -> None:
+    query = db.query(IplasToken)
+    if active_token_id is not None:
+        query = query.filter(IplasToken.id != active_token_id)
+    query.update({"is_active": False})
+
+
 def _format_sfistsp_config(config: SfistspConfig) -> SfistspConfigResponse:
     decrypted_pw = decrypt_value(config.program_password)
     return SfistspConfigResponse(
@@ -311,9 +318,9 @@ def create_iplas_token(
 
     site = payload.site.upper()
 
-    # If marking as active, deactivate other tokens for the same site
+    # If marking as active, deactivate every other iPLAS token.
     if payload.is_active:
-        db.query(IplasToken).filter(IplasToken.site == site, IplasToken.is_active.is_(True)).update({"is_active": False})
+        _deactivate_other_iplas_tokens(db)
 
     token = IplasToken(
         site=site,
@@ -359,11 +366,7 @@ def update_iplas_token(
         token.label = payload.label
     if payload.is_active is not None:
         if payload.is_active:
-            db.query(IplasToken).filter(
-                IplasToken.site == token.site,
-                IplasToken.id != token.id,
-                IplasToken.is_active.is_(True),
-            ).update({"is_active": False})
+            _deactivate_other_iplas_tokens(db, token.id)
         token.is_active = payload.is_active
 
     token.updated_by = current_user.username
@@ -401,7 +404,7 @@ def delete_iplas_token(
     "/iplas-tokens/{token_id}/activate",
     response_model=IplasTokenResponse,
     summary="Activate an iPLAS token",
-    description="Set this token as the active one for its site. Deactivates other tokens for the same site.",
+    description="Set this token as the single active iPLAS token. Deactivates all other iPLAS tokens.",
 )
 def activate_iplas_token(
     token_id: int,
@@ -415,10 +418,7 @@ def activate_iplas_token(
     if not token:
         raise HTTPException(status_code=404, detail="iPLAS token not found")
 
-    db.query(IplasToken).filter(
-        IplasToken.site == token.site,
-        IplasToken.id != token.id,
-    ).update({"is_active": False})
+    _deactivate_other_iplas_tokens(db, token.id)
 
     token.is_active = True
     token.updated_by = current_user.username

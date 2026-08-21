@@ -1525,10 +1525,8 @@ MAX_RECORDS_WARNING = 5000  # iPLAS API limit per request
 # Hybrid V1/V2 configuration
 # When device count exceeds this threshold, fetch per-device to avoid 5000 limit
 DEVICE_DENSITY_THRESHOLD = int(os.getenv("IPLAS_DEVICE_DENSITY_THRESHOLD", "10"))
-# Maximum devices per parallel batch
-DEVICE_BATCH_SIZE = int(os.getenv("IPLAS_DEVICE_BATCH_SIZE", "5"))
-# Maximum parallel requests
-MAX_PARALLEL_REQUESTS = int(os.getenv("IPLAS_MAX_PARALLEL_REQUESTS", "3"))
+# Maximum concurrent per-device iPLAS fetches
+MAX_PARALLEL_REQUESTS = int(os.getenv("IPLAS_MAX_PARALLEL_REQUESTS", "8"))
 
 
 # ============================================================================
@@ -1642,57 +1640,41 @@ async def _fetch_devices_in_parallel(
     all_records: list[dict[str, Any]] = []
     possibly_truncated = False
 
-    # Split into batches
-    batches = [device_ids[i : i + DEVICE_BATCH_SIZE] for i in range(0, len(device_ids), DEVICE_BATCH_SIZE)]
+    logger.info(f"Parallel fetch: {len(device_ids)} devices (max parallel={MAX_PARALLEL_REQUESTS})")
 
-    logger.info(f"Parallel fetch: {len(device_ids)} devices in {len(batches)} batches (batch size={DEVICE_BATCH_SIZE}, max parallel={MAX_PARALLEL_REQUESTS})")
-
-    # Process batches with limited parallelism
+    # Gate on devices rather than batches: batch-level gating capped real concurrency
+    # at the batch count, so raising MAX_PARALLEL_REQUESTS had no effect.
     semaphore = asyncio.Semaphore(MAX_PARALLEL_REQUESTS)
 
-    async def fetch_batch(batch: list[str], batch_idx: int) -> tuple[list[dict], bool]:
+    async def fetch_device(device_id: str) -> tuple[list[dict], bool]:
         async with semaphore:
-            batch_records: list[dict] = []
-            batch_truncated = False
-
             async with _pooled_client() as client:
-                for device_id in batch:
-                    try:
-                        records = await _fetch_from_iplas(
-                            site,
-                            project,
-                            station,
-                            device_id,
-                            begin_time,
-                            end_time,
-                            test_status,
-                            user_token,
-                            client=client,
-                        )
+                try:
+                    records = await _fetch_from_iplas(
+                        site,
+                        project,
+                        station,
+                        device_id,
+                        begin_time,
+                        end_time,
+                        test_status,
+                        user_token,
+                        client=client,
+                    )
+                except HTTPException as e:
+                    logger.error(f"Device {device_id} fetch failed: {e.detail}")
+                    return [], False
 
-                        if len(records) >= MAX_RECORDS_WARNING:
-                            batch_truncated = True
-                            logger.warning(f"Device {device_id} returned {len(records)} records (may be truncated)")
+            truncated = len(records) >= MAX_RECORDS_WARNING
+            if truncated:
+                logger.warning(f"Device {device_id} returned {len(records)} records (may be truncated)")
+            return records, truncated
 
-                        batch_records.extend(records)
-
-                    except HTTPException as e:
-                        logger.error(f"Device {device_id} fetch failed: {e.detail}")
-                        # Continue with other devices
-
-                    # Small delay between devices in same batch
-                    await asyncio.sleep(0.05)
-
-            logger.debug(f"Batch {batch_idx + 1}/{len(batches)}: {len(batch_records)} records from {len(batch)} devices")
-            return batch_records, batch_truncated
-
-    # Run all batches
-    tasks = [fetch_batch(batch, i) for i, batch in enumerate(batches)]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    results = await asyncio.gather(*(fetch_device(device_id) for device_id in device_ids), return_exceptions=True)
 
     for result in results:
         if isinstance(result, Exception):
-            logger.error(f"Batch failed with exception: {result}")
+            logger.error(f"Device fetch failed with exception: {result}")
             continue
         records, truncated = result
         all_records.extend(records)

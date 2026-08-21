@@ -413,9 +413,9 @@ def test_dut_sites_hides_internal_error(monkeypatch):
 def test_iplas_stations_hides_upstream_body(monkeypatch):
     monkeypatch.setattr(iplas_router, "get_redis_client", lambda: None)
     monkeypatch.setattr(
-        iplas_router,
-        "_pooled_client",
-        lambda: _StubAsyncClient(
+        iplas_router.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: _StubAsyncClient(
             get_response=_StubResponse(status_code=502, text="upstream secret details"),
         ),
     )
@@ -434,9 +434,9 @@ def test_iplas_download_csv_hides_request_error(monkeypatch):
     request = iplas_router.httpx.Request("POST", "http://iplas.test/raw/get_test_log")
     request_error = iplas_router.httpx.RequestError("socket secret details", request=request)
     monkeypatch.setattr(
-        iplas_router,
-        "_pooled_client",
-        lambda: _StubAsyncClient(post_error=request_error),
+        iplas_router.httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: _StubAsyncClient(post_error=request_error),
     )
 
     response = client.post(

@@ -20,7 +20,7 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from hashlib import sha1
 from typing import Any, Literal
 from uuid import uuid4
@@ -173,6 +173,9 @@ IPLAS_PORT = int(os.getenv("IPLAS_API_PORT", "32678"))
 IPLAS_V1_VERSION = os.getenv("IPLAS_V1_API_VERSION", "/api/v1")
 IPLAS_V2_VERSION = os.getenv("IPLAS_V2_API_VERSION", "/api/v2")
 IPLAS_TIMEOUT = int(os.getenv("IPLAS_API_TIMEOUT", "180"))
+# Records are stamped in plant wall-clock time. v1 accepts that wall clock verbatim,
+# but v2 resolves ISO timestamps against UTC, so v2 needs the plant's UTC offset.
+IPLAS_LOCAL_UTC_OFFSET_HOURS = float(os.getenv("IPLAS_LOCAL_UTC_OFFSET_HOURS", "8"))
 
 # Cache TTLs
 IPLAS_CACHE_TTL = int(os.getenv("IPLAS_CACHE_TTL", "180"))  # 3 minutes for test items
@@ -462,6 +465,17 @@ def _get_site_config(site: str, user_token: str | None = None) -> dict[str, str]
 def _format_datetime_for_iplas(dt: datetime) -> str:
     """Format datetime for iPLAS v1 API (YYYY/MM/DD HH:mm:ss)."""
     return dt.strftime("%Y/%m/%d %H:%M:%S")
+
+
+def _format_datetime_for_iplas_v2(dt: datetime) -> str:
+    """Format datetime for iPLAS v2 API.
+
+    Callers pass plant wall-clock time (the same value v1 receives). v2 resolves ISO
+    timestamps against UTC, so the plant offset must be attached or v2 queries land
+    IPLAS_LOCAL_UTC_OFFSET_HOURS away from the requested window and return nothing.
+    """
+    plant_tz = timezone(timedelta(hours=IPLAS_LOCAL_UTC_OFFSET_HOURS))
+    return dt.replace(tzinfo=plant_tz).isoformat()
 
 
 StationBucketState = Literal["complete", "empty_complete", "partial", "hot", "empty_hot"]
@@ -1563,8 +1577,8 @@ async def _fetch_device_list_v2(
                 response = await client.get(
                     url,
                     params={
-                        "start_time": start_time.isoformat(),
-                        "end_time": end_time.isoformat(),
+                        "start_time": _format_datetime_for_iplas_v2(start_time),
+                        "end_time": _format_datetime_for_iplas_v2(end_time),
                     },
                     headers={"Authorization": f"Bearer {site_config['token']}"},
                 )
@@ -3195,8 +3209,8 @@ async def get_devices(
                 response = await client.get(
                     url,
                     params={
-                        "start_time": request.start_time.isoformat(),
-                        "end_time": request.end_time.isoformat(),
+                        "start_time": _format_datetime_for_iplas_v2(request.start_time),
+                        "end_time": _format_datetime_for_iplas_v2(request.end_time),
                     },
                     headers={"Authorization": f"Bearer {site_config['token']}"},
                 )

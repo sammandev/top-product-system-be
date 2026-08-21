@@ -141,6 +141,9 @@ router = APIRouter(
 
 METADATA_CACHE_TTL = dut_metadata_cache.DEFAULT_TTL
 RECORD_CACHE_TTL = dut_metadata_cache.DEFAULT_RECORD_TTL
+# The station test-item catalogue is a ~30 MB upstream download that takes ~30s,
+# so it gets a longer TTL than the other metadata caches.
+STATION_TEST_ITEMS_CACHE_TTL = int(os.getenv("DUT_STATION_TEST_ITEMS_CACHE_TTL", "3600"))
 _MAX_TOP_PRODUCT_WINDOW = timedelta(days=7)
 _SCORE_CRITERIA_PATTERN = re.compile(r"^\s*(?P<min>-?\d+(?:\.\d+)?)\s*(?:-\s*(?P<max>-?\d+(?:\.\d+)?))?\s*$")
 _REQUIRED_DEVICE_FIELDS_ERROR = "Please fill all required fields (site_id, model_id, device_id, start_time, end_time)."
@@ -547,6 +550,23 @@ async def _get_cached_stations(client: DUTAPIClient, model_id: int) -> list[dict
         return await client.get_stations_by_model(model_id)
 
     return await dut_metadata_cache.get_or_set(cache_key, loader, ttl=METADATA_CACHE_TTL)
+
+
+async def _get_cached_station_test_item_catalogue(client: DUTAPIClient, station_id: int) -> list[dict[str, Any]]:
+    """Deduped station test-item catalogue, cached because the upstream call is very expensive."""
+    cache_key = dut_metadata_cache.build_metadata_key(
+        _client_base_url(client), "station-test-items-deduped", str(station_id)
+    )
+
+    async def loader() -> list[dict[str, Any]]:
+        items = await client.get_test_items_by_station(station_id)
+        if not isinstance(items, list):
+            return []
+        # Drop info-only rows (both limits zero, e.g. SET_IPLAS_INFO_* markers)
+        items = [item for item in items if not (item.get("upperlimit") == 0 and item.get("lowerlimit") == 0)]
+        return _dedupe_test_items_by_name(items)
+
+    return await dut_metadata_cache.get_or_set(cache_key, loader, ttl=STATION_TEST_ITEMS_CACHE_TTL)
 
 
 async def _get_cached_station_devices(client: DUTAPIClient, station_id: int) -> list[dict[str, Any]]:
@@ -1492,7 +1512,7 @@ async def get_latest_test_items_by_range(
             resolved_station_id,
             request.station_name,
         )
-        items = await client.get_test_items_by_station(resolved_station_id)
+        items = await _get_cached_station_test_item_catalogue(client, resolved_station_id)
         response_source = "fallback_station_items"
 
     if not isinstance(items, list):

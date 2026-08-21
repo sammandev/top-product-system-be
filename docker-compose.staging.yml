@@ -16,6 +16,9 @@ services:
     environment:
       - PYTHONPATH=/app/src
       - DUT_API_BASE_URL=http://172.18.220.56:9001
+      # Hot reload pins uvicorn to a single worker, so every request queues behind
+      # the slowest one. Use "--reload --reload-dir /app/src" when editing code live.
+      - UVICORN_ARGS=${UVICORN_ARGS:---workers 4}
     env_file:
       - .env.staging
     volumes:
@@ -47,10 +50,9 @@ services:
       - "com.ast-tools.service=backend"
       - "com.ast-tools.environment=staging"
       - "com.ast-tools.hot-reload=enabled"
-    # Enable auto-reload for code changes
     # Migrations run automatically on startup
     command: >-
-      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 7070 --reload --reload-dir /app/src"
+      sh -c "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 7070 $$UVICORN_ARGS"
 
 volumes:
   upload_data:

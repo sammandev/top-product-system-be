@@ -46,6 +46,13 @@ def _engine_options(database_url: str) -> dict:
     options: dict = {
         "pool_pre_ping": _env_bool("DB_POOL_PRE_PING", True),
         "pool_recycle": _env_int("DB_POOL_RECYCLE_SECONDS", 1800),
+        # Sessions are synchronous, so each in-flight request holds a connection
+        # for its whole lifetime. SQLAlchemy's default of 5 + 10 overflow starves
+        # quickly once several slow endpoints run concurrently. Keep
+        # workers * (pool_size + max_overflow) under Postgres max_connections.
+        "pool_size": _env_int("DB_POOL_SIZE", 10),
+        "max_overflow": _env_int("DB_MAX_OVERFLOW", 10),
+        "pool_timeout": _env_int("DB_POOL_TIMEOUT", 30),
         "connect_args": {"connect_timeout": _env_int("DB_CONNECT_TIMEOUT", 10)},
     }
     return options

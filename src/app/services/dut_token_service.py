@@ -95,8 +95,9 @@ try:
     _redis_client.ping()
     _redis_available = True
 except Exception as exc:
-    # Log the resolved REDIS_URL and the reason to aid debugging
-    logger.warning("Redis unavailable at %s; using in-memory DUT token cache. \nError: %s", REDIS_URL, exc)
+    # Log host only: REDIS_URL may embed a password in userinfo
+    _safe_url = REDIS_URL.split("@")[-1] if "@" in REDIS_URL else REDIS_URL
+    logger.warning("Redis unavailable at %s; using in-memory DUT token cache. \nError: %s", _safe_url, exc)
     _redis_client = None
     _redis_available = False
 

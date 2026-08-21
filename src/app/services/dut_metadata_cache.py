@@ -20,7 +20,8 @@ try:
     _redis_client = redis.from_url(REDIS_URL, decode_responses=True)
     _redis_client.ping()
 except Exception as exc:  # pragma: no cover - best-effort cache setup
-    logger.warning("Redis unavailable for DUT metadata cache at %s: %s", REDIS_URL, exc)
+    _safe_url = REDIS_URL.split("@")[-1] if "@" in REDIS_URL else REDIS_URL
+    logger.warning("Redis unavailable for DUT metadata cache at %s: %s", _safe_url, exc)
     _redis_client = None
 
 _local_cache: dict[str, tuple[float, Any]] = {}

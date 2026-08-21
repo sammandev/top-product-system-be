@@ -1,3 +1,4 @@
+import base64
 from types import SimpleNamespace
 
 import httpx
@@ -5,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.dependencies.authz import get_current_user
+from app.dependencies.external_api_client import get_dut_client
 from app.main import app
 from app.routers import external_api_client
 from app.routers.external_api_client import get_user_dut_client
@@ -50,6 +52,9 @@ class _MockDUTClient:
         self._models = models or {}
         self._stations = stations or {}
         self.base_url = f"mock-{id(self)}"
+        # Present so _get_latest_test_items_client falls back to this mock
+        # (service account path) when the user has no stored DUT tokens.
+        self.access_token = "stub-access-token"
         self.last_period_query = None
         self.last_device_payload = None
         self.last_summary_payload = None
@@ -164,6 +169,7 @@ def reset_overrides():
 def _override_client(mock_client: _MockDUTClient):
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(username="tester")
     app.dependency_overrides[get_user_dut_client] = lambda: mock_client
+    app.dependency_overrides[get_dut_client] = lambda: mock_client
 
 
 def test_download_test_log_uses_site_specific_iplas_config(monkeypatch):

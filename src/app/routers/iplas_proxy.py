@@ -16,6 +16,9 @@ import base64
 import gzip
 import logging
 import os
+import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha1
@@ -359,15 +362,42 @@ async def close_http_client() -> None:
         logger.info("Closed shared httpx client")
 
 
+@asynccontextmanager
+async def _pooled_client() -> AsyncIterator[httpx.AsyncClient]:
+    """Yield the shared pooled httpx client.
+
+    Drop-in replacement for ``async with httpx.AsyncClient(...) as client:``
+    so iPLAS calls reuse keep-alive connections instead of paying a fresh
+    TCP/TLS handshake per request.
+    """
+    yield await _get_http_client()
+
+
+_redis_unavailable_since: float | None = None
+_REDIS_RETRY_COOLDOWN_SECONDS = 60.0
+
+
 def get_redis_client() -> Redis | None:
-    """Get Redis client for caching."""
+    """Get Redis client for caching. Returns None while Redis is in failure cooldown."""
+    global _redis_unavailable_since
+    now = time.monotonic()
+    if _redis_unavailable_since is not None and now - _redis_unavailable_since < _REDIS_RETRY_COOLDOWN_SECONDS:
+        return None
     try:
         redis_url = os.getenv("REDIS_URL", "redis://localhost:7071/0")
-        client = Redis.from_url(redis_url, decode_responses=True)
+        client = Redis.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_connect_timeout=3,
+            socket_timeout=3,
+        )
         client.ping()
+        _redis_unavailable_since = None
         return client
     except Exception as e:
-        logger.warning(f"Redis unavailable for iPLAS cache: {e}")
+        if _redis_unavailable_since is None:
+            logger.warning(f"Redis unavailable for iPLAS cache: {e!r} (suppressing repeats for {_REDIS_RETRY_COOLDOWN_SECONDS:.0f}s)")
+        _redis_unavailable_since = now
         return None
 
 
@@ -1525,13 +1555,11 @@ async def _fetch_device_list_v2(
 
     logger.debug(f"Fetching device list from V2: {site}/{project}/{station}")
 
-    timeout = httpx.Timeout(IPLAS_TIMEOUT)
-    limits = httpx.Limits(max_connections=20, max_keepalive_connections=10)
     last_exc: Exception | None = None
 
     for attempt in range(1, 3):
         try:
-            async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
+            async with _pooled_client() as client:
                 response = await client.get(
                     url,
                     params={
@@ -1613,9 +1641,7 @@ async def _fetch_devices_in_parallel(
             batch_records: list[dict] = []
             batch_truncated = False
 
-            timeout = httpx.Timeout(IPLAS_TIMEOUT)
-            limits = httpx.Limits(max_connections=20, max_keepalive_connections=10)
-            async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
+            async with _pooled_client() as client:
                 for device_id in batch:
                     try:
                         records = await _fetch_from_iplas(
@@ -3019,7 +3045,7 @@ async def get_site_projects(
             try:
                 url = f"{site_config['v2_url']}/site_project_list"
 
-                async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+                async with _pooled_client() as client:
                     response = await client.get(
                         url,
                         params={"data_type": data_type},
@@ -3031,7 +3057,9 @@ async def get_site_projects(
                         for item in data:
                             all_projects.append(SiteProject(**item))
                     else:
-                        logger.warning(f"iPLAS v2 error for {site_name}: {response.status_code}")
+                        logger.warning(
+                            f"iPLAS v2 error for {site_name}: {response.status_code} {response.text[:200]}"
+                        )
             except Exception as e:
                 logger.warning(f"Failed to fetch site/projects from {site_name}: {e}")
 
@@ -3091,7 +3119,7 @@ async def get_stations(
         url = f"{site_config['v2_url']}/{request.site}/{request.project}/station_list"
 
         try:
-            async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+            async with _pooled_client() as client:
                 response = await client.get(
                     url,
                     headers={"Authorization": f"Bearer {site_config['token']}"},
@@ -3163,7 +3191,7 @@ async def get_devices(
         url = f"{site_config['v2_url']}/{request.site}/{request.project}/{request.station}/test_station_device_list"
 
         try:
-            async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+            async with _pooled_client() as client:
                 response = await client.get(
                     url,
                     params={
@@ -3242,7 +3270,7 @@ async def search_by_isn(
             site_config = _get_site_config("PTB", request.token)
             try:
                 url = f"{site_config['v2_url']}/isn_search"
-                async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+                async with _pooled_client() as client:
                     response = await client.get(
                         url,
                         params={"isn": request.isn},
@@ -3265,11 +3293,12 @@ async def search_by_isn(
                     v2_url = f"{site_cfg['base_url']}:{IPLAS_PORT}{IPLAS_V2_VERSION}"
                     url = f"{v2_url}/isn_search"
                     # Use shorter timeout for parallel requests (30s per site)
-                    async with httpx.AsyncClient(timeout=30.0) as client:
+                    async with _pooled_client() as client:
                         response = await client.get(
                             url,
                             params={"isn": request.isn},
                             headers={"Authorization": f"Bearer {site_cfg['token']}"},
+                            timeout=30.0,
                         )
                         if response.status_code == 200:
                             data = response.json()
@@ -3363,11 +3392,12 @@ async def search_by_isn_batch(
                     site_config = _get_site_config("PTB", request.token)
                     try:
                         url = f"{site_config['v2_url']}/isn_search"
-                        async with httpx.AsyncClient(timeout=30.0) as client:
+                        async with _pooled_client() as client:
                             response = await client.get(
                                 url,
                                 params={"isn": isn},
                                 headers={"Authorization": f"Bearer {site_config['token']}"},
+                                timeout=30.0,
                             )
                             if response.status_code == 200:
                                 data = response.json()
@@ -3386,11 +3416,12 @@ async def search_by_isn_batch(
                             v2_url = f"{site_cfg['base_url']}:{IPLAS_PORT}{IPLAS_V2_VERSION}"
                             url = f"{v2_url}/isn_search"
                             # Use shorter timeout for parallel requests (30s per site)
-                            async with httpx.AsyncClient(timeout=30.0) as client:
+                            async with _pooled_client() as client:
                                 response = await client.get(
                                     url,
                                     params={"isn": isn},
                                     headers={"Authorization": f"Bearer {site_cfg['token']}"},
+                                    timeout=30.0,
                                 )
                                 if response.status_code == 200:
                                     data = response.json()
@@ -3400,7 +3431,7 @@ async def search_by_isn_batch(
                                 else:
                                     logger.debug(f"ISN not found in {site_name}: {response.status_code}")
                         except Exception as e:
-                            logger.warning(f"Failed to search ISN {isn} in {site_name}: {e}")
+                            logger.warning(f"Failed to search ISN {isn} in {site_name}: {e!r}")
                         return site_name, []
 
                     # Execute all site searches in parallel
@@ -3512,7 +3543,7 @@ async def _search_isn_for_project(
         site_config = _get_site_config("PTB", token)
         try:
             url = f"{site_config['v2_url']}/isn_search"
-            async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+            async with _pooled_client() as client:
                 response = await client.get(
                     url,
                     params={"isn": isn},
@@ -3535,7 +3566,7 @@ async def _search_isn_for_project(
             try:
                 url = f"{site_config['v2_url']}/isn_search"
 
-                async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+                async with _pooled_client() as client:
                     response = await client.get(
                         url,
                         params={"isn": isn},
@@ -3601,7 +3632,7 @@ async def _get_stations_for_project(
     url = f"{site_config['v2_url']}/{site}/{project}/station_list"
 
     try:
-        async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+        async with _pooled_client() as client:
             response = await client.get(
                 url,
                 headers={"Authorization": f"Bearer {site_config['token']}"},
@@ -3812,7 +3843,7 @@ async def download_attachment(
     logger.info(f"Downloading attachments: {request.site}/{request.project} ({len(request.info)} items)")
 
     try:
-        async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+        async with _pooled_client() as client:
             response = await client.post(url, json=payload)
 
             if response.status_code != 200:
@@ -3884,7 +3915,7 @@ async def download_csv_log(
     logger.info(f"Downloading CSV logs: {len(request.query_list)} items")
 
     try:
-        async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+        async with _pooled_client() as client:
             response = await client.post(url, json=payload)
 
             if response.status_code != 200:
@@ -4025,7 +4056,7 @@ async def batch_download(
     txt_count = 0
     csv_count = 0
 
-    async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+    async with _pooled_client() as client:
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
             # Process each item
             for item in request.items:
@@ -4142,7 +4173,7 @@ async def verify_access(
     url = f"{site_config['v2_url']}/verify"
 
     try:
-        async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+        async with _pooled_client() as client:
             response = await client.get(
                 url,
                 params={"site": request.site, "project": request.project},
@@ -4240,7 +4271,7 @@ async def get_test_item_by_isn(
         logger.info(f"Fetching test items by ISN: {request.isn} from {request.site}/{request.project}")
 
         try:
-            async with httpx.AsyncClient(timeout=IPLAS_TIMEOUT) as client:
+            async with _pooled_client() as client:
                 response = await client.post(url, json=payload)
 
                 if response.status_code != 200:

@@ -207,7 +207,7 @@ DB_POOL_RECYCLE_SECONDS=1800
 DB_CONNECT_TIMEOUT=10
 
 # Redis (existing host container)
-REDIS_URL=redis://127.0.0.1:6380/0
+REDIS_URL=redis://:<password>@127.0.0.1:6380/0
 ```
 
 The staging Compose file reuses the existing `redis:alpine` container instead of creating `ast-tools-redis`. Verify that container and port before starting the backend:

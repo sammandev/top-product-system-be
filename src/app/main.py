@@ -149,11 +149,33 @@ validate_auth_configuration()
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    # Initialize FastAPI Cache with Redis backend
+    # Initialize FastAPI Cache with Redis backend; fall back to in-memory when Redis is unreachable
     redis_url = os.getenv("REDIS_URL", "redis://localhost:7071/0")
-    redis_client = aioredis.from_url(redis_url, encoding="utf8", decode_responses=True)
-    FastAPICache.init(RedisBackend(redis_client), prefix="api-cache")
-    logger.info(f"FastAPI Cache initialized with Redis at {redis_url}")
+    redis_client = aioredis.from_url(
+        redis_url,
+        encoding="utf8",
+        decode_responses=True,
+        socket_connect_timeout=5,
+        socket_timeout=5,
+        health_check_interval=30,
+    )
+    safe_redis_url = redis_url.split("@")[-1] if "@" in redis_url else redis_url
+    try:
+        await redis_client.ping()
+    except Exception as exc:
+        logger.warning(
+            "Redis unreachable at %s (%r); falling back to in-memory API cache. Cached data resets on restart.",
+            safe_redis_url,
+            exc,
+        )
+        await redis_client.close()
+        redis_client = None
+        from fastapi_cache.backends.inmemory import InMemoryBackend
+
+        FastAPICache.init(InMemoryBackend(), prefix="api-cache")
+    else:
+        FastAPICache.init(RedisBackend(redis_client), prefix="api-cache")
+        logger.info(f"FastAPI Cache initialized with Redis at {safe_redis_url}")
 
     try:
         yield
@@ -163,7 +185,8 @@ async def _lifespan(_app: FastAPI):
         logger.exception("Unhandled exception during application lifespan shutdown.")
         raise
     finally:
-        await redis_client.close()
+        if redis_client is not None:
+            await redis_client.close()
         logger.info("Redis connection closed")
 
 

@@ -1498,6 +1498,9 @@ async def get_latest_test_items_by_range(
     if not isinstance(items, list):
         raise HTTPException(status_code=502, detail="Unexpected latest test items response from DUT API")
 
+    # Drop info-only rows (both limits zero, e.g. SET_IPLAS_INFO_* markers)
+    items = [item for item in items if not (item.get("upperlimit") == 0 and item.get("lowerlimit") == 0)]
+
     valid_items = _dedupe_test_items_by_name(items)
 
     data = [TestItemSchema.model_validate(item) for item in valid_items]

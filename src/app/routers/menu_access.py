@@ -129,10 +129,9 @@ DEFAULT_MENUS = [
     # System Section (Admin only by default)
     {"menu_key": "system-configuration", "title": "System Configuration", "path": "", "icon": "mdi-shield-lock", "section": "system", "sort_order": 0},
     {"menu_key": "system-configuration-users", "title": "User Management", "path": "/admin/users", "icon": "mdi-circle-small", "parent_key": "system-configuration", "section": "system", "sort_order": 1},
-    {"menu_key": "system-configuration-rbac", "title": "Roles & Permissions", "path": "/admin/rbac", "icon": "mdi-circle-small", "parent_key": "system-configuration", "section": "system", "sort_order": 2},
-    {"menu_key": "system-configuration-menus", "title": "Menu Access", "path": "/admin/menu-access", "icon": "mdi-circle-small", "parent_key": "system-configuration", "section": "system", "sort_order": 3},
-    {"menu_key": "system-configuration-app-config", "title": "App Configuration", "path": "/admin/app-config", "icon": "mdi-circle-small", "parent_key": "system-configuration", "section": "system", "sort_order": 4},
-    {"menu_key": "system-cleanup", "title": "System Cleanup", "path": "/admin/cleanup", "icon": "mdi-delete-sweep", "section": "system", "sort_order": 10},
+    {"menu_key": "system-configuration-menus", "title": "Menu Access", "path": "/admin/menu-access", "icon": "mdi-circle-small", "parent_key": "system-configuration", "section": "system", "sort_order": 2},
+    {"menu_key": "system-configuration-app-config", "title": "App Configuration", "path": "/admin/app-config", "icon": "mdi-circle-small", "parent_key": "system-configuration", "section": "system", "sort_order": 3},
+    {"menu_key": "system-cleanup", "title": "System Cleanup", "path": "/admin/cleanup", "icon": "mdi-circle-small", "parent_key": "system-configuration", "section": "system", "sort_order": 4},
 ]
 
 
@@ -178,29 +177,27 @@ DEFAULT_ROLE_ACCESS = {
 def sync_default_menu_definitions(
     db: Session,
     *,
-    prune_stale: bool = False,
     reset_role_access: bool = False,
 ) -> tuple[int, int]:
     """Upsert default menu definitions and seed role access for new defaults.
 
-    Read endpoints use this to introduce newly added default menus without requiring a manual
-    re-initialization, while the explicit initialize endpoint can still reset stale entries and
-    restore default access rules.
+    Menus can only originate from DEFAULT_MENUS (there is no create-menu endpoint), so anything
+    else in the table is a leftover from an older default set and is always pruned. That keeps
+    renamed or retired entries from lingering as duplicates in the Menu Access screen.
     """
 
     valid_keys = {menu["menu_key"] for menu in DEFAULT_MENUS}
     created_menu_keys: set[str] = set()
     stale_count = 0
 
-    if prune_stale:
-        stale_menus = db.query(MenuDefinition).filter(~MenuDefinition.menu_key.in_(valid_keys)).all()
-        for stale_menu in stale_menus:
-            db.query(MenuRoleAccess).filter(MenuRoleAccess.menu_id == stale_menu.id).delete(
-                synchronize_session=False,
-            )
-            db.delete(stale_menu)
-            stale_count += 1
-            logger.info(f"Removed stale menu entry: {stale_menu.menu_key}")
+    stale_menus = db.query(MenuDefinition).filter(~MenuDefinition.menu_key.in_(valid_keys)).all()
+    for stale_menu in stale_menus:
+        db.query(MenuRoleAccess).filter(MenuRoleAccess.menu_id == stale_menu.id).delete(
+            synchronize_session=False,
+        )
+        db.delete(stale_menu)
+        stale_count += 1
+        logger.info(f"Removed stale menu entry: {stale_menu.menu_key}")
 
     for menu_data in DEFAULT_MENUS:
         existing = db.query(MenuDefinition).filter(MenuDefinition.menu_key == menu_data["menu_key"]).first()
@@ -262,7 +259,6 @@ async def initialize_menus(
     try:
         _, stale_count = sync_default_menu_definitions(
             db,
-            prune_stale=True,
             reset_role_access=True,
         )
 

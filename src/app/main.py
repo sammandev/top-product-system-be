@@ -187,6 +187,18 @@ async def _lifespan(_app: FastAPI):
     finally:
         if redis_client is not None:
             await redis_client.close()
+        from app.external_services.dut_api_client import close_shared_clients as close_dut_clients
+        from app.external_services.sfistsp_api_client import close_shared_clients as close_sfistsp_clients
+        from app.routers.iplas_proxy import close_http_client as close_iplas_client
+        from app.routers.iplas_proxy import close_redis_client as close_iplas_redis
+
+        await asyncio.gather(
+            close_dut_clients(),
+            close_sfistsp_clients(),
+            close_iplas_client(),
+            close_iplas_redis(),
+            return_exceptions=True,
+        )
         logger.info("Redis connection closed")
 
 

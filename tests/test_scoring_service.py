@@ -1,5 +1,8 @@
+import pytest
+
+from app.routers.scoring import preview_score
 from app.schemas.scoring_schemas import ScoringConfig, ScoringType
-from app.services.scoring_service import score_record, score_test_item
+from app.services.scoring_service import score_record, score_symmetrical_nl, score_test_item
 
 
 def make_value_item(value: str, *, name: str = 'TX_EVM_SAMPLE', status: str = 'PASS') -> dict:
@@ -94,3 +97,48 @@ def test_score_test_item_with_real_limit_and_zero_boundary_still_scores() -> Non
 
     assert result.scoring_type == ScoringType.SYMMETRICAL
     assert result.score == 1.0
+
+
+def test_score_symmetrical_nl_hits_configured_score_at_target_deviation() -> None:
+    score, deviation = score_symmetrical_nl(7.5, 10.0, 0.0, 0.8, 2.5)
+
+    assert deviation == 2.5
+    assert score == 8.0
+
+
+def test_score_test_item_supports_legacy_symmetrical_nl_config() -> None:
+    config = ScoringConfig(
+        test_item_name='GAUSSIAN_ITEM',
+        scoring_type=ScoringType.SYMMETRICAL_NL,
+        target_score=0.8,
+        target_deviation=2.5,
+    )
+
+    result = score_test_item(make_value_item('7.5', name='GAUSSIAN_ITEM'), config)
+
+    assert result.scoring_type == ScoringType.SYMMETRICAL_NL
+    assert result.score == 0.8
+
+
+@pytest.mark.parametrize(
+    ("scoring_type", "value", "ucl", "lcl"),
+    [
+        (ScoringType.SYMMETRICAL, 5.0, 10.0, 0.0),
+        (ScoringType.SYMMETRICAL_NL, 5.0, 10.0, 0.0),
+        (ScoringType.EVM, -35.0, -20.0, None),
+        (ScoringType.THROUGHPUT, 100.0, 100.0, 50.0),
+        (ScoringType.ASYMMETRICAL, 5.0, 10.0, 0.0),
+        (ScoringType.PER_MASK, 0.0, 10.0, None),
+        (ScoringType.BINARY, 1.0, None, None),
+    ],
+)
+async def test_preview_score_supports_all_scoring_types(
+    scoring_type: ScoringType,
+    value: float,
+    ucl: float | None,
+    lcl: float | None,
+) -> None:
+    result = await preview_score(value, scoring_type, ucl, lcl)
+
+    assert result["score"] == 10.0
+    assert result["score_percent"] == "100.0%"

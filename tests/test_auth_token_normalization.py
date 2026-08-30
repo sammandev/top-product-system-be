@@ -7,6 +7,7 @@ def test_token_normalization_roundtrip():
         def __init__(self):
             self.username = "norm_user"
             self.is_admin = False
+            self.is_ptb_admin = False
             self.token_version = 1
 
     user = DummyUser()

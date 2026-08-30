@@ -18,6 +18,8 @@ REDIS_DUT_TTL = int(os.getenv("REDIS_DUT_TTL", "90000"))  # ~25h
 
 _local_store: dict[str, dict] = {}
 _local_lock = Lock()
+_refresh_locks: dict[str, Lock] = {}
+_refresh_locks_guard = Lock()
 _cleanup_started = False
 _cleanup_lock = Lock()
 _FILE_CACHE_ENABLED = os.getenv("DUT_TOKEN_FILE_CACHE", "1").lower() not in {"0", "false", "no"}
@@ -106,6 +108,11 @@ def _dut_key(username: str) -> str:
     return f"dut:tokens:{username}"
 
 
+def _get_refresh_lock(username: str) -> Lock:
+    with _refresh_locks_guard:
+        return _refresh_locks.setdefault(username, Lock())
+
+
 def store_tokens(username: str, access: str, refresh: str, hours: int = 23):
     """Persist DUT tokens in Redis when available, otherwise in-memory."""
     expiry = (datetime.now(UTC) + timedelta(hours=hours)).isoformat()
@@ -174,19 +181,30 @@ def ensure_valid_access(username: str) -> str | None:
     if datetime.now(UTC) < expiry:
         return tokens["access"]
 
-    try:
-        refresh_url = f"{DUT_BASE_URL.rstrip('/')}/api/user/token/refresh/"
-        response = requests.post(refresh_url, json={"refresh": tokens["refresh"]}, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-        new_access = data.get("access")
-        if not new_access:
-            raise ValueError("No access token in refresh response")
+    with _get_refresh_lock(username):
+        tokens = get_tokens(username)
+        if not tokens:
+            return None
+        try:
+            expiry = _safe_parse_datetime(tokens["expiry"])
+        except Exception:
+            expiry = datetime.now(UTC) - timedelta(seconds=1)
+        if datetime.now(UTC) < expiry:
+            return tokens["access"]
 
-        store_tokens(username, new_access, tokens["refresh"])
-        logger.info("Refreshed DUT token for user=%s", username)
-        return new_access
-    except Exception as exc:
-        logger.error("DUT token refresh failed for user=%s: %s", username, exc)
-        clear_tokens(username)
+        try:
+            refresh_url = f"{DUT_BASE_URL.rstrip('/')}/api/user/token/refresh/"
+            response = requests.post(refresh_url, json={"refresh": tokens["refresh"]}, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            new_access = data.get("access")
+            if not new_access:
+                raise ValueError("No access token in refresh response")
+
+            store_tokens(username, new_access, tokens["refresh"])
+            logger.info("Refreshed DUT token for user=%s", username)
+            return new_access
+        except Exception as exc:
+            logger.error("DUT token refresh failed for user=%s: %s", username, exc)
+            clear_tokens(username)
     return None

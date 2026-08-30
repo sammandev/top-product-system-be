@@ -1,12 +1,22 @@
 import io
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
 
 client = TestClient(app)
 BASE_DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+REQUIRED_FIXTURES = [
+    BASE_DATA_DIR / "sample_data" / "000000000000018_MeasurePower_Lab_25G.csv",
+    BASE_DATA_DIR / "sample_data" / "Golden_SN..9403_25G_TX_2025_09_10_15-16-19.csv",
+    BASE_DATA_DIR / "sample_data_config" / "compare_format_config.json",
+]
+pytestmark = pytest.mark.skipif(
+    not all(path.exists() for path in REQUIRED_FIXTURES),
+    reason="Sample comparison fixtures are not available",
+)
 
 
 def load_bytes(relative_path: str) -> bytes:

@@ -12,11 +12,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from ..dependencies.authz import get_current_user
 from ..models.user import User
 from ..schemas.scoring_schemas import (
+    SCORING_TYPE_DEFAULTS,
     CalculateScoresRequest,
     CalculateScoresResponse,
     ScoringConfig,
+    ScoringPolicy,
     ScoringType,
-    SCORING_TYPE_DEFAULTS,
 )
 from ..services.scoring_service import calculate_scores, detect_scoring_type
 
@@ -36,7 +37,7 @@ def _raise_scoring_error(detail: str, exc: Exception, status_code: int) -> None:
     summary="Calculate scores for test records",
     description="""
     Calculate scores for a batch of test records using configurable scoring algorithms.
-    
+
     Supported scoring types:
     - **symmetrical**: Linear scoring with centered target (UCL + LCL / 2)
     - **symmetrical_nl**: Non-linear Gaussian scoring curve
@@ -45,7 +46,7 @@ def _raise_scoring_error(detail: str, exc: Exception, status_code: int) -> None:
     - **asymmetrical**: User-defined off-center target
     - **per_mask**: PER/MASK scoring (0 is best)
     - **binary**: Simple PASS/FAIL scoring
-    
+
     If no scoring configs are provided, the system will auto-detect the appropriate
     scoring type based on test item characteristics (UCL/LCL presence, value patterns).
     """,
@@ -216,56 +217,54 @@ async def get_scoring_types() -> list[dict]:
 async def preview_score(value: float, scoring_type: ScoringType, ucl: float | None = None, lcl: float | None = None, config: ScoringConfig | None = None) -> dict:
     """Preview score calculation for a single value."""
     from ..services.scoring_service import (
+        score_asymmetrical,
+        score_binary,
+        score_evm,
+        score_per_mask,
         score_symmetrical,
         score_symmetrical_nl,
-        score_evm,
         score_throughput,
-        score_asymmetrical,
-        score_per_mask,
-        score_binary,
     )
 
     score = 0.0
     deviation = None
+    limit_score = config.limit_score if config and config.limit_score is not None else 1.0
 
     try:
         if scoring_type == ScoringType.SYMMETRICAL:
             if ucl is not None and lcl is not None:
-                alpha = config.alpha if config and config.alpha else 0.8
-                score, deviation = score_symmetrical(value, ucl, lcl, alpha)
+                score, deviation = score_symmetrical(value, ucl, lcl, limit_score)
 
         elif scoring_type == ScoringType.SYMMETRICAL_NL:
             if ucl is not None and lcl is not None:
-                target_score = config.target_score if config and config.target_score else 0.8
-                target_deviation = config.target_deviation if config and config.target_deviation else 2.5
+                target_score = config.target_score if config and config.target_score is not None else 0.8
+                target_deviation = config.target_deviation if config and config.target_deviation is not None else 2.5
                 score, deviation = score_symmetrical_nl(value, ucl, lcl, target_score, target_deviation)
 
         elif scoring_type == ScoringType.EVM:
-            target_evm = config.target if config and config.target else -30.0
-            target_score = config.target_score if config and config.target_score else 0.9
-            score, deviation = score_evm(value, target_evm, target_score)
+            if ucl is not None:
+                reference_best = config.target if config and config.target is not None else -35.0
+                score, deviation = score_evm(value, ucl, limit_score, reference_best)
 
         elif scoring_type == ScoringType.THROUGHPUT:
-            if lcl is not None:
-                target = config.target if config and config.target else None
-                min_score = config.min_score if config and config.min_score else 0.4
-                target_score = config.target_score if config and config.target_score else 0.9
-                score, deviation = score_throughput(value, lcl, target, min_score, target_score)
+            if ucl is not None:
+                score, deviation = score_throughput(value, ucl, lcl, limit_score)
 
         elif scoring_type == ScoringType.ASYMMETRICAL:
             if ucl is not None and lcl is not None:
-                target = config.target if config and config.target else (ucl + lcl) / 2
-                alpha = config.alpha if config and config.alpha else 0.4
-                score, deviation = score_asymmetrical(value, ucl, lcl, target, alpha)
+                target = config.target if config and config.target is not None else (ucl + lcl) / 2
+                policy = config.policy if config else ScoringPolicy.SYMMETRICAL
+                score, deviation = score_asymmetrical(value, ucl, lcl, target, policy, limit_score)
 
         elif scoring_type == ScoringType.PER_MASK:
-            max_dev = config.max_deviation if config and config.max_deviation else (ucl if ucl else 10.0)
-            score, deviation = score_per_mask(value, 0.0, max_dev)
+            threshold = config.max_deviation if config and config.max_deviation is not None else ucl
+            if threshold is not None:
+                score, deviation = score_per_mask(value, threshold, limit_score)
 
         elif scoring_type == ScoringType.BINARY:
-            score = 1.0 if value > 0 else 0.0
+            score = score_binary("PASS" if value > 0 else "FAIL")
 
-        return {"value": value, "scoring_type": scoring_type.value, "ucl": ucl, "lcl": lcl, "score": score, "deviation": deviation, "score_percent": f"{score * 100:.1f}%"}
+        return {"value": value, "scoring_type": scoring_type.value, "ucl": ucl, "lcl": lcl, "score": score, "deviation": deviation, "score_percent": f"{score * 10:.1f}%"}
 
     except Exception as e:
         _raise_scoring_error("Failed to calculate score preview", e, status.HTTP_400_BAD_REQUEST)

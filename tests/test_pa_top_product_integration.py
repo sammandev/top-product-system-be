@@ -9,7 +9,7 @@ import re
 
 import pytest
 
-from src.app.routers.external_api_client import (
+from app.routers.external_api_client import (
     _calculate_pa_adjusted_power_score,
     _detect_measurement_category,
 )

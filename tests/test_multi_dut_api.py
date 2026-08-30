@@ -1,18 +1,23 @@
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
 
 BASE_DIR = Path(__file__).resolve().parents[1]
+MC2_PATH = BASE_DIR / "data" / "sample_data" / "2025_09_18_Wireless_Test_2_5G_Sampling_HH5K.csv"
+SPEC_PATH = BASE_DIR / "data" / "sample_data_config" / "multi-dut_all_specs.json"
 
 
+@pytest.mark.skipif(
+    not MC2_PATH.exists() or not SPEC_PATH.exists(),
+    reason="Sample multi-DUT fixtures are not available",
+)
 def test_analyze_multi_dut():
     client = TestClient(app)
-    mc2_path = BASE_DIR / "data" / "sample_data" / "2025_09_18_Wireless_Test_2_5G_Sampling_HH5K.csv"
-    spec_path = BASE_DIR / "data" / "sample_data_config" / "multi-dut_all_specs.json"
 
-    with mc2_path.open("rb") as f_mc2, spec_path.open("rb") as f_spec:
+    with MC2_PATH.open("rb") as f_mc2, SPEC_PATH.open("rb") as f_spec:
         files = {
             "mc2_file": ("sample.csv", f_mc2, "text/csv"),
             "spec_file": ("spec.json", f_spec, "application/json"),

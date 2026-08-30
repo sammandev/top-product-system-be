@@ -6,8 +6,6 @@ import pytest
 import uvicorn
 from httpx import ASGITransport, AsyncClient
 
-from app.main import app
-
 _uvicorn_server: uvicorn.Server | None = None
 _uvicorn_thread: threading.Thread | None = None
 
@@ -21,8 +19,18 @@ TEST_BASE_URL = f"http://127.0.0.1:{TEST_PORT}"
 # to override any previously set value.
 os.environ["ASTPARSER_ADMIN_KEY"] = ""  # Changed from setdefault to force empty value
 os.environ["DATABASE_URL"] = "sqlite:///./test.db"
+os.environ["JWT_SECRET"] = "test-only-jwt-secret-with-32-bytes"
 # Set the test base URL for tests that need it
 os.environ["ASTPARSER_TEST_BASE"] = TEST_BASE_URL
+
+for variable_name in ("NO_PROXY", "no_proxy"):
+    bypass_hosts = [host for host in os.environ.get(variable_name, "").split(",") if host]
+    for local_host in ("127.0.0.1", "localhost"):
+        if local_host not in bypass_hosts:
+            bypass_hosts.append(local_host)
+    os.environ[variable_name] = ",".join(bypass_hosts)
+
+from app.main import app  # noqa: E402
 
 
 @pytest.fixture

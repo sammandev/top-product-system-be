@@ -5,8 +5,12 @@ Verifies that endpoints can handle ISNs from different stations correctly
 by using loose matching when exact ISN matching fails.
 """
 
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 
+from app.routers import external_api_client as external_api_router
 from app.routers.external_api_client import (
     _match_station_entry,
     _match_station_entry_loose,
@@ -161,21 +165,64 @@ class TestStationDUTResolution:
 
         assert match is None
 
-    def test_match_station_entry_no_match_no_dut_id(self):
-        """Should return None when DUT ID cannot be found."""
-        record_data = [
-            {
-                "id": 145,
-                "name": "Wireless_Test_6G",
-                "dut_id": None,
-                "dut_isn": None,
-                "data": [],  # No DUT ID in data either
-            }
-        ]
 
-        match = _match_station_entry_loose(record_data, "Wireless_Test_6G")
+@pytest.mark.asyncio
+async def test_device_catalog_fetches_metadata_with_bounded_concurrency(monkeypatch):
+    active_calls = 0
+    max_active_calls = 0
 
-        assert match is None
+    async def tracked(value):
+        nonlocal active_calls, max_active_calls
+        active_calls += 1
+        max_active_calls = max(max_active_calls, active_calls)
+        await asyncio.sleep(0.01)
+        active_calls -= 1
+        return value
+
+    async def get_or_set(_key, loader, ttl):
+        return await loader()
+
+    async def get_sites(_client):
+        return [{"id": 1}, {"id": 2}]
+
+    async def get_models(_client, site_id):
+        return await tracked([{"id": site_id * 10 + index} for index in range(3)])
+
+    async def get_stations(_client, model_id):
+        return await tracked([{"id": model_id * 10}])
+
+    async def get_devices(_client, station_id):
+        return await tracked([{"id": station_id, "name": f"device-{station_id}"}])
+
+    monkeypatch.setattr(external_api_router, "DUT_CATALOG_MAX_PARALLEL_REQUESTS", 3)
+    monkeypatch.setattr(external_api_router.dut_metadata_cache, "get_or_set", get_or_set)
+    monkeypatch.setattr(external_api_router, "_get_cached_sites", get_sites)
+    monkeypatch.setattr(external_api_router, "_get_cached_models", get_models)
+    monkeypatch.setattr(external_api_router, "_get_cached_stations", get_stations)
+    monkeypatch.setattr(external_api_router, "_get_cached_station_devices", get_devices)
+
+    catalog = await external_api_router._get_device_catalog(SimpleNamespace(base_url="http://dut"))
+
+    assert max_active_calls == 3
+    assert len(catalog["by_id"]) == 6
+    assert len(catalog["by_name"]) == 6
+
+
+def test_match_station_entry_no_match_no_dut_id():
+    """Should return None when DUT ID cannot be found."""
+    record_data = [
+        {
+            "id": 145,
+            "name": "Wireless_Test_6G",
+            "dut_id": None,
+            "dut_isn": None,
+            "data": [],  # No DUT ID in data either
+        }
+    ]
+
+    match = _match_station_entry_loose(record_data, "Wireless_Test_6G")
+
+    assert match is None
 
 
 if __name__ == "__main__":

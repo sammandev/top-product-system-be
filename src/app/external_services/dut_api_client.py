@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import threading
 from datetime import UTC, datetime, timedelta
 from time import perf_counter
@@ -11,6 +12,20 @@ logger = logging.getLogger(__name__)
 
 _shared_clients: dict[str, httpx.AsyncClient] = {}
 _shared_clients_lock = threading.Lock()
+DUT_MAX_PARALLEL_REQUESTS = int(os.getenv("DUT_CATALOG_MAX_PARALLEL_REQUESTS", "8"))
+DUT_REQUEST_TIMEOUT = float(os.getenv("DUT_API_TIMEOUT", "30"))
+DUT_CONNECT_TIMEOUT = float(os.getenv("DUT_API_CONNECT_TIMEOUT", "5"))
+DUT_POOL_TIMEOUT = float(os.getenv("DUT_API_POOL_TIMEOUT", "5"))
+DUT_MAX_CONNECTIONS = int(os.getenv("DUT_API_MAX_CONNECTIONS", "100"))
+DUT_MAX_KEEPALIVE_CONNECTIONS = int(os.getenv("DUT_API_MAX_KEEPALIVE_CONNECTIONS", "20"))
+
+
+def _build_timeout() -> httpx.Timeout:
+    return httpx.Timeout(
+        DUT_REQUEST_TIMEOUT,
+        connect=DUT_CONNECT_TIMEOUT,
+        pool=DUT_POOL_TIMEOUT,
+    )
 
 
 def _get_shared_client(base_url: str) -> httpx.AsyncClient:
@@ -19,8 +34,12 @@ def _get_shared_client(base_url: str) -> httpx.AsyncClient:
         if client is None:
             client = httpx.AsyncClient(
                 base_url=base_url,
-                timeout=httpx.Timeout(30.0, connect=30.0),  # Increased connect timeout
-                limits=httpx.Limits(max_keepalive_connections=20, max_connections=100),
+                timeout=_build_timeout(),
+                limits=httpx.Limits(
+                    max_keepalive_connections=DUT_MAX_KEEPALIVE_CONNECTIONS,
+                    max_connections=DUT_MAX_CONNECTIONS,
+                    keepalive_expiry=30.0,
+                ),
             )
             _shared_clients[base_url] = client
         return client
@@ -44,7 +63,7 @@ class DUTAPIClient:
         self.token_expiry: datetime | None = None
 
         self._client = _get_shared_client(self.base_url)
-        self._timeout = httpx.Timeout(30.0, connect=30.0)  # Increased connect timeout
+        self._timeout = _build_timeout()
         self._token_lock = asyncio.Lock()
 
     def _token_is_valid(self) -> bool:
@@ -216,50 +235,66 @@ class DUTAPIClient:
             "stations": [],
         }
 
-        try:
-            result["dut_records"] = await self.get_dut_records(dut_id)
-        except Exception as exc:
-            logger.error("Error getting DUT records for %s: %s", dut_id, exc)
+        records_result, sites_result = await asyncio.gather(
+            self.get_dut_records(dut_id),
+            self.get_sites(),
+            return_exceptions=True,
+        )
+        if isinstance(records_result, Exception):
+            logger.error("Error getting DUT records for %s: %s", dut_id, records_result)
+        else:
+            result["dut_records"] = records_result
 
-        try:
-            sites = await self.get_sites()
-            if site_name:
-                sites = [site for site in sites if site.get("name") == site_name]
-            result["sites"] = sites
-        except Exception as exc:
-            logger.error("Error getting sites: %s", exc)
+        if isinstance(sites_result, Exception):
+            logger.error("Error getting sites: %s", sites_result)
             return result
 
-        for site in result["sites"]:
+        sites = sites_result
+        if site_name:
+            sites = [site for site in sites if site.get("name") == site_name]
+        result["sites"] = sites
+        semaphore = asyncio.Semaphore(max(1, DUT_MAX_PARALLEL_REQUESTS))
+
+        async def get_models(site: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
             site_id = site.get("id")
             if not site_id:
-                continue
-
+                return site, []
             try:
-                models = await self.get_models_by_site(site_id)
-                result["models"].extend(models)
+                async with semaphore:
+                    return site, await self.get_models_by_site(site_id)
             except Exception as exc:
                 logger.warning("Error getting models for site %s: %s", site_id, exc)
-                continue
+                return site, []
 
-            for model in models:
-                model_id = model.get("id")
-                if not model_id:
-                    continue
+        models_by_site = await asyncio.gather(*(get_models(site) for site in sites))
+        model_contexts = [
+            (site, model)
+            for site, models in models_by_site
+            for model in models
+            if model.get("id")
+        ]
+        result["models"] = [model for _, model in model_contexts]
 
-                try:
+        async def get_stations(site: dict[str, Any], model: dict[str, Any]) -> list[dict[str, Any]]:
+            model_id = model["id"]
+            try:
+                async with semaphore:
                     stations = await self.get_stations_by_model(model_id)
-                except Exception as exc:
-                    logger.warning("Error getting stations for model %s: %s", model_id, exc)
-                    continue
+            except Exception as exc:
+                logger.warning("Error getting stations for model %s: %s", model_id, exc)
+                return []
 
-                for station in stations:
-                    station["site_name"] = site.get("name")
-                    station["site_id"] = site_id
-                    station["model_name"] = model.get("name")
-                    station["model_id"] = model_id
+            for station in stations:
+                station["site_name"] = site.get("name")
+                station["site_id"] = site.get("id")
+                station["model_name"] = model.get("name")
+                station["model_id"] = model_id
+            return stations
 
-                result["stations"].extend(stations)
+        stations_by_model = await asyncio.gather(
+            *(get_stations(site, model) for site, model in model_contexts)
+        )
+        result["stations"] = [station for stations in stations_by_model for station in stations]
 
         logger.info(
             "Retrieved complete DUT info: %s models, %s stations",

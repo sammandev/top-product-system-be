@@ -7,7 +7,7 @@ These schemas handle request/response validation for the iPLAS external API prox
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class IplasCsvTestItemRequest(BaseModel):
@@ -186,6 +186,8 @@ class IplasTestItem(BaseModel):
 class IplasCsvTestItemRecord(BaseModel):
     """Single test record from iPLAS CSV test item endpoint."""
 
+    model_config = ConfigDict(populate_by_name=True)
+
     Site: str
     Project: str
     station: str
@@ -200,10 +202,7 @@ class IplasCsvTestItemRecord(BaseModel):
     TestEndTime: str = Field(..., alias="Test end Time")
     ErrorCode: str
     ErrorName: str
-    TestItem: list[IplasTestItem] = []
-
-    class Config:
-        populate_by_name = True
+    TestItem: list[IplasTestItem] = Field(default_factory=list)
 
 
 class IplasCsvTestItemResponse(BaseModel):
@@ -245,6 +244,8 @@ class CompactCsvTestItemRecord(BaseModel):
     via a separate endpoint when the user expands a record.
     """
 
+    model_config = ConfigDict(populate_by_name=True)
+
     Site: str
     Project: str
     station: str
@@ -260,10 +261,6 @@ class CompactCsvTestItemRecord(BaseModel):
     ErrorCode: str
     ErrorName: str
     TestItemCount: int = Field(default=0, description="Number of test items in record")
-
-    class Config:
-        populate_by_name = True
-
 
 class CompactCsvTestItemResponse(BaseModel):
     """Response schema for compact CSV test items (without TestItem arrays)."""

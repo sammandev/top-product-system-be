@@ -9,7 +9,7 @@ The SFISTSP API can be accessed via:
 - HTTP GET (query parameters)
 - HTTP POST (form-urlencoded)
 
-This implementation uses HTTP GET for simplicity.
+This implementation uses form-encoded HTTP POST so credentials stay out of URLs.
 
 Reference: external-api/sfistsp-http-soap.md
 """
@@ -18,8 +18,8 @@ import asyncio
 import logging
 import os
 import re
+import threading
 from dataclasses import dataclass, field
-from urllib.parse import urlencode
 
 import httpx
 
@@ -42,8 +42,38 @@ SFISTSP_DEFAULT_PROGRAM_PASSWORD = os.environ.get("SFIS_DEFAULT_PROGRAM_PASSWORD
 # Endpoint path for WTSP_GETVERSION
 SFISTSP_ENDPOINT_PATH = "/SFISWebService/SFISTSPWebService.asmx/WTSP_GETVERSION"
 
-# Request timeout in seconds (from environment or default 120s)
-SFISTSP_REQUEST_TIMEOUT = float(os.environ.get("SFISTSP_API_TIMEOUT", "120"))
+# Request timeout in seconds
+SFISTSP_REQUEST_TIMEOUT = float(os.environ.get("SFISTSP_API_TIMEOUT", "15"))
+SFISTSP_MAX_CONNECTIONS = int(os.environ.get("SFISTSP_MAX_CONNECTIONS", "20"))
+SFISTSP_MAX_KEEPALIVE_CONNECTIONS = int(os.environ.get("SFISTSP_MAX_KEEPALIVE_CONNECTIONS", "10"))
+
+_shared_clients: dict[tuple[str, float], httpx.AsyncClient] = {}
+_shared_clients_lock = threading.Lock()
+
+
+def _get_shared_client(config: "SfistspConfig") -> httpx.AsyncClient:
+    key = (config.base_url.rstrip("/"), config.timeout)
+    with _shared_clients_lock:
+        client = _shared_clients.get(key)
+        if client is None or client.is_closed:
+            client = httpx.AsyncClient(
+                base_url=key[0],
+                timeout=httpx.Timeout(config.timeout, connect=min(5.0, config.timeout)),
+                limits=httpx.Limits(
+                    max_connections=SFISTSP_MAX_CONNECTIONS,
+                    max_keepalive_connections=SFISTSP_MAX_KEEPALIVE_CONNECTIONS,
+                    keepalive_expiry=30.0,
+                ),
+            )
+            _shared_clients[key] = client
+        return client
+
+
+async def close_shared_clients() -> None:
+    with _shared_clients_lock:
+        clients = list(_shared_clients.values())
+        _shared_clients.clear()
+    await asyncio.gather(*(client.aclose() for client in clients), return_exceptions=True)
 
 
 # ============================================================================
@@ -392,7 +422,7 @@ class SfistspApiClient:
     """
     Client for SFISTSP Web Service API.
 
-    Uses HTTP GET requests to the WTSP_GETVERSION endpoint
+    Uses form-encoded HTTP POST requests to the WTSP_GETVERSION endpoint
     to look up ISN references.
     """
 
@@ -408,46 +438,23 @@ class SfistspApiClient:
 
     async def __aenter__(self) -> "SfistspApiClient":
         """Async context manager entry."""
-        self._client = httpx.AsyncClient(timeout=self.config.timeout)
+        self._client = _get_shared_client(self.config)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Async context manager exit."""
-        if self._client:
-            await self._client.aclose()
-            self._client = None
+        self._client = None
 
-    def _build_url(self, isn: str) -> str:
-        """
-        Build the WTSP_GETVERSION URL with query parameters.
-
-        Based on sfistsp-http-soap.md documentation:
-        - programId: Required - authentication program ID
-        - programPassword: Required - authentication password
-        - ISN: Required - the ISN to look up
-        - device: Required - can be random 4 digits (e.g., "1234")
-        - type: "ISN_BASEINFO" - to get ISN information
-        - ChkData: "ISN,SSN" - to get ISN and SSN references
-        - ChkData2: "SNMAC" - to get MAC address reference
-
-        Args:
-            isn: The ISN to look up
-
-        Returns:
-            Full URL with query parameters
-        """
-        params = {
+    def _build_params(self, isn: str) -> dict[str, str]:
+        return {
             "programId": self.config.program_id,
             "programPassword": self.config.program_password,
             "ISN": isn,
-            "device": "1234",  # Required but can be random 4 digits
-            "type": "ISN_BASEINFO",  # Get ISN base info
-            "ChkData": "ISN,SSN",  # Get ISN and SSN references
-            "ChkData2": "SNMAC",  # Get MAC address
+            "device": "1234",
+            "type": "ISN_BASEINFO",
+            "ChkData": "ISN,SSN",
+            "ChkData2": "SNMAC",
         }
-        base_url = self.config.base_url.rstrip("/")
-        query_string = urlencode(params)
-        return f"{base_url}{SFISTSP_ENDPOINT_PATH}?{query_string}"
 
     async def lookup_isn(self, isn: str) -> SfistspIsnReference:
         """
@@ -459,18 +466,17 @@ class SfistspApiClient:
         Returns:
             SfistspIsnReference with parsed data
         """
-        url = self._build_url(isn)
         logger.info(f"SFISTSP API: Looking up ISN {isn}")
 
         try:
             if not self._client:
-                self._client = httpx.AsyncClient(timeout=self.config.timeout)
+                self._client = _get_shared_client(self.config)
 
-            response = await self._client.get(url)
+            response = await self._client.post(SFISTSP_ENDPOINT_PATH, data=self._build_params(isn))
             response.raise_for_status()
 
             result = parse_sfistsp_response(response.text, isn)
-            logger.info(f"SFISTSP API: ISN {isn} lookup {'successful' if result.success else 'failed'} - SSN: {result.ssn}, MAC: {result.mac}")
+            logger.info(f"SFISTSP API: ISN {isn} lookup {'successful' if result.success else 'failed'}")
             return result
 
         except httpx.TimeoutException:
@@ -486,6 +492,13 @@ class SfistspApiClient:
                 isn=isn,
                 success=False,
                 error_message=f"HTTP error: {e.response.status_code}",
+            )
+        except httpx.RequestError:
+            logger.exception("SFISTSP API: Connection error for ISN %s", isn)
+            return SfistspIsnReference(
+                isn=isn,
+                success=False,
+                error_message="SFISTSP service unavailable",
             )
         except Exception as e:
             logger.error(f"SFISTSP API: Error looking up ISN {isn}: {e}")

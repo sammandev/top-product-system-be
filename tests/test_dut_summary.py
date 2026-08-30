@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app.dependencies.authz import get_current_user
 from app.main import app
 from app.routers.external_api_client import get_user_dut_client
+from app.routers.external_api_client import router as dut_router
 
 
 class _MockDUTClient:
@@ -282,7 +283,7 @@ def test_dut_isn_variants_preserves_discovery_order():
 
 
 def test_dut_summary_exposes_single_site_parameter():
-    route = next(r for r in app.routes if isinstance(r, APIRoute) and r.path == "/api/dut/summary")
+    route = next(r for r in dut_router.routes if isinstance(r, APIRoute) and r.path == "/api/dut/summary")
     query_param_aliases = [param.alias for param in route.dependant.query_params]
     assert "site_identifier" in query_param_aliases
     assert "site_id" not in query_param_aliases

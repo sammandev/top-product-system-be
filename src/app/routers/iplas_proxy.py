@@ -16,6 +16,7 @@ import base64
 import gzip
 import logging
 import os
+import threading
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -91,7 +92,7 @@ logger = logging.getLogger(__name__)
 
 
 def _raise_iplas_response_error(response: httpx.Response, detail: str) -> None:
-    logger.error("iPLAS upstream error: status=%s body=%s", response.status_code, response.text)
+    logger.error("iPLAS upstream error: status=%s", response.status_code)
     raise HTTPException(status_code=response.status_code, detail=detail)
 
 
@@ -183,6 +184,7 @@ IPLAS_CACHE_TTL_SITE_PROJECTS = int(os.getenv("IPLAS_CACHE_TTL_SITE_PROJECTS", "
 IPLAS_CACHE_TTL_STATIONS = int(os.getenv("IPLAS_CACHE_TTL_STATIONS", "3600"))  # 1 hour
 IPLAS_CACHE_TTL_DEVICES = int(os.getenv("IPLAS_CACHE_TTL_DEVICES", "300"))  # 5 minutes
 IPLAS_CACHE_TTL_ISN = int(os.getenv("IPLAS_CACHE_TTL_ISN", "300"))  # 5 minutes
+IPLAS_CACHE_TTL_EMPTY = int(os.getenv("IPLAS_CACHE_TTL_EMPTY", "15"))
 
 # Station Search bucket-cache configuration (v3)
 IPLAS_STATION_BUCKET_CACHE_VERSION = os.getenv("IPLAS_STATION_BUCKET_CACHE_VERSION", "v3")
@@ -195,6 +197,8 @@ IPLAS_STATION_BUCKET_EMPTY_HOT_TTL = int(os.getenv("IPLAS_STATION_BUCKET_EMPTY_H
 IPLAS_STATION_BUCKET_LOCK_TTL = int(os.getenv("IPLAS_STATION_BUCKET_LOCK_TTL", "20"))
 IPLAS_STATION_SEARCH_RUN_TTL_SECONDS = int(os.getenv("IPLAS_STATION_SEARCH_RUN_TTL_SECONDS", "1800"))
 IPLAS_SERVER_TIME_URL = os.getenv("IPLAS_SERVER_TIME_URL", "http://10.176.33.93/cfs/servertime")
+IPLAS_SERVER_TIME_TIMEOUT = float(os.getenv("IPLAS_SERVER_TIME_TIMEOUT", "3"))
+IPLAS_SERVER_TIME_CACHE_TTL = float(os.getenv("IPLAS_SERVER_TIME_CACHE_TTL", "5"))
 
 # Fallback for legacy env vars
 IPLAS_V1_BASE_URL = os.getenv("DUT2_API_BASE_URL", "http://10.176.33.89:32678/api/v1")
@@ -217,6 +221,14 @@ def _build_iplas_site_config(base_url: str, token: str) -> dict[str, str]:
         "v1_url": f"{base_url}:{IPLAS_PORT}{IPLAS_V1_VERSION}",
         "v2_url": f"{base_url}:{IPLAS_PORT}{IPLAS_V2_VERSION}",
     }
+
+
+def _credential_cache_scope(site: str, user_token: str | None = None) -> str:
+    """Return a non-reversible cache scope for caller-supplied credentials."""
+    if not user_token:
+        return "configured"
+    token_hash = sha1(user_token.encode("utf-8")).hexdigest()[:12]
+    return f"custom-{site.upper()}-{token_hash}"
 
 
 def _get_active_app_config_iplas_site() -> tuple[str, dict[str, str]] | None:
@@ -331,6 +343,8 @@ async def _cleanup_in_flight(cache_key: str, delay: float = 2.0) -> None:
 
 _http_client: httpx.AsyncClient | None = None
 _http_client_lock = asyncio.Lock()
+_server_time_cache: tuple[datetime, float] | None = None
+_server_time_lock = asyncio.Lock()
 _station_search_runs: dict[str, "StationSearchRunState"] = {}
 _station_search_runs_lock = asyncio.Lock()
 _station_search_tasks: set[asyncio.Task[None]] = set()
@@ -378,30 +392,65 @@ async def _pooled_client() -> AsyncIterator[httpx.AsyncClient]:
 
 _redis_unavailable_since: float | None = None
 _REDIS_RETRY_COOLDOWN_SECONDS = 60.0
+_REDIS_HEALTH_CHECK_INTERVAL_SECONDS = float(os.getenv("IPLAS_REDIS_HEALTH_CHECK_INTERVAL", "30"))
+_REDIS_CONNECT_TIMEOUT_SECONDS = float(os.getenv("IPLAS_REDIS_CONNECT_TIMEOUT", "1"))
+_redis_client: Redis | None = None
+_redis_last_health_check = 0.0
+_redis_client_lock = threading.Lock()
 
 
 def get_redis_client() -> Redis | None:
     """Get Redis client for caching. Returns None while Redis is in failure cooldown."""
-    global _redis_unavailable_since
+    global _redis_client, _redis_last_health_check, _redis_unavailable_since
     now = time.monotonic()
     if _redis_unavailable_since is not None and now - _redis_unavailable_since < _REDIS_RETRY_COOLDOWN_SECONDS:
         return None
-    try:
-        redis_url = os.getenv("REDIS_URL", "redis://localhost:7071/0")
-        client = Redis.from_url(
-            redis_url,
-            decode_responses=True,
-            socket_connect_timeout=3,
-            socket_timeout=3,
-        )
-        client.ping()
-        _redis_unavailable_since = None
-        return client
-    except Exception as e:
-        if _redis_unavailable_since is None:
-            logger.warning(f"Redis unavailable for iPLAS cache: {e!r} (suppressing repeats for {_REDIS_RETRY_COOLDOWN_SECONDS:.0f}s)")
-        _redis_unavailable_since = now
-        return None
+    if _redis_client is not None and now - _redis_last_health_check < _REDIS_HEALTH_CHECK_INTERVAL_SECONDS:
+        return _redis_client
+
+    with _redis_client_lock:
+        now = time.monotonic()
+        if _redis_client is not None and now - _redis_last_health_check < _REDIS_HEALTH_CHECK_INTERVAL_SECONDS:
+            return _redis_client
+        try:
+            if _redis_client is None:
+                redis_url = os.getenv("REDIS_URL", "redis://localhost:7071/0")
+                _redis_client = Redis.from_url(
+                    redis_url,
+                    decode_responses=True,
+                    socket_connect_timeout=_REDIS_CONNECT_TIMEOUT_SECONDS,
+                    socket_timeout=1,
+                    health_check_interval=30,
+                )
+            _redis_client.ping()
+            _redis_last_health_check = now
+            _redis_unavailable_since = None
+            return _redis_client
+        except Exception as e:
+            if _redis_unavailable_since is None:
+                logger.warning(f"Redis unavailable for iPLAS cache: {e!r} (suppressing repeats for {_REDIS_RETRY_COOLDOWN_SECONDS:.0f}s)")
+            if _redis_client is not None:
+                try:
+                    _redis_client.close()
+                except Exception:
+                    pass
+            _redis_client = None
+            _redis_unavailable_since = now
+            return None
+
+
+async def _get_redis_client_async() -> Redis | None:
+    return await asyncio.to_thread(get_redis_client)
+
+
+async def close_redis_client() -> None:
+    """Close the shared synchronous Redis client without blocking the event loop."""
+    global _redis_client
+    with _redis_client_lock:
+        client = _redis_client
+        _redis_client = None
+    if client is not None:
+        await asyncio.to_thread(client.close)
 
 
 def _get_site_config(site: str, user_token: str | None = None) -> dict[str, str]:
@@ -689,6 +738,7 @@ def _build_station_bucket_scope_hash(
     station: str,
     device_scope: str,
     test_status: str,
+    credential_scope: str = "configured",
 ) -> str:
     """Build a deterministic hash for station-search bucket scope."""
     scope_raw = "|".join(
@@ -698,6 +748,7 @@ def _build_station_bucket_scope_hash(
             station,
             device_scope,
             test_status.upper(),
+            credential_scope,
             IPLAS_STATION_BUCKET_CACHE_VERSION,
         ]
     )
@@ -1097,16 +1148,39 @@ def _release_station_bucket_lock(
 
 async def _get_iplas_server_time() -> datetime:
     """Fetch iPLAS server time and fall back to local UTC time on failure."""
-    fallback_now = datetime.now(UTC)
-    try:
-        client = await _get_http_client()
-        response = await client.get(IPLAS_SERVER_TIME_URL)
-        response.raise_for_status()
-        server_time_ms = int(response.text.strip())
-        return datetime.fromtimestamp(server_time_ms / 1000, tz=UTC)
-    except Exception as exc:
-        logger.warning("Failed to fetch iPLAS server time from %s: %s", IPLAS_SERVER_TIME_URL, exc)
-        return fallback_now
+    global _server_time_cache
+
+    def cached_time(now_monotonic: float) -> datetime | None:
+        if _server_time_cache is None:
+            return None
+        server_time, observed_at = _server_time_cache
+        elapsed = now_monotonic - observed_at
+        if elapsed >= IPLAS_SERVER_TIME_CACHE_TTL:
+            return None
+        return server_time + timedelta(seconds=max(0.0, elapsed))
+
+    now_monotonic = time.monotonic()
+    if cached := cached_time(now_monotonic):
+        return cached
+
+    async with _server_time_lock:
+        now_monotonic = time.monotonic()
+        if cached := cached_time(now_monotonic):
+            return cached
+
+        fallback_now = datetime.now(UTC)
+        try:
+            client = await _get_http_client()
+            response = await client.get(IPLAS_SERVER_TIME_URL, timeout=IPLAS_SERVER_TIME_TIMEOUT)
+            response.raise_for_status()
+            server_time_ms = int(response.text.strip())
+            resolved_time = datetime.fromtimestamp(server_time_ms / 1000, tz=UTC)
+        except Exception as exc:
+            logger.warning("Failed to fetch iPLAS server time from %s: %s", IPLAS_SERVER_TIME_URL, exc)
+            resolved_time = fallback_now
+
+        _server_time_cache = (resolved_time, now_monotonic)
+        return resolved_time
 
 
 async def _fetch_station_bucket_with_cache(
@@ -1122,7 +1196,14 @@ async def _fetch_station_bucket_with_cache(
     observable_now: datetime,
 ) -> tuple[list[dict[str, Any]], bool, int, int, bool]:
     """Fetch a station bucket using bucket-aware Redis caching."""
-    scope_hash = _build_station_bucket_scope_hash(site, project, station, device_scope, test_status)
+    scope_hash = _build_station_bucket_scope_hash(
+        site,
+        project,
+        station,
+        device_scope,
+        test_status,
+        _credential_cache_scope(site, user_token),
+    )
     scope_label = _build_station_bucket_scope_label(site, project, station, device_scope, test_status)
 
     if redis:
@@ -1316,6 +1397,7 @@ async def _fetch_station_range_for_request(
         request.begin_time,
         request.end_time,
         request.test_status,
+        request.token,
     )
 
     logger.debug("Station bucket fetch start: %s", cache_key)
@@ -1364,11 +1446,13 @@ def _generate_cache_key(
     begin_time: datetime,
     end_time: datetime,
     test_status: str,
+    user_token: str | None = None,
 ) -> str:
     """Generate deterministic cache key for iPLAS test item data."""
     begin_str = begin_time.strftime("%Y%m%d%H%M%S")
     end_str = end_time.strftime("%Y%m%d%H%M%S")
-    return f"iplas:csv-testitem:{site}:{project}:{station}:{device_id}:{begin_str}:{end_str}:{test_status}"
+    credential_scope = _credential_cache_scope(site, user_token)
+    return f"iplas:csv-testitem:{site}:{project}:{station}:{device_id}:{begin_str}:{end_str}:{test_status}:{credential_scope}"
 
 
 # ============================================================================
@@ -1499,7 +1583,7 @@ async def _fetch_from_iplas(
     # UPDATED: Check for error_msg in response body (time interval error, etc.)
     if "error_msg" in data:
         error_msg = data.get("error_msg", "Unknown error")
-        logger.error(f"iPLAS API error_msg: {error_msg}")
+        logger.error("iPLAS API returned an error response")
         detail = "iPLAS request time interval is invalid" if "time interval" in error_msg.lower() else "iPLAS request failed"
         raise HTTPException(status_code=400, detail=detail)
 
@@ -1582,7 +1666,7 @@ async def _fetch_device_list_v2(
                 )
 
             if response.status_code != 200:
-                logger.warning(f"V2 device list failed ({response.status_code}): {response.text}")
+                logger.warning("V2 device list failed with status %s", response.status_code)
                 return []
 
             devices = response.json()
@@ -2089,7 +2173,7 @@ async def get_csv_test_items(
     request: IplasCsvTestItemRequest,
 ) -> IplasCsvTestItemResponse:
     """Get filtered CSV test items with compact-by-default response semantics."""
-    redis = get_redis_client()
+    redis = await _get_redis_client_async()
 
     records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy, cached, response_metadata = await _fetch_station_range_for_request(
         request,
@@ -2363,7 +2447,7 @@ async def _execute_station_search_run(run_id: str, user_token: str | None) -> No
         begin_time = run.begin_time
         end_time = run.end_time
 
-    redis = get_redis_client()
+    redis = await _get_redis_client_async()
     run_records: list[dict[str, Any]] = []
     station_results: list[StationSearchRunStationResult] = []
     processed_combinations = 0
@@ -2468,7 +2552,7 @@ async def get_csv_test_items_compact(
     request: IplasCsvTestItemRequest,
 ) -> CompactCsvTestItemResponse:
     """Get compact CSV test items without TestItem arrays."""
-    redis = get_redis_client()
+    redis = await _get_redis_client_async()
 
     cached = False
     records: list[dict[str, Any]] = []
@@ -2567,7 +2651,7 @@ async def get_record_test_items(
     request: IplasRecordTestItemsRequest,
 ) -> IplasRecordTestItemsResponse:
     """Get test items for a specific record."""
-    redis = get_redis_client()
+    redis = await _get_redis_client_async()
 
     # Use a date range around the test start time to minimize API calls
     # Parse the test start time and query a 1-hour window
@@ -2600,6 +2684,7 @@ async def get_record_test_items(
         begin_time,
         end_time,
         request.test_status,
+        request.token,
     )
 
     cached = False
@@ -2684,7 +2769,7 @@ async def get_test_item_names(
     request: IplasTestItemNamesRequest,
 ) -> IplasTestItemNamesResponse:
     """Get unique test item names for the selection dialog."""
-    redis = get_redis_client()
+    redis = await _get_redis_client_async()
     cache_key = _generate_cache_key(
         request.site,
         request.project,
@@ -2693,6 +2778,7 @@ async def get_test_item_names(
         request.begin_time,
         request.end_time,
         request.test_status,
+        request.token,
     )
 
     records: list[dict[str, Any]] = []
@@ -2774,9 +2860,10 @@ async def get_test_item_names_cached(
     site = request.site.upper()
     project = request.project
     station = request.station
+    use_shared_db_cache = request.token is None
 
     # Check database cache first (unless force_refresh)
-    if not request.force_refresh:
+    if use_shared_db_cache and not request.force_refresh:
         cached_items = (
             db.query(CachedTestItem)
             .filter(
@@ -2914,32 +3001,31 @@ async def get_test_item_names_cached(
     # Extract unique test item names
     test_items = _extract_unique_test_items(records)
 
-    # Clear old cache entries for this station
-    db.query(CachedTestItem).filter(
-        CachedTestItem.site == site,
-        CachedTestItem.project == project,
-        CachedTestItem.station == station,
-    ).delete()
+    if use_shared_db_cache:
+        db.query(CachedTestItem).filter(
+            CachedTestItem.site == site,
+            CachedTestItem.project == project,
+            CachedTestItem.station == station,
+        ).delete()
 
-    # Save new entries to database
-    now = datetime.now(UTC)
-    for item in test_items:
-        cached_item = CachedTestItem(
-            site=site,
-            project=project,
-            station=station,
-            test_item_name=item.name,
-            is_value=item.is_value,
-            is_bin=item.is_bin,
-            has_ucl=item.has_ucl,
-            has_lcl=item.has_lcl,
-            created_at=now,
-            updated_at=now,
-        )
-        db.add(cached_item)
+        now = datetime.now(UTC)
+        for item in test_items:
+            cached_item = CachedTestItem(
+                site=site,
+                project=project,
+                station=station,
+                test_item_name=item.name,
+                is_value=item.is_value,
+                is_bin=item.is_bin,
+                has_ucl=item.has_ucl,
+                has_lcl=item.has_lcl,
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(cached_item)
 
-    db.commit()
-    logger.info(f"DB cache STORED: {site}/{project}/{station} ({len(test_items)} items)")
+        db.commit()
+        logger.info(f"DB cache STORED: {site}/{project}/{station} ({len(test_items)} items)")
 
     # Filter out BIN items if requested
     if request.exclude_bin:
@@ -2960,7 +3046,7 @@ async def get_test_item_names_cached(
 )
 async def health_check():
     """Check iPLAS proxy health and cache status."""
-    redis = get_redis_client()
+    redis = await _get_redis_client_async()
     redis_status = "connected" if redis else "unavailable"
 
     # Check configured sites
@@ -3014,7 +3100,7 @@ async def get_site_projects(
     force_refresh: bool = Query(default=False, description="Bypass Redis and refresh site/project metadata cache"),
 ) -> IplasSiteProjectListResponse:
     """Get all site/project pairs with caching."""
-    redis = get_redis_client()
+    redis = await _get_redis_client_async()
     cache_key = f"iplas:v2:site-projects:{data_type}"
 
     cached = False
@@ -3089,8 +3175,9 @@ async def get_stations(
     request: IplasStationListRequest,
 ) -> IplasStationListResponse:
     """Get station list for a project with caching."""
-    redis = get_redis_client()
-    cache_key = f"iplas:v2:stations:{request.site}:{request.project}"
+    redis = await _get_redis_client_async()
+    credential_scope = _credential_cache_scope(request.site, request.token)
+    cache_key = f"iplas:v2:stations:{request.site}:{request.project}:{credential_scope}"
 
     cached = False
     stations: list[IplasStation] = []
@@ -3161,10 +3248,11 @@ async def get_devices(
     request: IplasDeviceListRequest,
 ) -> IplasDeviceListResponse:
     """Get device list for a station with caching."""
-    redis = get_redis_client()
+    redis = await _get_redis_client_async()
     start_str = request.start_time.strftime("%Y%m%d%H%M%S")
     end_str = request.end_time.strftime("%Y%m%d%H%M%S")
-    cache_key = f"iplas:v2:devices:{request.site}:{request.project}:{request.station}:{start_str}:{end_str}"
+    credential_scope = _credential_cache_scope(request.site, request.token)
+    cache_key = f"iplas:v2:devices:{request.site}:{request.project}:{request.station}:{start_str}:{end_str}:{credential_scope}"
 
     cached = False
     devices: list[str] = []
@@ -3206,11 +3294,12 @@ async def get_devices(
             _raise_iplas_unavailable("iPLAS v2 service unavailable", e)
 
         # Store in cache
-        if redis and devices:
+        if redis:
             try:
                 serialized = json_dumps(devices)
-                redis.setex(cache_key, IPLAS_CACHE_TTL_DEVICES, serialized)
-                logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_DEVICES}s)")
+                cache_ttl = IPLAS_CACHE_TTL_DEVICES if devices else IPLAS_CACHE_TTL_EMPTY
+                redis.setex(cache_key, cache_ttl, serialized)
+                logger.debug(f"Cached: {cache_key} (TTL={cache_ttl}s)")
             except Exception as e:
                 logger.warning(f"Redis SET error: {e}")
 
@@ -3240,8 +3329,9 @@ async def search_by_isn(
     request: IplasIsnSearchRequest,
 ) -> IplasIsnSearchResponse:
     """Search for DUT data by ISN with caching and parallel site querying."""
-    redis = get_redis_client()
-    cache_key = f"iplas:v2:isn-search:{request.isn}"
+    redis = await _get_redis_client_async()
+    credential_scope = _credential_cache_scope("PTB", request.token)
+    cache_key = f"iplas:v2:isn-search:{request.isn}:{credential_scope}"
 
     cached = False
     results: list[dict] = []
@@ -3321,11 +3411,12 @@ async def search_by_isn(
                     break  # Use first site with results
 
         # Store in cache
-        if redis and results:
+        if redis:
             try:
                 serialized = json_dumps(results)
-                redis.setex(cache_key, IPLAS_CACHE_TTL_ISN, serialized)
-                logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_ISN}s)")
+                cache_ttl = IPLAS_CACHE_TTL_ISN if results else IPLAS_CACHE_TTL_EMPTY
+                redis.setex(cache_key, cache_ttl, serialized)
+                logger.debug(f"Cached: {cache_key} (TTL={cache_ttl}s)")
             except Exception as e:
                 logger.warning(f"Redis SET error: {e}")
 
@@ -3355,14 +3446,15 @@ async def search_by_isn_batch(
     request: IplasIsnSearchBatchRequest,
 ) -> IplasIsnSearchBatchResponse:
     """Search for DUT data by multiple ISNs with parallel execution."""
-    redis = get_redis_client()
+    redis = await _get_redis_client_async()
     max_concurrent = 10  # Limit concurrent connections to iPLAS
 
     semaphore = asyncio.Semaphore(max_concurrent)
 
     async def search_single_isn(isn: str) -> IplasIsnSearchBatchItem:
         """Search a single ISN with semaphore control and parallel site querying."""
-        cache_key = f"iplas:v2:isn-search:{isn}"
+        credential_scope = _credential_cache_scope("PTB", request.token)
+        cache_key = f"iplas:v2:isn-search:{isn}:{credential_scope}"
         cached = False
         results: list[dict] = []
         error_msg: str | None = None
@@ -3445,11 +3537,12 @@ async def search_by_isn_batch(
                             break  # Use first site with results
 
                 # Store in cache
-                if redis and results:
+                if redis:
                     try:
                         serialized = json_dumps(results)
-                        redis.setex(cache_key, IPLAS_CACHE_TTL_ISN, serialized)
-                        logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_ISN}s)")
+                        cache_ttl = IPLAS_CACHE_TTL_ISN if results else IPLAS_CACHE_TTL_EMPTY
+                        redis.setex(cache_key, cache_ttl, serialized)
+                        logger.debug(f"Cached: {cache_key} (TTL={cache_ttl}s)")
                     except Exception as e:
                         logger.warning(f"Redis SET error: {e}")
 
@@ -3515,8 +3608,9 @@ async def _search_isn_for_project(
     Returns:
         Tuple of (site, project, cached) or (None, None, False) if not found.
     """
-    redis = get_redis_client()
-    cache_key = f"iplas:v2:isn-project:{isn}"
+    redis = await _get_redis_client_async()
+    credential_scope = _credential_cache_scope("PTB", token)
+    cache_key = f"iplas:v2:isn-project:{isn}:{credential_scope}"
 
     # Try cache first
     if redis:
@@ -3605,8 +3699,9 @@ async def _get_stations_for_project(
     Returns:
         Tuple of (stations, cached)
     """
-    redis = get_redis_client()
-    cache_key = f"iplas:v2:stations:{site}:{project}"
+    redis = await _get_redis_client_async()
+    credential_scope = _credential_cache_scope(site, token)
+    cache_key = f"iplas:v2:stations:{site}:{project}:{credential_scope}"
 
     stations: list[IplasStation] = []
 
@@ -4224,12 +4319,13 @@ async def get_test_item_by_isn(
     request: IplasTestItemByIsnRequest,
 ) -> IplasTestItemByIsnResponse:
     """Get test items by ISN with cross-station search capability."""
-    redis = get_redis_client()
+    redis = await _get_redis_client_async()
 
     # Build cache key including all parameters
     begin_str = request.begin_time.strftime("%Y%m%d%H%M%S")
     end_str = request.end_time.strftime("%Y%m%d%H%M%S")
-    cache_key = f"iplas:v1:test-item-by-isn:{request.site}:{request.project}:{request.isn}:{request.station}:{request.device}:{begin_str}:{end_str}"
+    credential_scope = _credential_cache_scope(request.site, request.token)
+    cache_key = f"iplas:v1:test-item-by-isn:{request.site}:{request.project}:{request.isn}:{request.station}:{request.device}:{begin_str}:{end_str}:{credential_scope}"
 
     cached = False
     results: list[IplasTestItemByIsnRecord] = []
@@ -4279,7 +4375,7 @@ async def get_test_item_by_isn(
                 if "error_msg" in data:
                     raise HTTPException(
                         status_code=400,
-                        detail=data["error_msg"],
+                        detail="iPLAS v1 request failed",
                     )
 
                 # Parse the response data
@@ -4365,7 +4461,7 @@ async def stream_csv_test_items(
     async def generate():
         """Generator that yields NDJSON records."""
         try:
-            redis = get_redis_client()
+            redis = await _get_redis_client_async()
             cache_key = _generate_cache_key(
                 request.site,
                 request.project,
@@ -4374,6 +4470,7 @@ async def stream_csv_test_items(
                 request.begin_time,
                 request.end_time,
                 request.test_status,
+                request.token,
             )
 
             records: list[dict[str, Any]] = []

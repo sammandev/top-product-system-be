@@ -17,10 +17,12 @@ Scoring Types:
 """
 
 import logging
+import math
 import re
 from statistics import mean, median, stdev
 
 from ..schemas.scoring_schemas import (
+    SCORING_TYPE_DEFAULTS,
     CalculateScoresRequest,
     CalculateScoresResponse,
     RecordScoreResult,
@@ -28,7 +30,6 @@ from ..schemas.scoring_schemas import (
     ScoringConfig,
     ScoringPolicy,
     ScoringType,
-    SCORING_TYPE_DEFAULTS,
     TestItemScoreResult,
 )
 
@@ -332,6 +333,31 @@ def score_symmetrical(value: float, ucl: float, lcl: float, limit_score: float =
     return _round2(_clamp(score, SCORE_MIN, SCORE_MAX)), abs(value - target)
 
 
+def score_symmetrical_nl(
+    value: float,
+    ucl: float,
+    lcl: float,
+    target_score: float = 0.8,
+    target_deviation: float = 2.5,
+) -> tuple[float, float]:
+    """Calculate a Gaussian score centered between the control limits."""
+    lo, hi = (lcl, ucl) if lcl <= ucl else (ucl, lcl)
+    target = (lo + hi) / 2.0
+    deviation = abs(value - target)
+
+    if value < lo or value > hi:
+        return SCORE_MIN, deviation
+    if deviation == 0:
+        return SCORE_MAX, 0.0
+    if target_deviation <= 0:
+        raise ValueError("target_deviation must be greater than zero")
+
+    normalized_target_score = _clamp(target_score, 1e-9, 1.0)
+    decay = -math.log(normalized_target_score) / (target_deviation**2)
+    score = SCORE_MAX * math.exp(-decay * deviation**2)
+    return _round2(_clamp(score, SCORE_MIN, SCORE_MAX)), deviation
+
+
 def score_asymmetrical(value: float, ucl: float, lcl: float, target: float, policy: ScoringPolicy = ScoringPolicy.SYMMETRICAL, limit_score: float = DEFAULT_LIMIT_SCORE) -> tuple[float, float]:
     """
     Calculate asymmetrical score with user-defined target and policy.
@@ -613,8 +639,8 @@ def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> Tes
     value = _parse_float(value_str)
     ucl = _parse_float(ucl_str)
     lcl = _parse_float(lcl_str)
-    has_meaningful_ucl = ucl is not None and ucl != 0
-    has_meaningful_lcl = lcl is not None and lcl != 0
+    has_meaningful_ucl = ucl is not None and (ucl != 0 or lcl is not None)
+    has_meaningful_lcl = lcl is not None and (lcl != 0 or ucl is not None)
 
     # Determine scoring type
     scoring_type = config.scoring_type if config else detect_scoring_type(test_item)
@@ -680,6 +706,16 @@ def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> Tes
             target = (inferred_ucl + lcl) / 2  # Target is center
         else:
             # No limits - binary fallback
+            score = score_binary(status)
+            scoring_type = ScoringType.BINARY
+
+    elif scoring_type == ScoringType.SYMMETRICAL_NL:
+        if has_meaningful_ucl and has_meaningful_lcl:
+            target_score = _get_config_param(config, "target_score", scoring_type) or 0.8
+            target_deviation = _get_config_param(config, "target_deviation", scoring_type) or 2.5
+            score, deviation = score_symmetrical_nl(value, ucl, lcl, target_score, target_deviation)
+            target = (ucl + lcl) / 2
+        else:
             score = score_binary(status)
             scoring_type = ScoringType.BINARY
 

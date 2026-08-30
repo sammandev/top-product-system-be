@@ -519,22 +519,23 @@ def test_top_product_hierarchical_groups(client):
     # Verify hierarchical structure is present with reasonable score values
     assert "TX1" in tx_group
     assert "POW" in tx_group["TX1"]
-    assert "tx1_score" in tx_group["TX1"]
-    assert 9.0 < tx_group["TX1"]["POW"] < 9.5  # POW score should be high
-    assert 7.5 < tx_group["TX1"]["tx1_score"] < 8.5  # Average of POW and EVM
+    assert "tx1_group_score" in tx_group["TX1"]
+    assert 9.0 < tx_group["TX1"]["POW"]["category_avg_score"] < 9.5
+    assert 7.0 < tx_group["TX1"]["POW"]["category_bayes_score"] < 8.0
+    assert 5.0 < tx_group["TX1"]["tx1_group_score"] < 6.5
     assert "TX2" in tx_group
     assert "POW" in tx_group["TX2"]
-    assert 9.0 < tx_group["TX2"]["POW"] < 9.5  # TX2 POW score
+    assert 9.0 < tx_group["TX2"]["POW"]["category_avg_score"] < 9.5
     assert "tx_group_score" in tx_group
-    assert 8.0 < tx_group["tx_group_score"] < 9.0  # Average across TX antennas
+    assert 5.0 < tx_group["tx_group_score"] < 6.5
     assert "6175_11AX_MCS9_B20" in groups
     assert "TX" in groups["6175_11AX_MCS9_B20"]
     assert "tx_group_score" in groups["6175_11AX_MCS9_B20"]["TX"]
     overall_groups = station["overall_group_scores"]
     # Verify overall group scores exist and are reasonable
-    assert "TX" in overall_groups and overall_groups["TX"] > 7.0
-    assert "PA" in overall_groups and overall_groups["PA"] > 6.0
-    assert "RX" in overall_groups and overall_groups["RX"] > 5.0  # RX has low PER score
+    assert "TX" in overall_groups and 5.0 < overall_groups["TX"] < 6.0
+    assert "PA" in overall_groups and 5.0 < overall_groups["PA"] < 6.0
+    assert "RX" in overall_groups and 4.5 < overall_groups["RX"] < 6.0
     assert "overall_data_score" in station
 
 

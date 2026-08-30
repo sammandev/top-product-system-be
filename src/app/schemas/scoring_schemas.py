@@ -20,12 +20,12 @@ Policy (for ASYMMETRICAL scoring):
 - HIGHER: Perfect score at/above target, decay below
 - LOWER: Perfect score at/below target, decay above
 """
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
 
-class ScoringType(str, Enum):
+class ScoringType(StrEnum):
     """Available scoring algorithm types."""
 
     SYMMETRICAL = "symmetrical"       # Target centered between UCL and LCL
@@ -38,7 +38,7 @@ class ScoringType(str, Enum):
     THROUGHPUT = "throughput"
 
 
-class ScoringPolicy(str, Enum):
+class ScoringPolicy(StrEnum):
     """Policy for asymmetrical scoring - determines how score decays from target."""
 
     SYMMETRICAL = "symmetrical"  # Peak at target, linear decay to both limits
@@ -213,7 +213,8 @@ SCORING_TYPE_DEFAULTS: dict[ScoringType, dict] = {
     ScoringType.BINARY: {},
     # Legacy defaults for backwards compatibility
     ScoringType.SYMMETRICAL_NL: {
-        "limit_score": 1.0
+        "target_score": 0.8,
+        "target_deviation": 2.5,
     },
     ScoringType.THROUGHPUT: {
         "limit_score": 1.0

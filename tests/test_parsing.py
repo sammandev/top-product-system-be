@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 
+import pytest
 import requests
 
 BASE = os.environ.get("ASTPARSER_TEST_BASE", "http://127.0.0.1:8001")
@@ -16,6 +17,10 @@ def post_upload(path: Path):
     return r.json()
 
 
+@pytest.mark.skipif(
+    not (TESTDATA_DIR / "sample.csv").exists(),
+    reason="Sample CSV fixture is not available",
+)
 def test_preview_detects_header_and_columns():
     path = TESTDATA_DIR / "sample.csv"
     resp = post_upload(path)

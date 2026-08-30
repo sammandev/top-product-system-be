@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from app.utils.dvt_to_mc2_converter import (
     convert_dvt_to_mc2,
     determine_bands_from_rows,
@@ -9,6 +11,11 @@ from app.utils.dvt_to_mc2_converter import (
 )
 
 SAMPLE_DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "sample_data"
+SAMPLE_DVT_PATH = SAMPLE_DATA_DIR / "Golden_SN..9403_25G_TX_2025_09_10_15-16-19.csv"
+pytestmark = pytest.mark.skipif(
+    not SAMPLE_DVT_PATH.exists(),
+    reason="Sample DVT fixture is not available",
+)
 
 
 def load_sample(path):
@@ -17,8 +24,7 @@ def load_sample(path):
 
 
 def test_extract_serial_and_bands_from_sample():
-    sample_path = SAMPLE_DATA_DIR / "Golden_SN..9403_25G_TX_2025_09_10_15-16-19.csv"
-    content = load_sample(sample_path)
+    content = load_sample(SAMPLE_DVT_PATH)
 
     serial = extract_serial_number(content)
     assert serial is not None
@@ -37,8 +43,7 @@ def test_extract_serial_and_bands_from_sample():
 
 
 def test_convert_outputs_four_lines_and_header_ordering():
-    sample_path = SAMPLE_DATA_DIR / "Golden_SN..9403_25G_TX_2025_09_10_15-16-19.csv"
-    content = load_sample(sample_path)
+    content = load_sample(SAMPLE_DVT_PATH)
 
     mc2 = convert_dvt_to_mc2(content, include_usl_lsl=True)
     lines = mc2.splitlines()

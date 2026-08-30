@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import logging
@@ -141,6 +142,7 @@ router = APIRouter(
 
 METADATA_CACHE_TTL = dut_metadata_cache.DEFAULT_TTL
 RECORD_CACHE_TTL = dut_metadata_cache.DEFAULT_RECORD_TTL
+DUT_CATALOG_MAX_PARALLEL_REQUESTS = int(os.getenv("DUT_CATALOG_MAX_PARALLEL_REQUESTS", "8"))
 # The station test-item catalogue is a ~30 MB upstream download that takes ~30s,
 # so it gets a longer TTL than the other metadata caches.
 STATION_TEST_ITEMS_CACHE_TTL = int(os.getenv("DUT_STATION_TEST_ITEMS_CACHE_TTL", "3600"))
@@ -598,30 +600,45 @@ async def _get_device_catalog(client: DUTAPIClient) -> dict[str, Any]:
 
     async def loader() -> dict[str, Any]:
         catalog: dict[str, dict[str, int]] = {"by_id": {}, "by_name": {}}
+        semaphore = asyncio.Semaphore(max(1, DUT_CATALOG_MAX_PARALLEL_REQUESTS))
+
+        async def bounded(awaitable):
+            async with semaphore:
+                return await awaitable
+
         sites = await _get_cached_sites(client)
-        for site in sites:
-            site_id = _coerce_optional_int(site.get("id"))
-            if site_id is None:
-                continue
-            models = await _get_cached_models(client, site_id)
-            for model in models:
-                model_id = _coerce_optional_int(model.get("id"))
-                if model_id is None:
+        site_ids = [site_id for site in sites if (site_id := _coerce_optional_int(site.get("id"))) is not None]
+        models_by_site = await asyncio.gather(
+            *(bounded(_get_cached_models(client, site_id)) for site_id in site_ids)
+        )
+        model_ids = {
+            model_id
+            for models in models_by_site
+            for model in models
+            if (model_id := _coerce_optional_int(model.get("id"))) is not None
+        }
+        stations_by_model = await asyncio.gather(
+            *(bounded(_get_cached_stations(client, model_id)) for model_id in model_ids)
+        )
+        station_ids = {
+            station_id
+            for stations in stations_by_model
+            for station in stations
+            if (station_id := _coerce_optional_int(station.get("id"))) is not None
+        }
+        devices_by_station = await asyncio.gather(
+            *(bounded(_get_cached_station_devices(client, station_id)) for station_id in station_ids)
+        )
+
+        for devices in devices_by_station:
+            for device in devices:
+                device_id = _coerce_optional_int(device.get("id"))
+                if device_id is None:
                     continue
-                stations = await _get_cached_stations(client, model_id)
-                for station in stations:
-                    station_id = _coerce_optional_int(station.get("id"))
-                    if station_id is None:
-                        continue
-                    devices = await _get_cached_station_devices(client, station_id)
-                    for device in devices:
-                        device_id = _coerce_optional_int(device.get("id"))
-                        if device_id is None:
-                            continue
-                        catalog["by_id"][str(device_id)] = device_id
-                        name = str(device.get("name") or device.get("device") or "").strip()
-                        if name:
-                            catalog["by_name"][name.lower()] = device_id
+                catalog["by_id"][str(device_id)] = device_id
+                name = str(device.get("name") or device.get("device") or "").strip()
+                if name:
+                    catalog["by_name"][name.lower()] = device_id
         return catalog
 
     catalog = await dut_metadata_cache.get_or_set(cache_key, loader, ttl=METADATA_CACHE_TTL)
@@ -957,7 +974,7 @@ def _build_dut_client_from_token_bundle(token_bundle: dict[str, Any]) -> DUTAPIC
 
 
 async def _get_latest_test_items_client(current_user, service_client: DUTAPIClient) -> DUTAPIClient:
-    token = dut_token_service.ensure_valid_access(current_user.username)
+    token = await asyncio.to_thread(dut_token_service.ensure_valid_access, current_user.username)
     token_bundle = dut_token_service.get_tokens(current_user.username) if token else None
 
     if token_bundle and token_bundle.get("access"):
@@ -4169,49 +4186,49 @@ async def _fetch_station_metadata(client: DUTAPIClient, station_id: int) -> dict
         logger.error("Error fetching sites while resolving metadata for station %s: %s", station_id, exc)
         raise HTTPException(status_code=500, detail="Failed to retrieve station metadata from external API") from exc
 
-    for site in sites:
-        site_id = _coerce_optional_int(site.get("id"))
-        site_name = site.get("name")
-        if site_id is None:
+    semaphore = asyncio.Semaphore(max(1, DUT_CATALOG_MAX_PARALLEL_REQUESTS))
+
+    async def bounded(awaitable):
+        async with semaphore:
+            return await awaitable
+
+    site_contexts = [
+        (site, site_id)
+        for site in sites
+        if (site_id := _coerce_optional_int(site.get("id"))) is not None
+    ]
+    model_results = await asyncio.gather(
+        *(bounded(_get_cached_models(client, site_id)) for _, site_id in site_contexts),
+        return_exceptions=True,
+    )
+    model_contexts = [
+        (site, site_id, model, model_id)
+        for (site, site_id), models in zip(site_contexts, model_results, strict=True)
+        if not isinstance(models, Exception)
+        for model in models
+        if (model_id := _coerce_optional_int(model.get("id"))) is not None
+    ]
+    station_results = await asyncio.gather(
+        *(bounded(_get_cached_stations(client, model_id)) for _, _, _, model_id in model_contexts),
+        return_exceptions=True,
+    )
+
+    for (site, site_id, model, model_id), stations in zip(model_contexts, station_results, strict=True):
+        if isinstance(stations, Exception):
             continue
-        try:
-            models = await _get_cached_models(client, site_id)
-        except Exception as exc:
-            logger.warning(
-                "Error fetching models for site %s while resolving metadata for station %s: %s",
-                site_id,
-                station_id,
-                exc,
-            )
-            continue
-        for model in models:
-            model_id = model.get("id")
-            model_name = model.get("name")
-            if model_id is None:
-                continue
-            try:
-                stations = await _get_cached_stations(client, model_id)
-            except Exception as exc:
-                logger.warning(
-                    "Error fetching stations for model %s while resolving metadata for station %s: %s",
-                    model_id,
-                    station_id,
-                    exc,
-                )
-                continue
-            for station in stations:
-                candidate_id = _coerce_optional_int(station.get("id"))
-                if candidate_id == station_id:
-                    return {
-                        "station_id": candidate_id if candidate_id is not None else station_id,
-                        "station_name": station.get("name") or "",
-                        "model_id": _coerce_optional_int(station.get("model_id")) or _coerce_optional_int(model_id),
-                        "model_name": station.get("model_name") or model_name or "",
-                        "site_id": _coerce_optional_int(station.get("site_id")) or _coerce_optional_int(site_id),
-                        "site_name": station.get("site_name") or site_name or "",
-                        "station_status": _coerce_optional_int(station.get("status")),
-                        "station_order": _coerce_optional_int(station.get("order")),
-                    }
+        for station in stations:
+            candidate_id = _coerce_optional_int(station.get("id"))
+            if candidate_id == station_id:
+                return {
+                    "station_id": candidate_id,
+                    "station_name": station.get("name") or "",
+                    "model_id": _coerce_optional_int(station.get("model_id")) or model_id,
+                    "model_name": station.get("model_name") or model.get("name") or "",
+                    "site_id": _coerce_optional_int(station.get("site_id")) or site_id,
+                    "site_name": station.get("site_name") or site.get("name") or "",
+                    "station_status": _coerce_optional_int(station.get("status")),
+                    "station_order": _coerce_optional_int(station.get("order")),
+                }
     raise HTTPException(status_code=404, detail="Station metadata not found")
 
 

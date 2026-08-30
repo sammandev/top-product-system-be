@@ -1,7 +1,7 @@
 import enum
 from datetime import UTC, datetime
 
-from sqlalchemy import Boolean, Column, DateTime, Enum, Integer, String
+from sqlalchemy import JSON, Boolean, Column, DateTime, Enum, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import relationship
 
@@ -85,7 +85,7 @@ class User(Base):
     is_staff = Column(Boolean, default=False)  # Synced from external API (is_staff)
     is_active = Column(Boolean, default=True)
     role = Column(Enum(UserRole), default=UserRole.user, nullable=False, server_default="user")  # Access control role
-    menu_permissions = Column(JSONB, nullable=True)  # Per-resource CRUD permissions dict
+    menu_permissions = Column(JSON().with_variant(JSONB(), "postgresql"), nullable=True)  # Per-resource CRUD permissions dict
     permission_updated_at = Column(DateTime, nullable=True)  # When permissions were last changed
     token_version = Column(Integer, default=1, nullable=False)
     last_login = Column(DateTime, nullable=True)  # Track last login time

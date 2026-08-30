@@ -8,7 +8,6 @@ dependencies = [
     "annotated-types",
     "anyio",
     "argon2-cffi",
-    "axios",
     "certifi",
     "chardet",
     "charset-normalizer",
@@ -75,7 +74,7 @@ dependencies = [
     "psycopg[binary]",
     "redis",
     "alembic",
-    "mcp[cli]>=1.27.0",
+    "mcp[cli]>=1.29.1,<2",
     "fastapi-mcp>=0.4.0",
 ]
 

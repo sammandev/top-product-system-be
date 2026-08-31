@@ -16,6 +16,7 @@ DUT_MAX_PARALLEL_REQUESTS = int(os.getenv("DUT_CATALOG_MAX_PARALLEL_REQUESTS", "
 DUT_REQUEST_TIMEOUT = float(os.getenv("DUT_API_TIMEOUT", "30"))
 DUT_CONNECT_TIMEOUT = float(os.getenv("DUT_API_CONNECT_TIMEOUT", "5"))
 DUT_POOL_TIMEOUT = float(os.getenv("DUT_API_POOL_TIMEOUT", "5"))
+DUT_CONNECT_RETRIES = int(os.getenv("DUT_API_CONNECT_RETRIES", "2"))
 DUT_MAX_CONNECTIONS = int(os.getenv("DUT_API_MAX_CONNECTIONS", "100"))
 DUT_MAX_KEEPALIVE_CONNECTIONS = int(os.getenv("DUT_API_MAX_KEEPALIVE_CONNECTIONS", "20"))
 
@@ -32,14 +33,18 @@ def _get_shared_client(base_url: str) -> httpx.AsyncClient:
     with _shared_clients_lock:
         client = _shared_clients.get(base_url)
         if client is None:
-            client = httpx.AsyncClient(
-                base_url=base_url,
-                timeout=_build_timeout(),
+            transport = httpx.AsyncHTTPTransport(
+                retries=max(0, DUT_CONNECT_RETRIES),
                 limits=httpx.Limits(
                     max_keepalive_connections=DUT_MAX_KEEPALIVE_CONNECTIONS,
                     max_connections=DUT_MAX_CONNECTIONS,
                     keepalive_expiry=30.0,
                 ),
+            )
+            client = httpx.AsyncClient(
+                base_url=base_url,
+                timeout=_build_timeout(),
+                transport=transport,
             )
             _shared_clients[base_url] = client
         return client

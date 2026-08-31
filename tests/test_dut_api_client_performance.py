@@ -45,3 +45,28 @@ async def test_complete_dut_info_uses_bounded_concurrency(monkeypatch):
     assert len(result["models"]) == 4
     assert len(result["stations"]) == 4
     assert result["stations"][0]["site_name"] == "PTB"
+
+
+def test_shared_client_configures_connection_retries_and_limits(monkeypatch):
+    transport_options = {}
+
+    class StubTransport:
+        def __init__(self, **options):
+            transport_options.update(options)
+
+    class StubClient:
+        def __init__(self, **_options):
+            pass
+
+    dut_api_client._shared_clients.clear()
+    monkeypatch.setattr(dut_api_client.httpx, "AsyncHTTPTransport", StubTransport)
+    monkeypatch.setattr(dut_api_client.httpx, "AsyncClient", StubClient)
+    monkeypatch.setattr(dut_api_client, "DUT_CONNECT_RETRIES", 2)
+
+    dut_api_client._get_shared_client("http://dut-retry.test")
+
+    assert transport_options["retries"] == 2
+    limits = transport_options["limits"]
+    assert limits.max_connections == dut_api_client.DUT_MAX_CONNECTIONS
+    assert limits.max_keepalive_connections == dut_api_client.DUT_MAX_KEEPALIVE_CONNECTIONS
+    dut_api_client._shared_clients.clear()

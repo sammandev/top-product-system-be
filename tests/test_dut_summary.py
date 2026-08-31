@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
@@ -160,6 +161,24 @@ def test_dut_summary_returns_404_when_no_records():
     client = TestClient(app)
     resp = client.get("/api/dut/summary", params={"dut_isn": "UNKNOWN"})
     assert resp.status_code == 404
+
+
+def test_dut_summary_returns_504_when_upstream_connect_times_out():
+    class TimeoutDUTClient:
+        base_url = "http://timeout-summary.test"
+
+        async def get_dut_records(self, dut_isn: str):
+            request = httpx.Request("GET", f"{self.base_url}/api/api/dut/records")
+            raise httpx.ConnectTimeout("connection timed out", request=request)
+
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(username="tester")
+    app.dependency_overrides[get_user_dut_client] = TimeoutDUTClient
+
+    client = TestClient(app)
+    resp = client.get("/api/dut/summary", params={"dut_isn": "267892830001301"})
+
+    assert resp.status_code == 504
+    assert resp.json() == {"detail": "DUT service timed out while retrieving records for 267892830001301"}
 
 
 def test_dut_identifiers_endpoint_lists_unique_pairs():

@@ -3332,6 +3332,26 @@ async def _fetch_dut_records(
 
     try:
         records = await dut_metadata_cache.get_or_set(cache_key, loader, ttl=RECORD_CACHE_TTL)
+    except httpx.TimeoutException as exc:
+        logger.warning(
+            "DUT API timed out fetching records for %s: type=%s",
+            dut_isn,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=504,
+            detail=f"DUT service timed out while retrieving records for {dut_isn}",
+        ) from exc
+    except httpx.RequestError as exc:
+        logger.warning(
+            "DUT API unavailable fetching records for %s: type=%s",
+            dut_isn,
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"DUT service unavailable while retrieving records for {dut_isn}",
+        ) from exc
     except HTTPException as http_exc:
         # Log and re-raise HTTP exceptions from upstream API
         logger.error(

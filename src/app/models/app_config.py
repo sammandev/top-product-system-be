@@ -18,6 +18,7 @@ class AppConfig(Base):
     description = Column(String(500), nullable=True)
     tab_title = Column(String(200), nullable=True)
     favicon_path = Column(String(500), nullable=True)
+    primeui_license_key = Column(Text, nullable=True)
     updated_at = Column(DateTime, default=_utc_now, onupdate=_utc_now, nullable=False)
     updated_by = Column(String(150), nullable=True)
 

@@ -9,6 +9,8 @@ Handles:
 - Guest credential management (encrypted)
 """
 
+import base64
+import json
 import logging
 import os
 from datetime import UTC, datetime
@@ -33,6 +35,9 @@ from app.schemas.app_config_schemas import (
     IplasTokenListResponse,
     IplasTokenResponse,
     IplasTokenUpdateRequest,
+    PrimeUILicenseRuntimeResponse,
+    PrimeUILicenseStatusResponse,
+    PrimeUILicenseUpdateRequest,
     SfistspConfigCreateRequest,
     SfistspConfigListResponse,
     SfistspConfigResponse,
@@ -47,6 +52,7 @@ router = APIRouter(prefix="/api/app-config", tags=["App_Config"])
 db_dependency = Depends(get_db)
 settings_dependency = Depends(get_settings)
 admin_dependency = Depends(require_admin)
+current_user_dependency = Depends(get_current_user)
 
 # Project root for static file storage
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -74,6 +80,91 @@ def _format_config_response(config: AppConfig) -> AppConfigResponse:
         description=config.description,
         tab_title=config.tab_title,
         favicon_url=f"/static/branding/{os.path.basename(config.favicon_path)}" if config.favicon_path else None,
+        updated_at=config.updated_at.isoformat() if config.updated_at else None,
+        updated_by=config.updated_by,
+    )
+
+
+def _decode_primeui_license_claims(license_key: str, *, validate_expiry: bool = True) -> dict:
+    try:
+        parts = license_key.strip().split(".")
+        if len(parts) != 2 or not all(parts):
+            raise ValueError("license must contain a payload and signature")
+        payload = parts[0]
+        padding = "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload + padding))
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=422, detail="Invalid PrimeUI license key format") from exc
+
+    if not isinstance(claims, dict):
+        raise HTTPException(status_code=422, detail="Invalid PrimeUI license key format")
+
+    if claims.get("product") != "primeui":
+        raise HTTPException(status_code=422, detail="License key is not valid for PrimeUI")
+
+    expires_at = claims.get("exp")
+    if type(expires_at) is not int:
+        raise HTTPException(status_code=422, detail="PrimeUI license key has no valid expiration")
+    try:
+        expiration = datetime.fromtimestamp(expires_at, UTC)
+    except (OverflowError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="PrimeUI license key has no valid expiration") from exc
+    if validate_expiry and expiration <= datetime.now(UTC):
+        raise HTTPException(status_code=422, detail="PrimeUI license key has expired")
+
+    return claims
+
+
+def _format_primeui_license_status(config: AppConfig) -> PrimeUILicenseStatusResponse:
+    if not config.primeui_license_key:
+        return PrimeUILicenseStatusResponse(
+            configured=False,
+            valid=False,
+            updated_at=config.updated_at.isoformat() if config.updated_at else None,
+            updated_by=config.updated_by,
+        )
+
+    license_key = decrypt_value(config.primeui_license_key)
+    if not license_key:
+        return PrimeUILicenseStatusResponse(
+            configured=True,
+            valid=False,
+            validation_error="Stored license could not be decrypted",
+        )
+
+    try:
+        claims = _decode_primeui_license_claims(license_key, validate_expiry=False)
+    except HTTPException as exc:
+        return PrimeUILicenseStatusResponse(
+            configured=True,
+            valid=False,
+            validation_error=str(exc.detail),
+            license_masked=mask_value(license_key),
+            updated_at=config.updated_at.isoformat() if config.updated_at else None,
+            updated_by=config.updated_by,
+        )
+
+    expires_at = claims.get("exp")
+    valid = isinstance(expires_at, int) and datetime.fromtimestamp(expires_at, UTC) > datetime.now(UTC)
+
+    def format_timestamp(value: object) -> str | None:
+        if type(value) is not int:
+            return None
+        try:
+            return datetime.fromtimestamp(value, UTC).isoformat()
+        except (OverflowError, OSError, ValueError):
+            return None
+
+    return PrimeUILicenseStatusResponse(
+        configured=True,
+        valid=valid,
+        validation_error=None if valid else "PrimeUI license key has expired",
+        license_masked=mask_value(license_key),
+        product=claims.get("product"),
+        tier=claims.get("tier"),
+        license_type=claims.get("type"),
+        issued_at=format_timestamp(claims.get("iat")),
+        expires_at=format_timestamp(claims.get("exp")),
         updated_at=config.updated_at.isoformat() if config.updated_at else None,
         updated_by=config.updated_by,
     )
@@ -198,6 +289,65 @@ def update_app_config(
     db.commit()
     db.refresh(config)
     return _format_config_response(config)
+
+
+@router.get(
+    "/primeui-license/runtime",
+    response_model=PrimeUILicenseRuntimeResponse,
+    summary="Get the active PrimeUI license for frontend bootstrap",
+)
+def get_primeui_license_runtime(
+    db: Session = db_dependency,
+    settings=settings_dependency,
+):
+    config = _get_or_create_config(db, settings)
+    license_key = decrypt_value(config.primeui_license_key) if config.primeui_license_key else None
+    if license_key:
+        try:
+            _decode_primeui_license_claims(license_key)
+        except HTTPException:
+            license_key = None
+    return PrimeUILicenseRuntimeResponse(license=license_key or None)
+
+
+@router.get(
+    "/primeui-license",
+    response_model=PrimeUILicenseStatusResponse,
+    summary="Get masked PrimeUI license status (admin)",
+)
+def get_primeui_license_status(
+    db: Session = db_dependency,
+    current_user: User = admin_dependency,
+    settings=settings_dependency,
+):
+    config = _get_or_create_config(db, settings)
+    return _format_primeui_license_status(config)
+
+
+@router.put(
+    "/primeui-license",
+    response_model=PrimeUILicenseStatusResponse,
+    summary="Update the PrimeUI license (superadmin)",
+)
+def update_primeui_license(
+    payload: PrimeUILicenseUpdateRequest,
+    db: Session = db_dependency,
+    current_user: User = current_user_dependency,
+    settings=settings_dependency,
+):
+    if not _is_superadmin(current_user):
+        raise HTTPException(status_code=403, detail="Only superadmin can update the PrimeUI license")
+
+    license_key = payload.license_key.strip()
+    _decode_primeui_license_claims(license_key)
+
+    config = _get_or_create_config(db, settings)
+    config.primeui_license_key = encrypt_value(license_key)
+    config.updated_by = current_user.username
+    config.updated_at = datetime.now(UTC)
+    db.commit()
+    db.refresh(config)
+    return _format_primeui_license_status(config)
 
 
 @router.post(

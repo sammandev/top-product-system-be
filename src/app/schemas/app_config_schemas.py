@@ -1,6 +1,5 @@
 from pydantic import BaseModel, Field
 
-
 # ============================================================================
 # App Config (General)
 # ============================================================================
@@ -21,6 +20,28 @@ class AppConfigUpdateRequest(BaseModel):
     version: str = Field(..., min_length=1, max_length=64)
     description: str | None = Field(None, max_length=500)
     tab_title: str | None = Field(None, max_length=200)
+
+
+class PrimeUILicenseRuntimeResponse(BaseModel):
+    license: str | None = Field(None, description="PrimeUI license key used during frontend bootstrap")
+
+
+class PrimeUILicenseStatusResponse(BaseModel):
+    configured: bool
+    valid: bool
+    validation_error: str | None = None
+    license_masked: str | None = None
+    product: str | None = None
+    tier: str | None = None
+    license_type: str | None = None
+    issued_at: str | None = None
+    expires_at: str | None = None
+    updated_at: str | None = None
+    updated_by: str | None = None
+
+
+class PrimeUILicenseUpdateRequest(BaseModel):
+    license_key: str = Field(..., min_length=32, max_length=4096)
 
 
 # ============================================================================

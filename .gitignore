@@ -37,6 +37,10 @@ pip-log.txt
 pip-delete-this-directory.txt
 .vscode/
 .dev-resources/
+.github/*
+!.github/copilot-instructions.md
+!.github/instructions/
+!.github/instructions/*.instructions.md
 .roo/
 opencode.json
 skills-lock.json

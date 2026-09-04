@@ -111,8 +111,8 @@ def _build_scoring_config_map(scoring_configs_json: str | None) -> dict[str, Sco
 
 
 def _has_meaningful_limit(limit: float | None) -> bool:
-    """Treat placeholder zero limits as absent for upload-log criteria decisions."""
-    return limit is not None and limit != 0
+    """A test item limit is meaningful if it is present (including 0)."""
+    return limit is not None
 
 
 def _should_score_upload_item(

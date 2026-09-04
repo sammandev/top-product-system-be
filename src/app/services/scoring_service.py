@@ -192,7 +192,7 @@ def _is_throughput_item(test_item: dict) -> bool:
     Check if test item is a Throughput item based on name pattern.
 
     Rules:
-    - Contains "THROUGHPUT" (case insensitive)
+    - Contains "THROUGHPUT", "THRUPUT", or "TPUT" (case insensitive)
     - Higher value is better, score increases as value approaches UCL
 
     Args:
@@ -202,7 +202,7 @@ def _is_throughput_item(test_item: dict) -> bool:
         True if this is a Throughput item suitable for throughput scoring
     """
     name = str(test_item.get("NAME", "")).upper()
-    return "THROUGHPUT" in name
+    return "THROUGHPUT" in name or "THRUPUT" in name or "TPUT" in name
 
 
 # ============================================================================
@@ -216,8 +216,9 @@ def detect_scoring_type(test_item: dict) -> ScoringType:
 
     Detection rules:
     - BINARY: for PASS/FAIL values without numeric control limits
-    - PER_MASK: for items containing "PER" or "MASK" (strict) with UCL only
-    - EVM: for items containing "EVM" with UCL only (no LCL)
+    - PER_MASK: for items containing "PER" or "MASK" (strict)
+    - EVM: for items containing "EVM"
+    - THROUGHPUT: for items containing "THROUGHPUT", "THRUPUT", or "TPUT"
     - SYMMETRICAL: for all other value items (UCL and/or LCL present)
 
     User can manually change to ASYMMETRICAL or other types if needed.
@@ -228,22 +229,19 @@ def detect_scoring_type(test_item: dict) -> ScoringType:
     ucl = _parse_float(test_item.get("UCL"))
     lcl = _parse_float(test_item.get("LCL"))
 
-    # Check for PER/MASK items (UCL-only, lower is better)
+    # Check for PER/MASK items (lower is better, 0 is ideal)
     if _is_per_mask_item(test_item):
-        # PER/MASK typically has UCL only (upper limit for error rate)
-        if ucl is not None and lcl is None:
+        if ucl is not None:
             return ScoringType.PER_MASK
 
-    # Check for EVM items (UCL-only, lower is better with gentle decay)
+    # Check for EVM items (lower is better, linear decay toward UCL)
     if _is_evm_item(test_item):
-        # EVM typically has UCL only - if LCL exists, use symmetrical scoring
-        if ucl is not None and lcl is None:
+        if ucl is not None:
             return ScoringType.EVM
 
-    # UPDATED: Check for Throughput items (higher is better, target=UCL)
+    # Check for Throughput items (higher is better, target=UCL)
     if _is_throughput_item(test_item):
-        # Throughput scoring: higher value is better, target is UCL
-        if ucl is not None:
+        if ucl is not None or lcl is not None:
             return ScoringType.THROUGHPUT
 
     # All other value items default to SYMMETRICAL
@@ -488,32 +486,23 @@ def score_per_mask(value: float, ucl: float, limit_score: float = DEFAULT_LIMIT_
     return _round2(_clamp(score, SCORE_MIN, SCORE_MAX)), value
 
 
-def score_evm(value: float, ucl: float, limit_score: float = DEFAULT_LIMIT_SCORE, reference_best: float = -35.0, exponent: float = 0.25) -> tuple[float, float]:
+def score_evm(value: float, ucl: float, limit_score: float = DEFAULT_LIMIT_SCORE, reference_best: float = -42.0, exponent: float = 1.0) -> tuple[float, float]:
     """
-    Calculate EVM score (UCL-only, lower is better with gentle decay).
+    Calculate EVM score (UCL-only, lower is better with linear scoring).
 
     Score range: 0.00 - 10.00
     - Above UCL: 0.00 (fail)
     - At UCL: limit_score (default 1.00)
-    - At reference_best (-35 dB): 10.00
-    - Gentle decay using exponent (default 0.25 = gentler than linear)
-
-    This scoring is used for Error Vector Magnitude (EVM) test items where
-    lower values are better. EVM values are typically in dB (negative).
-    The gentle decay (exponent < 1) means scores stay high for longer as
-    values move away from reference_best.
-
-    Algorithm from new_scoring_top_product_v2.ipynb:
-        dist = (value - reference_best) / (ucl - reference_best)
-        frac = (1.0 - dist) ** exponent
-        score = limit_score + (10.0 - limit_score) * frac
+    - At reference_best (-42 dB): 10.00
+    - Value close to -40 dB yields good score (~9.0)
+    - Linear scaling between UCL and reference_best
 
     Args:
         value: Measured EVM value (typically negative dB)
         ucl: Upper Control Limit (failure threshold)
         limit_score: Score at UCL boundary (default: 1.0)
-        reference_best: Best possible EVM value (default: -35.0 dB)
-        exponent: Decay exponent (default: 0.25, gentler than linear)
+        reference_best: Best possible EVM value (default: -42.0 dB)
+        exponent: Decay exponent (default: 1.0 = linear)
 
     Returns:
         Tuple of (score, deviation from reference_best)
@@ -534,14 +523,10 @@ def score_evm(value: float, ucl: float, limit_score: float = DEFAULT_LIMIT_SCORE
     if ucl == reference_best:
         return _round2(limit_score), 0.0
 
-    # Gentle decay using exponent (from notebook algorithm)
-    # dist: normalized distance from reference_best to UCL (0 to 1)
+    # Linear scaling between reference_best and UCL
     dist = (value - reference_best) / (ucl - reference_best)
     dist = _clamp(dist, 0.0, 1.0)
 
-    # frac: decay fraction using exponent (0.25 = gentler than linear)
-    # When dist=0 (at ref), frac=1
-    # When dist=1 (at UCL), frac=0
     frac = (1.0 - dist) ** exponent
     frac = _clamp(frac, 0.0, 1.0)
 
@@ -667,7 +652,7 @@ def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> Tes
 
     elif scoring_type == ScoringType.PER_MASK:
         # PER/MASK scoring: UCL-only, lower is better (best=0)
-        if has_meaningful_ucl:
+        if ucl is not None:
             score, deviation = score_per_mask(value, ucl, limit_score)
             target = 0.0  # Target is 0 for PER/MASK (lower is better)
         else:
@@ -676,14 +661,14 @@ def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> Tes
             scoring_type = ScoringType.BINARY
 
     elif scoring_type == ScoringType.EVM:
-        # EVM scoring: UCL-only, lower is better with gentle decay (best=-35)
-        if has_meaningful_ucl:
+        # EVM scoring: UCL-only, lower is better with linear scaling (best=-42)
+        if ucl is not None:
             # Get EVM-specific parameters from config or defaults
             defaults = SCORING_TYPE_DEFAULTS.get(ScoringType.EVM, {})
-            reference_best = defaults.get("reference_best", -35.0)
-            exponent = defaults.get("exponent", 0.25)
+            reference_best = defaults.get("reference_best", -42.0)
+            exponent = defaults.get("exponent", 1.0)
             score, deviation = score_evm(value, ucl, limit_score, reference_best, exponent)
-            target = reference_best  # Target is the reference best value (-35 dB)
+            target = reference_best  # Target is the reference best value (-42 dB)
         else:
             # No UCL - fall back to binary
             score = score_binary(status)
@@ -734,11 +719,12 @@ def score_test_item(test_item: dict, config: ScoringConfig | None = None) -> Tes
     # UPDATED: Added throughput scoring case
     elif scoring_type == ScoringType.THROUGHPUT:
         # Throughput scoring: higher is better, target=UCL
-        if has_meaningful_ucl:
-            score, deviation = score_throughput(value, ucl, lcl, limit_score)
-            target = ucl  # Target is UCL for throughput (higher is better)
+        if ucl is not None or has_meaningful_lcl:
+            target_ucl = ucl if ucl is not None else max(value, (lcl or 0.0) * 1.5, (lcl or 0.0) + 100.0)
+            score, deviation = score_throughput(value, target_ucl, lcl, limit_score)
+            target = target_ucl  # Target is UCL for throughput (higher is better)
         else:
-            # No UCL - fall back to binary
+            # No limits - fall back to binary
             score = score_binary(status)
             scoring_type = ScoringType.BINARY
 

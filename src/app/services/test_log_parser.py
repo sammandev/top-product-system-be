@@ -291,16 +291,16 @@ class TestLogParser:
 
                     with rarfile.RarFile(archive_path, "r") as rar_ref:
                         rar_ref.extractall(extract_path)
-                except ImportError:
-                    raise ValueError("rarfile package not installed. Install with: pip install rarfile")
+                except ImportError as err:
+                    raise ValueError("rarfile package not installed. Install with: pip install rarfile") from err
             elif suffix == ".7z":
                 try:
                     import py7zr
 
                     with py7zr.SevenZipFile(archive_path, mode="r") as z:
                         z.extractall(path=extract_path)
-                except ImportError:
-                    raise ValueError("py7zr package not installed. Install with: pip install py7zr")
+                except ImportError as err:
+                    raise ValueError("py7zr package not installed. Install with: pip install py7zr") from err
             else:
                 raise ValueError(f"Unsupported archive format: {suffix}")
 
@@ -314,7 +314,7 @@ class TestLogParser:
             # Clean up on error
             if extract_to is None and extract_path.exists():
                 shutil.rmtree(extract_path, ignore_errors=True)
-            raise ValueError(f"Failed to extract archive: {str(e)}")
+            raise ValueError(f"Failed to extract archive: {str(e)}") from e
 
     @classmethod
     def parse_archive(cls, archive_path: str) -> dict[str, any]:
@@ -513,6 +513,10 @@ class TestLogParser:
             if show_only_criteria and not matches_criteria:
                 continue
 
+            # If item has UCL or LCL, it is a criteria item
+            if not matches_criteria and (usl is not None or lsl is not None):
+                matches_criteria = True
+
             # Calculate score for value-type items
             target_used = None
             score = None
@@ -551,6 +555,7 @@ class TestLogParser:
                 "target": target_used,
                 "score": score,
                 "score_breakdown": score_breakdown,
+                "source_order": len(parsed_items_enhanced),
             }
 
             parsed_items_enhanced.append(item_enhanced)
@@ -564,6 +569,7 @@ class TestLogParser:
         for base_key, (old_item, new_item) in pa_srom_pairs.items():
             adjusted_item = cls._create_adjusted_pow_item(base_key, old_item, new_item)
             if adjusted_item:
+                adjusted_item["source_order"] = len(parsed_items_enhanced)
                 parsed_items_enhanced.append(adjusted_item)
                 non_value_type_count += 1  # Treated as non-value for display purposes
 
@@ -879,16 +885,21 @@ class TestLogParser:
         # Build test item index for each file
         file_items = [{item["test_item"]: item for item in parsed["parsed_items_enhanced"]} for parsed in parsed_files]
 
-        # Find all test items
-        all_test_items = set()
-        for items_dict in file_items:
-            all_test_items.update(items_dict.keys())
+        # Find all test items preserving the original sequence from the uploaded test logs
+        ordered_test_items: list[str] = []
+        seen_test_items: set[str] = set()
+        for parsed in parsed_files:
+            for item in parsed["parsed_items_enhanced"]:
+                ti = item["test_item"]
+                if ti not in seen_test_items:
+                    seen_test_items.add(ti)
+                    ordered_test_items.append(ti)
 
         # Separate value and non-value items
         comparison_value_items = []
         comparison_non_value_items = []
 
-        for test_item in sorted(all_test_items):
+        for order_idx, test_item in enumerate(ordered_test_items):
             # Collect data from files that have this item
             per_isn_data = []
             usl = None
@@ -939,12 +950,27 @@ class TestLogParser:
             if not per_isn_data:
                 continue
 
+            # Check if item has limits
+            has_limits = usl is not None or lsl is not None
+            if has_limits:
+                matches_criteria = True
+
             # Separate value vs non-value items
-            if is_value_type:
+            if is_value_type or has_limits:
                 # Extract numeric values for deviation calculation
                 numeric_values = [d["numeric_value"] for d in per_isn_data if d["numeric_value"] is not None]
 
                 if not numeric_values:
+                    comparison_non_value_items.append(
+                        {
+                            "test_item": test_item,
+                            "source_order": order_idx,
+                            "usl": usl,
+                            "lsl": lsl,
+                            "per_isn_data": per_isn_data,
+                            "matched_criteria": matches_criteria,
+                        }
+                    )
                     continue
 
                 # Determine baseline (median or criteria target)
@@ -1000,6 +1026,7 @@ class TestLogParser:
                 comparison_value_items.append(
                     {
                         "test_item": test_item,
+                        "source_order": order_idx,
                         "usl": usl,
                         "lsl": lsl,
                         "baseline": baseline,
@@ -1012,10 +1039,11 @@ class TestLogParser:
                 )
 
             else:
-                # Non-value item (hex, status, text)
+                # Non-value item (hex, status, text without limits)
                 comparison_non_value_items.append(
                     {
                         "test_item": test_item,
+                        "source_order": order_idx,
                         "usl": usl,
                         "lsl": lsl,
                         "per_isn_data": per_isn_data,
@@ -1051,6 +1079,7 @@ class TestLogParser:
                 adjusted_items_grouped[test_item].append({"file_idx": file_data["file_idx"], "isn": item["isn"], "value": item["value"], "numeric_value": item["numeric_value"], "is_calculated": True})
 
         # Create comparison items for adjusted power
+        pa_order = len(ordered_test_items)
         for test_item, per_file_data in adjusted_items_grouped.items():
             per_isn_data = []
 
@@ -1093,11 +1122,10 @@ class TestLogParser:
                         }
                     )
 
-            comparison_non_value_items.append({"test_item": test_item, "usl": None, "lsl": None, "per_isn_data": per_isn_data, "matched_criteria": False})
+            comparison_non_value_items.append({"test_item": test_item, "source_order": pa_order, "usl": None, "lsl": None, "per_isn_data": per_isn_data, "matched_criteria": False})
+            pa_order += 1
 
-        # Sort items using custom test item sorting logic
-        comparison_value_items.sort(key=cls._test_item_sort_key)
-        comparison_non_value_items.sort(key=cls._test_item_sort_key)
+        # Items retain original sequence from uploaded logs
 
         # Build file summaries with metadata
         file_summaries = [

@@ -207,8 +207,8 @@ SCORING_TYPE_DEFAULTS: dict[ScoringType, dict] = {
     },
     ScoringType.EVM: {
         "limit_score": 1.0,  # Score at UCL boundary (on 0-10 scale)
-        "reference_best": -35.0,  # Best possible EVM value
-        "exponent": 0.25  # Gentle decay (lower = gentler)
+        "reference_best": -42.0,  # Best possible EVM value (-40 dB yields ~9.0)
+        "exponent": 1.0,  # Linear scoring
     },
     ScoringType.BINARY: {},
     # Legacy defaults for backwards compatibility

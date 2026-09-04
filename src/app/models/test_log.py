@@ -3,7 +3,6 @@ Pydantic models for test log parsing and comparison (optimized for batch process
 """
 
 from datetime import datetime
-from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -116,6 +115,7 @@ class ParsedTestItemEnhanced(BaseModel):
     score_breakdown: ScoreBreakdown | None = Field(None, description="Detailed score calculation")
     matched_criteria: bool = Field(..., description="Whether item matched criteria pattern")
     is_calculated: bool = Field(default=False, description="Whether item was auto-calculated (e.g., PA ADJUSTED_POW)")
+    source_order: int | None = Field(None, description="Original sequence order from test log")
 
 
 class TestLogParseResponseEnhanced(BaseModel):
@@ -163,6 +163,7 @@ class CompareItemEnhanced(BaseModel):
     avg_score: float | None = Field(None, description="Average score (value items only)")
     median_score: float | None = Field(None, description="Median score (value items only)")
     matched_criteria: bool = Field(..., description="Whether item matches criteria pattern")
+    source_order: int | None = Field(None, description="Original sequence order from test log")
 
 
 class FileSummaryEnhanced(BaseModel):

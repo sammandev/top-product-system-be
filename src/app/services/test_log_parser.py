@@ -443,6 +443,8 @@ class TestLogParser:
 
         # Use station from metadata if available, otherwise use filename
         station = metadata_dict.get("station") or station_from_filename
+        if not metadata_dict.get("station") and station and station != "Unknown_Station":
+            metadata_dict["station"] = station
 
         # Find test result section
         test_section = cls._extract_test_section(lines)
@@ -915,6 +917,8 @@ class TestLogParser:
                     per_isn_data.append(
                         {
                             "isn": parsed_files[idx]["isn"],
+                            "station": parsed_files[idx].get("station") or parsed_files[idx].get("metadata", {}).get("station"),
+                            "filename": parsed_files[idx]["filename"],
                             "value": item["value"],
                             "is_value_type": item["is_value_type"],
                             "numeric_value": item["numeric_value"],
@@ -1057,6 +1061,8 @@ class TestLogParser:
                     per_isn_data.append(
                         {
                             "isn": file_data["isn"],
+                            "station": parsed_files[file_idx].get("station") or parsed_files[file_idx].get("metadata", {}).get("station"),
+                            "filename": parsed_files[file_idx]["filename"],
                             "value": file_data["value"],
                             "is_value_type": True,
                             "numeric_value": file_data["numeric_value"],
@@ -1073,6 +1079,8 @@ class TestLogParser:
                     per_isn_data.append(
                         {
                             "isn": parsed_files[file_idx]["isn"],
+                            "station": parsed_files[file_idx].get("station") or parsed_files[file_idx].get("metadata", {}).get("station"),
+                            "filename": parsed_files[file_idx]["filename"],
                             "value": "N/A",
                             "is_value_type": False,
                             "numeric_value": None,
@@ -1096,6 +1104,7 @@ class TestLogParser:
             {
                 "filename": parsed["filename"],
                 "isn": parsed["isn"],
+                "station": parsed.get("station") or parsed.get("metadata", {}).get("station"),
                 "metadata": parsed["metadata"],
                 "parsed_count": parsed["parsed_count"],
                 "avg_score": parsed["avg_score"],
@@ -1285,8 +1294,13 @@ def _extract_station_from_filename(filename: str) -> str:
     """
     Extract station name from filename pattern.
 
-    Pattern: [Station]_[ISN]_[YYYY]_[MM]_[DD]_[HHmmss]
-    Returns first part before underscore as station name.
+    Supported patterns:
+    1. [TestStation]_[ISN]_[YYYY]_[MM]_[DD]_[HHmmssmsec]
+       Example: Wireless_Test_6G_DM2524470075517_2025_11_20_105056100
+    2. [ISN]_[YYYY]_[MM]_[DD]_[HHmmssmsec]
+       Example: DM2527470012971_2025_11_20_172659650
+    3. [ISN]_[TestStation]_[YYYY]_[MM]_[DD]_[HHmmssmsec]
+       Example: DM2524470075517_Wireless_Test_6G_2025_11_20_105056100
 
     Args:
         filename: Filename (with or without extension)
@@ -1294,11 +1308,49 @@ def _extract_station_from_filename(filename: str) -> str:
     Returns:
         Station name or "Unknown_Station" if not found
     """
-    name = Path(filename).stem
-    match = re.match(r"^([^_]+)_", name)
-    if match:
-        return match.group(1)
-    return "Unknown_Station"
+    name_without_ext = Path(filename).stem
+    parts = name_without_ext.split("_")
+
+    if len(parts) < 5:
+        match = re.match(r"^([^_]+)_", name_without_ext)
+        return match.group(1) if match else "Unknown_Station"
+
+    # Find the index where date starts (4-digit year followed by 2-digit MM, 2-digit DD)
+    date_idx = None
+    for i in range(len(parts) - 3):
+        if (
+            len(parts[i]) == 4
+            and parts[i].isdigit()
+            and len(parts[i + 1]) == 2
+            and parts[i + 1].isdigit()
+            and len(parts[i + 2]) == 2
+            and parts[i + 2].isdigit()
+        ):
+            date_idx = i
+            break
+
+    if date_idx is None:
+        match = re.match(r"^([^_]+)_", name_without_ext)
+        return match.group(1) if match else "Unknown_Station"
+
+    prefix_parts = parts[:date_idx]
+    if len(prefix_parts) <= 1:
+        # Pattern 2: [ISN]_[Date] - no station in filename
+        return "Unknown_Station"
+
+    isn = TestLogParser.extract_isn_from_filename(filename)
+    if isn and isn in prefix_parts:
+        station_parts = [p for p in prefix_parts if p != isn]
+        if station_parts:
+            return "_".join(station_parts)
+
+    isn_prefixes = ("ISN", "SN", "DM", "DN", "SER", "SERIAL")
+    if any(prefix_parts[0].upper().startswith(p) for p in isn_prefixes) or (len(prefix_parts[0]) >= 10 and prefix_parts[0].isalnum()):
+        return "_".join(prefix_parts[1:])
+    if any(prefix_parts[-1].upper().startswith(p) for p in isn_prefixes) or (len(prefix_parts[-1]) >= 10 and prefix_parts[-1].isalnum()):
+        return "_".join(prefix_parts[:-1])
+
+    return "_".join(prefix_parts[:-1]) if len(prefix_parts) > 1 else prefix_parts[0]
 
 
 def _parse_test_log_criteria_file(content: bytes) -> dict[str, TestLogCriteriaRule]:

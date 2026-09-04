@@ -137,3 +137,18 @@ def test_test_log_parse_honors_explicit_include_scope() -> None:
     assert not_selected_item['score'] is None
     assert result['avg_score'] == 10.0
     assert result['median_score'] == 10.0
+
+
+def test_extract_station_from_filename_patterns() -> None:
+    from app.services.test_log_parser import _extract_station_from_filename
+
+    # Pattern 1: [Station]_[ISN]_[Date]
+    assert _extract_station_from_filename("Wireless_Test_6G_DM2524470075517_2025_11_20_105056100.txt") == "Wireless_Test_6G"
+    assert _extract_station_from_filename("2G_CAL_ISN1234567890_2025_11_20_105056100.txt") == "2G_CAL"
+    assert _extract_station_from_filename("PT1_ISN1234567890_2025_11_20_105056100.txt") == "PT1"
+
+    # Pattern 3: [ISN]_[Station]_[Date]
+    assert _extract_station_from_filename("DM2524470075517_Wireless_Test_6G_2025_11_20_105056100.txt") == "Wireless_Test_6G"
+
+    # Pattern 2: [ISN]_[Date] - no station
+    assert _extract_station_from_filename("DM2527470012971_2025_11_20_172659650.txt") == "Unknown_Station"

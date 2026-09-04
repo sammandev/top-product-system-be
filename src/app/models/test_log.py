@@ -138,6 +138,8 @@ class PerIsnData(BaseModel):
     """Per-ISN data for comparison items."""
 
     isn: str | None = Field(None, description="DUT ISN")
+    station: str | None = Field(None, description="Station name for this measurement")
+    filename: str | None = Field(None, description="Source filename for this measurement")
     value: str = Field(..., description="Raw value string")
     is_value_type: bool = Field(..., description="Whether value is numeric")
     numeric_value: float | None = Field(None, description="Parsed numeric value")
@@ -168,6 +170,7 @@ class FileSummaryEnhanced(BaseModel):
 
     filename: str = Field(..., description="Name of the file")
     isn: str | None = Field(None, description="DUT ISN extracted from filename")
+    station: str | None = Field(None, description="Station name extracted from header or filename")
     metadata: TestLogMetadata = Field(..., description="Metadata from log header")
     parsed_count: int = Field(..., description="Number of parsed items")
     avg_score: float | None = Field(None, description="Average score for this file")

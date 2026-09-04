@@ -192,6 +192,7 @@ def _apply_universal_scoring_to_parse_result(result: dict, config_map: dict[str,
     Modifies the result dict in-place and returns it.
     """
     scored_values: list[float] = []
+    weighted_scores: list[tuple[float, float]] = []
 
     for item in result.get("parsed_items_enhanced", []):
         # Only score value-type items (not binary)
@@ -213,14 +214,26 @@ def _apply_universal_scoring_to_parse_result(result: dict, config_map: dict[str,
             item["score_breakdown"] = scoring_result["score_breakdown"]
             if _should_include_score_in_aggregate(scoring_result["score"], config):
                 scored_values.append(scoring_result["score"])
+                if scoring_result.get("scoring_type") != "binary":
+                    w = config.weight if config else 1.0
+                    eff_w = w * w
+                    weighted_scores.append((scoring_result["score"] * eff_w, eff_w))
         else:
             # Non-value items: binary scoring (PASS=10, FAIL=0)
             item["score"] = None
             item["score_breakdown"] = None
 
-    # Recalculate aggregate scores
-    if scored_values:
+    # Recalculate aggregate scores using quadratic weighted average (consistent with rescore and iPLAS)
+    if weighted_scores:
+        tot_ws = sum(ws for ws, _ in weighted_scores)
+        tot_w = sum(w for _, w in weighted_scores)
+        result["avg_score"] = round(tot_ws / tot_w, 2) if tot_w > 0 else 0.0
+    elif scored_values:
         result["avg_score"] = round(mean(scored_values), 2)
+    else:
+        result["avg_score"] = None
+
+    if scored_values:
         sorted_scores = sorted(scored_values)
         n = len(sorted_scores)
         result["median_score"] = round(
@@ -228,7 +241,6 @@ def _apply_universal_scoring_to_parse_result(result: dict, config_map: dict[str,
             2,
         )
     else:
-        result["avg_score"] = None
         result["median_score"] = None
 
     return result
@@ -287,21 +299,33 @@ def _apply_universal_scoring_to_compare_result(result: dict, config_map: dict[st
                 compare_item["avg_score"] = None
                 compare_item["median_score"] = None
 
-    # Recalculate per-file avg_score in file_summaries
+    # Recalculate per-file avg_score in file_summaries using quadratic weighted average
     for file_summary in result.get("file_summaries", []):
         isn = file_summary.get("isn")
         if isn is None:
             continue
 
         # Collect all scores for this ISN
-        isn_scores: list[float] = []
+        file_weighted_scores: list[tuple[float, float]] = []
         for item_list_key in ("comparison_value_items", "comparison_non_value_items"):
             for compare_item in result.get(item_list_key, []):
+                config = config_map.get(compare_item["test_item"])
                 for per_isn in compare_item.get("per_isn_data", []):
                     if per_isn.get("isn") == isn and per_isn.get("score") is not None:
-                        isn_scores.append(per_isn["score"])
+                        score = per_isn["score"]
+                        breakdown = per_isn.get("score_breakdown") or {}
+                        scoring_type = breakdown.get("scoring_type") or "symmetrical"
+                        if scoring_type != "binary" and _should_include_score_in_aggregate(score, config):
+                            w = config.weight if config else (breakdown.get("weight") or 1.0)
+                            eff_w = w * w
+                            file_weighted_scores.append((score * eff_w, eff_w))
 
-        file_summary["avg_score"] = round(mean(isn_scores), 2) if isn_scores else None
+        if file_weighted_scores:
+            tot_ws = sum(ws for ws, _ in file_weighted_scores)
+            tot_w = sum(w for _, w in file_weighted_scores)
+            file_summary["avg_score"] = round(tot_ws / tot_w, 2) if tot_w > 0 else 0.0
+        else:
+            file_summary["avg_score"] = None
 
     return result
 
@@ -393,7 +417,7 @@ async def parse_test_log(
             valid_files = []
             for txt_file in extracted_files:
                 try:
-                    with open(txt_file, "r", encoding="utf-8", errors="ignore") as f:
+                    with open(txt_file, encoding="utf-8", errors="ignore") as f:
                         content = f.read()
                         if validate_test_log_pattern(content):
                             valid_files.append(txt_file)
@@ -429,7 +453,7 @@ async def parse_test_log(
                 return JSONResponse(content=result)
         else:
             # Parse single .txt file - validate pattern first
-            with open(temp_file_path, "r", encoding="utf-8", errors="ignore") as f:
+            with open(temp_file_path, encoding="utf-8", errors="ignore") as f:
                 content = f.read()
                 if not validate_test_log_pattern(content):
                     raise HTTPException(
@@ -550,7 +574,7 @@ async def compare_test_logs(
                 # Validate patterns in extracted files
                 for txt_file in extracted_files:
                     try:
-                        with open(txt_file, "r", encoding="utf-8", errors="ignore") as f:
+                        with open(txt_file, encoding="utf-8", errors="ignore") as f:
                             content = f.read()
                             if validate_test_log_pattern(content):
                                 txt_file_paths.append(txt_file)
@@ -560,7 +584,7 @@ async def compare_test_logs(
             else:
                 # Validate .txt file pattern before adding
                 try:
-                    with open(temp_path, "r", encoding="utf-8", errors="ignore") as f:
+                    with open(temp_path, encoding="utf-8", errors="ignore") as f:
                         content = f.read()
                         if validate_test_log_pattern(content):
                             txt_file_paths.append(str(temp_path))
@@ -571,7 +595,7 @@ async def compare_test_logs(
         if len(txt_file_paths) < 1:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"No valid test log files found for comparison. Files must contain one of the required patterns: '<< START TESTING >>' (repeated 4 times), '=========[Start SFIS Test Result]======', or '*** Test flow ***'",
+                detail="No valid test log files found for comparison. Files must contain one of the required patterns: '<< START TESTING >>' (repeated 4 times), '=========[Start SFIS Test Result]======', or '*** Test flow ***'",
             )
 
         # Always use enhanced comparison for BY UPLOAD LOG feature
@@ -664,7 +688,7 @@ def _convert_test_log_item_to_iplas_format(item: dict) -> dict:
     summary="Rescore test log items using universal scoring system",
     description="""
     Rescore test log items using the same scoring algorithms as the iPLAS API.
-    
+
     This endpoint accepts parsed test log items and scoring configurations,
     then applies the universal 0-10 scoring system with support for:
     - **symmetrical**: Linear scoring with centered target (UCL + LCL / 2)

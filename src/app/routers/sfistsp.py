@@ -10,6 +10,7 @@ Endpoints:
 - GET /api/sfistsp/config - Get SFISTSP configuration info
 """
 
+import asyncio
 import logging
 import os
 
@@ -102,7 +103,7 @@ async def lookup_isn(isn: str) -> SfistspIsnReferenceResponse:
     isn = isn.strip()
     logger.info(f"SFISTSP ISN lookup request: {isn}")
 
-    config = get_sfistsp_config()
+    config = await asyncio.to_thread(get_sfistsp_config)
     async with create_sfistsp_client(
         base_url=config.base_url,
         program_id=config.program_id,
@@ -151,7 +152,7 @@ async def lookup_isns_batch(
 
     logger.info(f"SFISTSP batch ISN lookup request: {len(isns)} ISNs")
 
-    config = get_sfistsp_config()
+    config = await asyncio.to_thread(get_sfistsp_config)
     async with create_sfistsp_client(
         base_url=config.base_url,
         program_id=config.program_id,
@@ -197,7 +198,7 @@ async def get_config() -> SfistspConfigResponse:
     Returns:
         SfistspConfigResponse with configuration details
     """
-    config = get_sfistsp_config()
+    config = await asyncio.to_thread(get_sfistsp_config)
 
     # Check availability by doing a simple test (could be cached)
     available = True  # Assume available, could do a health check here

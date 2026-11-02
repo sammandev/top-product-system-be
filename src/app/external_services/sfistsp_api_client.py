@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import threading
+import time
 from dataclasses import dataclass, field
 
 import httpx
@@ -46,6 +47,12 @@ SFISTSP_ENDPOINT_PATH = "/SFISWebService/SFISTSPWebService.asmx/WTSP_GETVERSION"
 SFISTSP_REQUEST_TIMEOUT = float(os.environ.get("SFISTSP_API_TIMEOUT", "15"))
 SFISTSP_MAX_CONNECTIONS = int(os.environ.get("SFISTSP_MAX_CONNECTIONS", "20"))
 SFISTSP_MAX_KEEPALIVE_CONNECTIONS = int(os.environ.get("SFISTSP_MAX_KEEPALIVE_CONNECTIONS", "10"))
+SFISTSP_CACHE_TTL = float(os.environ.get("SFISTSP_CACHE_TTL", "300"))
+SFISTSP_CACHE_MAX_ENTRIES = int(os.environ.get("SFISTSP_CACHE_MAX_ENTRIES", "5000"))
+
+# Successful lookups only, keyed by (base_url, program_id, isn) so credentials never share results.
+_lookup_cache: dict[tuple[str, str, str], tuple[float, "SfistspIsnReference"]] = {}
+_in_flight: dict[tuple[str, str, str], "asyncio.Future[SfistspIsnReference]"] = {}
 
 _shared_clients: dict[tuple[str, float], httpx.AsyncClient] = {}
 _shared_clients_lock = threading.Lock()
@@ -460,12 +467,45 @@ class SfistspApiClient:
         """
         Look up ISN references from SFISTSP.
 
+        Successful results are cached for SFISTSP_CACHE_TTL seconds and concurrent
+        lookups of the same ISN share a single upstream request.
+
         Args:
             isn: The ISN to look up
 
         Returns:
             SfistspIsnReference with parsed data
         """
+        key = (self.config.base_url.rstrip("/"), self.config.program_id, isn)
+        now = time.monotonic()
+        cached = _lookup_cache.get(key)
+        if cached is not None:
+            if now - cached[0] < SFISTSP_CACHE_TTL:
+                return cached[1]
+            _lookup_cache.pop(key, None)
+
+        pending = _in_flight.get(key)
+        if pending is not None:
+            return await asyncio.shield(pending)
+
+        future: asyncio.Future[SfistspIsnReference] = asyncio.get_running_loop().create_future()
+        _in_flight[key] = future
+        try:
+            result = await self._lookup_isn_uncached(isn)
+            if result.success and SFISTSP_CACHE_TTL > 0:
+                if len(_lookup_cache) >= SFISTSP_CACHE_MAX_ENTRIES:
+                    _lookup_cache.pop(next(iter(_lookup_cache)), None)
+                _lookup_cache[key] = (time.monotonic(), result)
+            future.set_result(result)
+            return result
+        except BaseException as exc:
+            future.set_exception(exc)
+            future.exception()  # mark retrieved so waiter-less failures don't log warnings
+            raise
+        finally:
+            _in_flight.pop(key, None)
+
+    async def _lookup_isn_uncached(self, isn: str) -> SfistspIsnReference:
         logger.info(f"SFISTSP API: Looking up ISN {isn}")
 
         try:
@@ -529,6 +569,9 @@ class SfistspApiClient:
         if not isns:
             return []
 
+        # Look up each distinct ISN once, then map results back to the original order.
+        unique_isns = list(dict.fromkeys(isns))
+
         # Use semaphore to limit concurrent requests
         semaphore = asyncio.Semaphore(max_concurrent)
 
@@ -537,8 +580,10 @@ class SfistspApiClient:
                 return await self.lookup_isn(isn)
 
         # Execute all lookups in parallel
-        tasks = [lookup_with_semaphore(isn) for isn in isns]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        tasks = [lookup_with_semaphore(isn) for isn in unique_isns]
+        unique_results = await asyncio.gather(*tasks, return_exceptions=True)
+        by_isn = dict(zip(unique_isns, unique_results, strict=True))
+        results = [by_isn[isn] for isn in isns]
 
         # Convert exceptions to error responses
         final_results: list[SfistspIsnReference] = []

@@ -194,6 +194,7 @@ IPLAS_STATION_BUCKET_COMPLETE_TTL = int(os.getenv("IPLAS_STATION_BUCKET_COMPLETE
 IPLAS_STATION_BUCKET_PARTIAL_TTL = int(os.getenv("IPLAS_STATION_BUCKET_PARTIAL_TTL", "120"))
 IPLAS_STATION_BUCKET_HOT_TTL = int(os.getenv("IPLAS_STATION_BUCKET_HOT_TTL", "30"))
 IPLAS_STATION_BUCKET_EMPTY_HOT_TTL = int(os.getenv("IPLAS_STATION_BUCKET_EMPTY_HOT_TTL", "15"))
+IPLAS_STATION_BUCKET_CONCURRENCY = int(os.getenv("IPLAS_STATION_BUCKET_CONCURRENCY", "3"))
 IPLAS_STATION_BUCKET_LOCK_TTL = int(os.getenv("IPLAS_STATION_BUCKET_LOCK_TTL", "20"))
 IPLAS_STATION_SEARCH_RUN_TTL_SECONDS = int(os.getenv("IPLAS_STATION_SEARCH_RUN_TTL_SECONDS", "1800"))
 IPLAS_SERVER_TIME_URL = os.getenv("IPLAS_SERVER_TIME_URL", "http://10.176.33.93/cfs/servertime")
@@ -1342,18 +1343,27 @@ async def _fetch_station_range_with_bucket_cache(
     cached = total_chunks > 0
     bucket_stats: list[StationRangeBucketStat] = []
 
-    for bucket_window in bucket_windows:
-        bucket_result = await _fetch_station_bucket_with_cache(
-            redis=redis,
-            site=site,
-            project=project,
-            station=station,
-            device_scope=device_scope,
-            test_status=test_status,
-            bucket_window=bucket_window,
-            user_token=user_token,
-            observable_now=observable_now,
-        )
+    # Buckets are independent (own cache keys and locks), so fetch them concurrently.
+    # gather preserves input order, keeping record ordering and bucket stats stable.
+    bucket_semaphore = asyncio.Semaphore(max(1, IPLAS_STATION_BUCKET_CONCURRENCY))
+
+    async def fetch_bucket(bucket_window: StationBucketWindow) -> StationBucketFetchResult:
+        async with bucket_semaphore:
+            return await _fetch_station_bucket_with_cache(
+                redis=redis,
+                site=site,
+                project=project,
+                station=station,
+                device_scope=device_scope,
+                test_status=test_status,
+                bucket_window=bucket_window,
+                user_token=user_token,
+                observable_now=observable_now,
+            )
+
+    bucket_results = await asyncio.gather(*(fetch_bucket(window) for window in bucket_windows))
+
+    for bucket_result in bucket_results:
         all_records.extend(bucket_result.records)
         possibly_truncated = possibly_truncated or bucket_result.metadata.possibly_truncated
         used_hybrid_strategy = used_hybrid_strategy or bucket_result.metadata.used_hybrid_strategy
@@ -3122,8 +3132,9 @@ async def get_site_projects(
     if not cached:
         logger.debug(f"Cache {'REFRESH' if force_refresh else 'MISS'}: {cache_key}")
 
-        # Query all configured sites
-        for site_name, site_config in _iter_active_iplas_sites():
+        # Query all configured sites concurrently; one slow site no longer delays the rest.
+        async def fetch_site(site_name: str, site_config: dict[str, str]) -> list[SiteProject]:
+            site_projects: list[SiteProject] = []
             try:
                 url = f"{site_config['v2_url']}/site_project_list"
 
@@ -3137,13 +3148,20 @@ async def get_site_projects(
                     if response.status_code == 200:
                         data = response.json()
                         for item in data:
-                            all_projects.append(SiteProject(**item))
+                            site_projects.append(SiteProject(**item))
                     else:
                         logger.warning(
                             f"iPLAS v2 error for {site_name}: {response.status_code} {response.text[:200]}"
                         )
             except Exception as e:
                 logger.warning(f"Failed to fetch site/projects from {site_name}: {e}")
+            return site_projects
+
+        site_results = await asyncio.gather(
+            *(fetch_site(site_name, site_config) for site_name, site_config in _iter_active_iplas_sites())
+        )
+        for site_projects in site_results:
+            all_projects.extend(site_projects)
 
         # Store in cache
         if redis and all_projects:

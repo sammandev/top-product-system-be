@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.dependencies.authz import get_current_user
 from app.models.rbac import Role
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.utils.admin_access import is_user_admin
 from app.utils.auth import get_user as get_user_by_username
 from app.utils.auth import hash_password, normalize_username
@@ -67,6 +67,22 @@ class UserSchema(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+def _serialize_user(user: User) -> UserSchema:
+    if user.is_active is None:
+        raise ValueError(f"User {user.id} has no active status")
+    return UserSchema(
+        id=user.id,
+        username=user.username,
+        email=user.email,
+        roles=[role.name for role in user.roles],
+        role=user.role.value,
+        is_active=user.is_active,
+        last_login=user.last_login,
+        created_at=user.created_at,
+        updated_at=user.updated_at,
+    )
 
 
 class UserStatsResponse(BaseModel):
@@ -139,19 +155,7 @@ async def get_users(
         # Convert users to schema
         user_list = []
         for user in users:
-            # Extract role names from Role objects
-            roles_list = [role.name for role in user.roles] if user.roles else []
-            user_list.append(UserSchema(
-                id=user.id,
-                username=user.username,
-                email=user.email,
-                roles=roles_list,
-                role=getattr(user, 'role', 'user') or 'user',
-                is_active=user.is_active,
-                last_login=user.last_login,
-                created_at=user.created_at,
-                updated_at=user.updated_at
-            ))
+            user_list.append(_serialize_user(user))
 
         # Calculate statistics
         total_users = len(users)
@@ -257,7 +261,7 @@ async def create_user(
 
         # Assign access control role
         if user_data.role and user_data.role in ('guest', 'user', 'admin', 'superadmin'):
-            new_user.role = user_data.role
+            new_user.role = UserRole(user_data.role)
 
         # Assign RBAC roles (legacy)
         if user_data.roles:
@@ -268,20 +272,7 @@ async def create_user(
         db.commit()
         db.refresh(new_user)
 
-        # Extract role names
-        roles_list = [role.name for role in new_user.roles] if new_user.roles else []
-
-        return UserSchema(
-            id=new_user.id,
-            username=new_user.username,
-            email=new_user.email,
-            roles=roles_list,
-            role=getattr(new_user, 'role', 'user') or 'user',
-            is_active=new_user.is_active,
-            last_login=new_user.last_login,
-            created_at=new_user.created_at,
-            updated_at=new_user.updated_at
-        )
+        return _serialize_user(new_user)
 
     except HTTPException:
         raise
@@ -367,7 +358,7 @@ async def update_user(
         # Update access control role
         if user_data.role is not None and user_data.role in ('guest', 'user', 'admin', 'superadmin'):
             logger.info(f"Updating access control role for user {user.username}: {getattr(user, 'role', 'user')} -> {user_data.role}")
-            user.role = user_data.role
+            user.role = UserRole(user_data.role)
 
         # Update RBAC roles (legacy)
         if user_data.roles is not None:
@@ -388,20 +379,7 @@ async def update_user(
 
         logger.info(f"User {user.username} (ID: {user.id}) updated successfully by admin {current_user.username}")
 
-        # Extract role names
-        roles_list = [role.name for role in user.roles] if user.roles else []
-
-        return UserSchema(
-            id=user.id,
-            username=user.username,
-            email=user.email,
-            roles=roles_list,
-            role=getattr(user, 'role', 'user') or 'user',
-            is_active=user.is_active,
-            last_login=user.last_login,
-            created_at=user.created_at,
-            updated_at=user.updated_at
-        )
+        return _serialize_user(user)
 
     except HTTPException:
         raise

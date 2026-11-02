@@ -553,6 +553,7 @@ def test_device_results_endpoint_uses_station_hint_to_avoid_site_scan():
     }
     resp = client.post("/api/dut/history/device-results", data=form_payload)
     assert resp.status_code == 200, resp.json()
+    assert mock.last_device_payload is not None
     assert mock.last_device_payload["device_id"] == "1351"
     assert mock.get_sites_called is False
 

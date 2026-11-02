@@ -31,7 +31,10 @@ def encrypt_value(plaintext: str) -> str:
     cipher = AES.new(_KEY, AES.MODE_GCM)
     ciphertext, tag = cipher.encrypt_and_digest(plaintext.encode("utf-8"))
     # Pack nonce (16) + ciphertext + tag (16)
-    packed = cipher.nonce + ciphertext + tag
+    nonce = cipher.nonce
+    if not isinstance(nonce, bytes):
+        raise RuntimeError("AES-GCM cipher did not provide a byte nonce")
+    packed = nonce + ciphertext + tag
     return base64.urlsafe_b64encode(packed).decode("ascii")
 
 

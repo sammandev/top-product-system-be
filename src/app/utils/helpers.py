@@ -196,8 +196,9 @@ def _detect_csv_separator(sample_text: str) -> str:
 def _detect_encoding(b: bytes) -> str:
     try:
         guess = chardet.detect(b)
-        if guess and guess.get("encoding"):
-            return guess["encoding"]
+        encoding = guess.get("encoding")
+        if isinstance(encoding, str) and encoding:
+            return encoding
     except Exception:
         pass
     return "utf-8"

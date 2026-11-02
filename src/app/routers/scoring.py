@@ -5,7 +5,7 @@ API endpoints for the test item scoring system.
 """
 
 import logging
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/scoring", tags=["Scoring"])
 
 
-def _raise_scoring_error(detail: str, exc: Exception, status_code: int) -> None:
+def _raise_scoring_error(detail: str, exc: Exception, status_code: int) -> NoReturn:
     logger.exception("%s", detail)
     raise HTTPException(status_code=status_code, detail=detail) from exc
 

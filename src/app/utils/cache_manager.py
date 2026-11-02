@@ -9,8 +9,18 @@ import logging
 from typing import Any
 
 from fastapi_cache import FastAPICache
+from fastapi_cache.backends.redis import RedisBackend
 
 logger = logging.getLogger(__name__)
+
+
+def _get_redis_backend() -> RedisBackend | None:
+    backend = FastAPICache.get_backend()
+    if not backend:
+        return None
+    if not isinstance(backend, RedisBackend):
+        raise TypeError("Cache backend does not expose a Redis client")
+    return backend
 
 
 async def get_cache_stats() -> dict[str, Any]:
@@ -25,7 +35,7 @@ async def get_cache_stats() -> dict[str, Any]:
         - connection_status: Redis connection status
     """
     try:
-        backend = FastAPICache.get_backend()
+        backend = _get_redis_backend()
         if not backend:
             return {
                 "status": "disabled",
@@ -85,7 +95,7 @@ async def clear_cache_by_pattern(pattern: str) -> dict[str, Any]:
         Dictionary with operation results
     """
     try:
-        backend = FastAPICache.get_backend()
+        backend = _get_redis_backend()
         if not backend:
             return {"status": "error", "message": "Cache backend not initialized"}
         
@@ -226,7 +236,7 @@ async def get_cache_keys_info(limit: int = 100) -> dict[str, Any]:
         Dictionary with key information
     """
     try:
-        backend = FastAPICache.get_backend()
+        backend = _get_redis_backend()
         if not backend:
             return {"status": "error", "message": "Cache backend not initialized"}
         
@@ -278,7 +288,7 @@ async def adjust_cache_ttl(pattern: str, new_ttl: int) -> dict[str, Any]:
         Dictionary with operation results
     """
     try:
-        backend = FastAPICache.get_backend()
+        backend = _get_redis_backend()
         if not backend:
             return {"status": "error", "message": "Cache backend not initialized"}
         

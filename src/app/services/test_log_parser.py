@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from statistics import median
+from typing import Any
 
 
 class TestLogParser:
@@ -182,7 +183,7 @@ class TestLogParser:
         return None
 
     @classmethod
-    def parse_file(cls, file_path: str) -> dict[str, any]:
+    def parse_file(cls, file_path: str) -> dict[str, Any]:
         """
         Parse a test log file and extract test items.
 
@@ -216,7 +217,7 @@ class TestLogParser:
         file_path: str,
         criteria_rules: dict[str, "TestLogCriteriaRule"] | None = None,
         show_only_criteria: bool = False,
-    ) -> dict[str, any]:
+    ) -> dict[str, Any]:
         """
         Parse test log file with enhanced metadata, classification, and scoring.
 
@@ -317,7 +318,7 @@ class TestLogParser:
             raise ValueError(f"Failed to extract archive: {str(e)}") from e
 
     @classmethod
-    def parse_archive(cls, archive_path: str) -> dict[str, any]:
+    def parse_archive(cls, archive_path: str) -> dict[str, Any]:
         """
         Extract and parse all .txt files from an archive.
 
@@ -364,7 +365,7 @@ class TestLogParser:
                 shutil.rmtree(temp_dir, ignore_errors=True)
 
     @classmethod
-    def parse_content(cls, content: str, filename: str = "uploaded_file.txt") -> dict[str, any]:
+    def parse_content(cls, content: str, filename: str = "uploaded_file.txt") -> dict[str, Any]:
         """
         Parse test log content and extract test items.
 
@@ -414,7 +415,7 @@ class TestLogParser:
         filename: str = "uploaded_file.txt",
         criteria_rules: dict | None = None,
         show_only_criteria: bool = False,
-    ) -> dict[str, any]:
+    ) -> dict[str, Any]:
         """
         Parse test log content with enhanced metadata, classification, and scoring.
 
@@ -771,7 +772,7 @@ class TestLogParser:
         return test_item, usl, lsl, value
 
     @classmethod
-    def compare_files(cls, file_paths: list[str]) -> dict[str, any]:
+    def compare_files(cls, file_paths: list[str]) -> dict[str, Any]:
         """
         Compare test items across multiple files (optimized for batch processing).
 
@@ -847,7 +848,7 @@ class TestLogParser:
         file_paths: list[str],
         criteria_rules: dict | None = None,
         show_only_criteria: bool = False,
-    ) -> dict[str, any]:
+    ) -> dict[str, Any]:
         """
         Compare test items across multiple files with enhanced per-ISN deviations and scoring.
 
@@ -1053,11 +1054,11 @@ class TestLogParser:
 
         # Calculate PA ADJUSTED_POW for comparison mode
         # Process each file to create adjusted items
-        adjusted_items_by_file = []  # List of {file_idx: int, adjusted_items: []}
+        adjusted_items_by_file: list[tuple[int, list[dict[str, Any]]]] = []
 
         for file_idx, parsed in enumerate(parsed_files):
             pa_srom_pairs = cls._pair_pa_srom_items(parsed["parsed_items_enhanced"])
-            file_adjusted = []
+            file_adjusted: list[dict[str, Any]] = []
 
             for base_key, (old_item, new_item) in pa_srom_pairs.items():
                 adjusted_item = cls._create_adjusted_pow_item(base_key, old_item, new_item)
@@ -1067,16 +1068,16 @@ class TestLogParser:
                     file_adjusted.append(adjusted_item)
 
             if file_adjusted:
-                adjusted_items_by_file.append({"file_idx": file_idx, "items": file_adjusted})
+                adjusted_items_by_file.append((file_idx, file_adjusted))
 
         # Group adjusted items by test_item across files
-        adjusted_items_grouped = {}
-        for file_data in adjusted_items_by_file:
-            for item in file_data["items"]:
+        adjusted_items_grouped: dict[str, list[dict[str, Any]]] = {}
+        for file_idx, file_items in adjusted_items_by_file:
+            for item in file_items:
                 test_item = item["test_item"]
                 if test_item not in adjusted_items_grouped:
                     adjusted_items_grouped[test_item] = []
-                adjusted_items_grouped[test_item].append({"file_idx": file_data["file_idx"], "isn": item["isn"], "value": item["value"], "numeric_value": item["numeric_value"], "is_calculated": True})
+                adjusted_items_grouped[test_item].append({"file_idx": file_idx, "isn": item["isn"], "value": item["value"], "numeric_value": item["numeric_value"], "is_calculated": True})
 
         # Create comparison items for adjusted power
         pa_order = len(ordered_test_items)

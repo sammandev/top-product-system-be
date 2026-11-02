@@ -8,6 +8,7 @@ from pwdlib import PasswordHash
 from pwdlib.hashers.argon2 import Argon2Hasher
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_attribute
 
 from app.models.user import User
 from app.utils.admin_access import is_user_admin
@@ -47,7 +48,7 @@ def _uses_default_jwt_secret(secret: str | None) -> bool:
 
 def get_jwt_secret() -> str:
     secret = os.environ.get("JWT_SECRET")
-    if _uses_default_jwt_secret(secret):
+    if secret is None or _uses_default_jwt_secret(secret):
         if _normalized_environment() in STRICT_ENVIRONMENTS:
             raise RuntimeError("JWT_SECRET must be configured to a non-default value in staging and production")
         logger.warning("JWT_SECRET is not configured; using the development fallback secret")
@@ -132,7 +133,8 @@ def decode_jwt_token(token: str, expected_type: str | None = "access") -> tuple[
         return None, False
     if expected_type is not None and payload.get("type") != expected_type:
         return None, False
-    return payload.get("sub"), bool(payload.get("admin"))
+    username = payload.get("sub")
+    return (username if isinstance(username, str) else None), bool(payload.get("admin"))
 
 
 def normalize_username(username: str) -> str:
@@ -150,8 +152,8 @@ def create_user(db: Session, username: str, password: str, is_admin: bool = Fals
     normalized = normalize_username(username)
     user = get_user(db, normalized)
     if user:
-        user.password_hash = hash_password(password)
-        user.is_admin = is_admin
+        set_attribute(user, "password_hash", hash_password(password))
+        set_attribute(user, "is_admin", is_admin)
     else:
         user = User(username=normalized, password_hash=hash_password(password), is_admin=is_admin)
         db.add(user)
@@ -164,14 +166,18 @@ def authenticate_user(db: Session, username: str, password: str) -> User | None:
     user = get_user(db, username)
     if not user or not user.is_active:
         return None
-    if verify_password(password, user.password_hash):
+    password_hash = getattr(user, "password_hash", None)
+    if isinstance(password_hash, str) and verify_password(password, password_hash):
         return user
     return None
 
 
 def revoke_user_tokens(db: Session, user: User):
     """Increment token_version to invalidate all existing tokens (access & refresh)."""
-    user.token_version += 1
+    token_version = getattr(user, "token_version", None)
+    if not isinstance(token_version, int):
+        raise TypeError("User token_version must be an integer")
+    set_attribute(user, "token_version", token_version + 1)
     db.add(user)
     db.commit()
     db.refresh(user)

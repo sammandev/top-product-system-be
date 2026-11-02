@@ -17,6 +17,40 @@ logger = logging.getLogger(__name__)
 _cache = get_cache_service()
 
 
+def _entity_id(record: dict[str, Any]) -> int | None:
+    record_id = record.get("id")
+    if isinstance(record_id, int):
+        return record_id
+    if isinstance(record_id, str) and record_id.isdigit():
+        return int(record_id)
+    return None
+
+
+def _find_entity(records: list[dict[str, Any]], record_id: int, entity: str) -> dict[str, Any]:
+    for record in records:
+        if _entity_id(record) == record_id:
+            return record
+    raise LookupError(f"{entity} {record_id} was not found")
+
+
+async def _get_models(client: DUTAPIClient) -> list[dict[str, Any]]:
+    models: list[dict[str, Any]] = []
+    for site in await client.get_sites():
+        site_id = _entity_id(site)
+        if site_id is not None:
+            models.extend(await client.get_models_by_site(site_id))
+    return models
+
+
+async def _get_stations(client: DUTAPIClient) -> list[dict[str, Any]]:
+    stations: list[dict[str, Any]] = []
+    for model in await _get_models(client):
+        model_id = _entity_id(model)
+        if model_id is not None:
+            stations.extend(await client.get_stations_by_model(model_id))
+    return stations
+
+
 async def cached_get_sites(client: DUTAPIClient) -> list[dict[str, Any]]:
     """Get all sites with caching."""
 
@@ -33,8 +67,8 @@ async def cached_get_sites(client: DUTAPIClient) -> list[dict[str, Any]]:
 async def cached_get_site_by_id(client: DUTAPIClient, site_id: int) -> dict[str, Any]:
     """Get site by ID with caching."""
 
-    async def fetch(sid: int):
-        return await client.get_site_by_id(sid)
+    async def fetch(sid: int) -> dict[str, Any]:
+        return _find_entity(await client.get_sites(), sid, "Site")
 
     return await _cache.get_or_fetch(
         "dut:sites",
@@ -47,8 +81,8 @@ async def cached_get_site_by_id(client: DUTAPIClient, site_id: int) -> dict[str,
 async def cached_get_models(client: DUTAPIClient) -> list[dict[str, Any]]:
     """Get all models with caching."""
 
-    async def fetch():
-        return await client.get_models()
+    async def fetch() -> list[dict[str, Any]]:
+        return await _get_models(client)
 
     return await _cache.get_or_fetch(
         "dut:models",
@@ -60,8 +94,8 @@ async def cached_get_models(client: DUTAPIClient) -> list[dict[str, Any]]:
 async def cached_get_model_by_id(client: DUTAPIClient, model_id: int) -> dict[str, Any]:
     """Get model by ID with caching."""
 
-    async def fetch(mid: int):
-        return await client.get_model_by_id(mid)
+    async def fetch(mid: int) -> dict[str, Any]:
+        return _find_entity(await _get_models(client), mid, "Model")
 
     return await _cache.get_or_fetch(
         "dut:models",
@@ -74,8 +108,8 @@ async def cached_get_model_by_id(client: DUTAPIClient, model_id: int) -> dict[st
 async def cached_get_stations(client: DUTAPIClient) -> list[dict[str, Any]]:
     """Get all stations with caching."""
 
-    async def fetch():
-        return await client.get_stations()
+    async def fetch() -> list[dict[str, Any]]:
+        return await _get_stations(client)
 
     return await _cache.get_or_fetch(
         "dut:stations",
@@ -87,8 +121,8 @@ async def cached_get_stations(client: DUTAPIClient) -> list[dict[str, Any]]:
 async def cached_get_station_by_id(client: DUTAPIClient, station_id: int) -> dict[str, Any]:
     """Get station by ID with caching."""
 
-    async def fetch(sid: int):
-        return await client.get_station_by_id(sid)
+    async def fetch(sid: int) -> dict[str, Any]:
+        return _find_entity(await _get_stations(client), sid, "Station")
 
     return await _cache.get_or_fetch(
         "dut:stations",
@@ -106,8 +140,8 @@ async def cached_get_dut_records(
 ) -> dict[str, Any]:
     """Get DUT records with caching."""
 
-    async def fetch(isn: str, site_id: int | None = None, model_id: int | None = None):
-        return await client.get_dut_records(isn, site_id, model_id)
+    async def fetch(isn: str, site_id: int | None = None, model_id: int | None = None) -> dict[str, Any]:
+        return await client.get_dut_records(isn)
 
     return await _cache.get_or_fetch(
         "dut:records",
@@ -127,8 +161,8 @@ async def cached_get_dut_summary(
 ) -> dict[str, Any]:
     """Get DUT summary with caching."""
 
-    async def fetch(isn: str, site_id: int | None = None, model_id: int | None = None):
-        return await client.get_dut_summary(isn, site_id, model_id)
+    async def fetch(isn: str, site_id: int | None = None, model_id: int | None = None) -> dict[str, Any]:
+        return await client.get_complete_dut_info(isn)
 
     return await _cache.get_or_fetch(
         "dut:summary",

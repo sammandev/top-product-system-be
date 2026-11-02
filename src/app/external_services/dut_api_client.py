@@ -245,12 +245,16 @@ class DUTAPIClient:
             self.get_sites(),
             return_exceptions=True,
         )
-        if isinstance(records_result, Exception):
+        if isinstance(records_result, BaseException):
+            if not isinstance(records_result, Exception):
+                raise records_result
             logger.error("Error getting DUT records for %s: %s", dut_id, records_result)
         else:
             result["dut_records"] = records_result
 
-        if isinstance(sites_result, Exception):
+        if isinstance(sites_result, BaseException):
+            if not isinstance(sites_result, Exception):
+                raise sites_result
             logger.error("Error getting sites: %s", sites_result)
             return result
 

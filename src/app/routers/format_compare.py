@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from app.utils.format_compare import (
     augment_for_human,
@@ -53,6 +54,7 @@ def _raise_format_compare_error(detail: str, exc: Exception, status_code: int = 
     },
 )
 async def compare_formats(
+    request: Request,
     master_file: UploadFile = _UPLOAD_REQUIRED,
     dvt_file: UploadFile = _UPLOAD_REQUIRED,
     threshold: float | None = Form(
@@ -76,7 +78,6 @@ async def compare_formats(
         False,
         description="Return XLSX file instead of CSV (only when human=True) (e.g., true)",
     ),
-    request: Request = None,
 ):
     try:
         raw_master = await master_file.read()
@@ -99,10 +100,10 @@ async def compare_formats(
             else:
                 # pick first UploadFile in form values with non-empty filename
                 for v in form.values():
-                    if hasattr(v, "filename") and v.filename:
+                    if isinstance(v, StarletteUploadFile) and v.filename:
                         candidate = v
                         break
-            if candidate is not None:
+            if isinstance(candidate, StarletteUploadFile):
                 try:
                     # candidate may be an UploadFile with async read
                     try:

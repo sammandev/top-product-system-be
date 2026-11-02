@@ -7,7 +7,7 @@ import csv
 import re
 from difflib import SequenceMatcher
 from io import StringIO
-from typing import Any
+from typing import Any, TypedDict
 
 try:
     from openpyxl import Workbook
@@ -109,7 +109,7 @@ def normalize_bandwidth(bw: str) -> str:
 
 def parse_mastercontrol_text(
     text: str,
-) -> dict[tuple[int, str, int, str, str, str], float]:
+) -> dict[tuple[int, str, int | None, str, str, str], float]:
     """Parse MasterControlV2 text. Returns mapping keyed by (antenna1, metric, freq, std, datarate, bw)
     e.g. (1, 'POW', 2412, '11B', 'CCK11', 'B20') -> 24.41
     """
@@ -297,7 +297,12 @@ def _parse_range_token(tok: str):
     return (None, v)
 
 
-def _matches_spec(spec_for_std: dict, freq: int, bw: str, dr: str):
+def _matches_spec(
+    spec_for_std: dict[str, Any] | None,
+    freq: int,
+    bw: str,
+    dr: str,
+) -> int | None:
     """Find index in spec_for_std that best matches freq/bw/dr. Returns index or None."""
     if not spec_for_std:
         return None
@@ -320,6 +325,20 @@ def _matches_spec(spec_for_std: dict, freq: int, bw: str, dr: str):
     return None
 
 
+def _indexed_spec_value(
+    spec_for_std: dict[str, Any] | None,
+    key: str,
+    index: int,
+) -> str | int | float | None:
+    if spec_for_std is None:
+        return None
+    values = spec_for_std.get(key)
+    if not isinstance(values, (list, tuple)) or not 0 <= index < len(values):
+        return None
+    value = values[index]
+    return value if isinstance(value, (str, int, float)) else None
+
+
 def _freq_within_tolerance(m_freq, d_freq, tol_mhz=2.0):
     try:
         if m_freq is None or d_freq is None:
@@ -337,42 +356,49 @@ def _datarate_similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a_norm, b_norm).ratio()
 
 
+class _SummaryEntry(TypedDict):
+    total: int
+    flagged: int
+    pass_rate: float | None
+
+
 def compute_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Compute aggregated summary per-antenna and per-metric.
     Returns a dict with 'per_antenna' and 'per_metric' aggregates.
     """
-    per_antenna = {}
-    per_metric = {}
+    per_antenna: dict[str, _SummaryEntry] = {}
+    per_metric: dict[str, _SummaryEntry] = {}
     for r in rows:
         ant = f"Ant_{int(r['antenna_dvt']) + 1}"
-        per_antenna.setdefault(ant, {})
+        antenna_summary = per_antenna.setdefault(ant, {"total": 0, "flagged": 0, "pass_rate": None})
         m = r["metric"]
-        per_antenna[ant].setdefault("total", 0)
-        per_antenna[ant].setdefault("flagged", 0)
-        per_antenna[ant]["total"] += 1
+        metric_summary = per_metric.setdefault(m, {"total": 0, "flagged": 0, "pass_rate": None})
+        antenna_summary["total"] += 1
         if r.get("flag"):
-            per_antenna[ant]["flagged"] += 1
-
-        per_metric.setdefault(m, {"total": 0, "flagged": 0})
-        per_metric[m]["total"] += 1
+            antenna_summary["flagged"] += 1
+        metric_summary["total"] += 1
         if r.get("flag"):
-            per_metric[m]["flagged"] += 1
+            metric_summary["flagged"] += 1
 
     # compute rates
     for v in per_antenna.values():
-        total = v.get("total", 0)
-        flagged = v.get("flagged", 0)
+        total = v["total"]
+        flagged = v["flagged"]
         v["pass_rate"] = round(((total - flagged) / total) * 100, 2) if total else None
 
     for v in per_metric.values():
-        total = v.get("total", 0)
-        flagged = v.get("flagged", 0)
+        total = v["total"]
+        flagged = v["flagged"]
         v["pass_rate"] = round(((total - flagged) / total) * 100, 2) if total else None
 
     return {"per_antenna": per_antenna, "per_metric": per_metric}
 
-
-def _check_spec_rule(spec_for_std: dict, index: int, metric: str, value: float) -> bool | None:
+def _check_spec_rule(
+    spec_for_std: dict[str, Any] | None,
+    index: int,
+    metric: str,
+    value: float,
+) -> bool | None:
     """Return True if value is within spec (i.e., OK), False if out-of-spec, or None if no rule."""
     if not spec_for_std or index is None:
         return None
@@ -430,12 +456,14 @@ def _check_spec_rule(spec_for_std: dict, index: int, metric: str, value: float) 
             # interpret single bounds: if tol_min is None -> value <= target + tol_max
             # if tol_max is None -> value >= target + tol_min
             val = float(value)
-            if tol_min is None:
+            if tol_min is None and tol_max is not None:
                 return val <= (target + tol_max)
-            if tol_max is None:
+            if tol_max is None and tol_min is not None:
                 return val >= (target + tol_min)
             # both present: allowed range is [target + tol_min, target + tol_max]
-            return (target + tol_min) <= val <= (target + tol_max)
+            if tol_min is not None and tol_max is not None:
+                return (target + tol_min) <= val <= (target + tol_max)
+            return None
         # fallback: default symmetric tolerance of 0.5 dB
         try:
             return abs(float(value) - target) <= 0.5
@@ -499,7 +527,7 @@ def compare_maps(
     mc2_map,
     dvt_map,
     threshold: float | None = None,
-    spec: dict | None = None,
+    spec: dict[str, dict[str, Any]] | None = None,
     freq_tolerance_mhz: float = 2.0,
 ) -> list[dict[str, Any]]:
     """Compare maps and return a list of comparison dicts, each with metadata.
@@ -580,7 +608,7 @@ def compare_maps(
             # find standard for this comparison (d_std or m_std)
             std_key = (d_std or m_std) or ""
             # try to map to canonical spec key
-            if spec and std_key:
+            if spec and isinstance(std_key, str) and std_key:
                 # ensure standard keys are in the same canonical form (e.g., '11B', '11AC')
                 canonical_std = normalize_standard(std_key)
                 spec_for_std = spec.get(canonical_std) if canonical_std else None
@@ -652,7 +680,7 @@ def compare_maps(
 
 def augment_for_human(
     rows: list[dict[str, Any]],
-    spec: dict | None = None,
+    spec: dict[str, dict[str, Any]] | None = None,
     runtime_margin_threshold: float | None = None,
 ) -> list[dict[str, Any]]:
     """Take compare_maps rows and add human-friendly fields:
@@ -715,8 +743,9 @@ def augment_for_human(
         # find spec index for this row
         spec_for_std = None
         idx = None
-        if spec and rr.get("standard"):
-            canonical = normalize_standard(rr.get("standard"))
+        standard = rr.get("standard")
+        if spec and isinstance(standard, str) and standard:
+            canonical = normalize_standard(standard)
             spec_for_std = spec.get(canonical)
             if spec_for_std:
                 idx = _matches_spec(
@@ -749,7 +778,8 @@ def augment_for_human(
                 # retrieve target and tolerance
                 tp = None
                 try:
-                    tp = float(spec_for_std.get("tx_target_power")[idx])
+                    target_value = _indexed_spec_value(spec_for_std, "tx_target_power", idx)
+                    tp = float(target_value) if target_value is not None else None
                 except Exception:
                     tp = None
                 tol_val = None
@@ -791,7 +821,12 @@ def augment_for_human(
             left_dvt, right_dvt = calc_pair_value(dvt_val, usl, lsl)
             # compute display against target when target exists
             try:
-                target = float(spec_for_std.get("tx_target_power")[idx]) if spec_for_std and idx is not None else None
+                target_value = (
+                    _indexed_spec_value(spec_for_std, "tx_target_power", idx)
+                    if spec_for_std and idx is not None
+                    else None
+                )
+                target = float(target_value) if target_value is not None else None
             except Exception:
                 target = None
             if target is not None:
@@ -831,7 +866,9 @@ def augment_for_human(
             key = "tx_evm_limit" if metric == "EVM" else "tx_mask_limit"
             if spec_for_std and idx is not None:
                 try:
-                    usl_raw = spec_for_std.get(key)[idx]
+                    usl_raw = _indexed_spec_value(spec_for_std, key, idx)
+                    if usl_raw is None:
+                        raise ValueError(f"Missing spec value for {key}")
                     usl = float(usl_raw)
                 except Exception:
                     usl = None
@@ -851,7 +888,9 @@ def augment_for_human(
             key = "tx_freq_err_limit" if metric == "FREQ" else "tx_lo_leakage_limit"
             if spec_for_std and idx is not None:
                 try:
-                    raw = spec_for_std.get(key)[idx]
+                    raw = _indexed_spec_value(spec_for_std, key, idx)
+                    if raw is None:
+                        raise ValueError(f"Missing spec value for {key}")
                     mn, mx = parse_range_token(raw)
                     usl = mx
                     lsl = mn
@@ -1023,7 +1062,7 @@ def write_human_xlsx(
     - Accept either a file path (str/Path) or a writable binary file-like (e.g., BytesIO). If a file-like is
       provided, write to it in-memory and return bytes. If a path string is provided, return default.
     """
-    if Workbook is None:
+    if Workbook is None or PatternFill is None or Font is None:
         raise RuntimeError("openpyxl is required to write XLSX files")
 
     wb = Workbook()
@@ -1077,7 +1116,8 @@ def write_human_xlsx(
         else:
             test_mode = "Others"
 
-        ant_label = int(r.get("antenna_dvt")) + 1 if r.get("antenna_dvt") is not None else ""
+        antenna_dvt = r.get("antenna_dvt")
+        ant_label = int(antenna_dvt) + 1 if isinstance(antenna_dvt, (int, str)) else ""
 
         # arrange values to match new header order
         mc2_val_disp = format_minimal_number(r.get("mc2_value")) if r.get("mc2_value") is not None else "N/A"

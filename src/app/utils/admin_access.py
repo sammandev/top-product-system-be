@@ -25,6 +25,16 @@ def _normalize_worker_id(worker_id: str | None) -> str:
     return (worker_id or "").strip().upper()
 
 
+def _user_username(user: User) -> str | None:
+    username = getattr(user, "username", None)
+    return username if isinstance(username, str) else None
+
+
+def _user_worker_id(user: User) -> str | None:
+    worker_id = getattr(user, "worker_id", None)
+    return worker_id if isinstance(worker_id, str) else None
+
+
 def is_developer_identity(username: str | None, worker_id: str | None) -> bool:
     """Check if the given identity matches a hardcoded developer identity."""
     if _normalize_username(username) in DEVELOPER_USERNAMES:
@@ -37,7 +47,7 @@ def is_developer_identity(username: str | None, worker_id: str | None) -> bool:
 def is_developer_user(user: User) -> bool:
     """Check if user has the developer role (highest privilege)."""
     return getattr(user, "role", None) == UserRole.developer or is_developer_identity(
-        user.username, getattr(user, "worker_id", None)
+        _user_username(user), _user_worker_id(user)
     )
 
 
@@ -67,10 +77,10 @@ def is_user_admin(user: User) -> bool:
     if user.is_admin or user.is_ptb_admin:
         return True
 
-    if _normalize_username(user.username) in ADMIN_USERNAMES:
+    if _normalize_username(_user_username(user)) in ADMIN_USERNAMES:
         return True
 
-    if _normalize_worker_id(getattr(user, "worker_id", None)) in ADMIN_WORKER_IDS:
+    if _normalize_worker_id(_user_worker_id(user)) in ADMIN_WORKER_IDS:
         return True
 
     return False

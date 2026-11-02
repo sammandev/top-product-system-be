@@ -138,10 +138,10 @@ async def get_activity_list(
         activities = []
         for product in top_products:
             # Determine activity title and description
-            if product.pass_count > 0 and product.fail_count == 0:
+            if product.pass_count is not None and product.pass_count > 0 and product.fail_count == 0:
                 status = "PASS"
                 description = f"DUT {product.dut_isn} tested at {product.station_name} - All tests passed (Score: {product.score:.2f})"
-            elif product.fail_count > 0:
+            elif product.fail_count is not None and product.fail_count > 0:
                 status = "FAIL"
                 description = f"DUT {product.dut_isn} tested at {product.station_name} - {product.fail_count} failures (Score: {product.score:.2f})"
             else:

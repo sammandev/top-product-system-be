@@ -588,7 +588,9 @@ class SfistspApiClient:
         # Convert exceptions to error responses
         final_results: list[SfistspIsnReference] = []
         for i, result in enumerate(results):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
+                if not isinstance(result, Exception):
+                    raise result
                 final_results.append(SfistspIsnReference(
                     isn=isns[i],
                     success=False,

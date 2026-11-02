@@ -34,7 +34,10 @@ def get_current_user(
     if not payload or payload.get("type") != "access":
         raise HTTPException(401, "invalid or expired token", headers={"WWW-Authenticate": "Bearer"})
 
-    user = get_user(db, payload.get("sub"))
+    subject = payload.get("sub")
+    if not isinstance(subject, str) or not subject:
+        raise HTTPException(401, "invalid or expired token", headers={"WWW-Authenticate": "Bearer"})
+    user = get_user(db, subject)
     if not user:
         raise HTTPException(401, "user not found or inactive")
 

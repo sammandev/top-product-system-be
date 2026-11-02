@@ -6,10 +6,10 @@ by using loose matching when exact ISN matching fails.
 """
 
 import asyncio
-from types import SimpleNamespace
 
 import pytest
 
+from app.external_services.dut_api_client import DUTAPIClient
 from app.routers import external_api_client as external_api_router
 from app.routers.external_api_client import (
     _match_station_entry,
@@ -201,7 +201,7 @@ async def test_device_catalog_fetches_metadata_with_bounded_concurrency(monkeypa
     monkeypatch.setattr(external_api_router, "_get_cached_stations", get_stations)
     monkeypatch.setattr(external_api_router, "_get_cached_station_devices", get_devices)
 
-    catalog = await external_api_router._get_device_catalog(SimpleNamespace(base_url="http://dut"))
+    catalog = await external_api_router._get_device_catalog(DUTAPIClient(base_url="http://dut"))
 
     assert max_active_calls == 3
     assert len(catalog["by_id"]) == 6

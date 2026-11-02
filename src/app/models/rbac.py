@@ -1,7 +1,14 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from sqlalchemy import Column, ForeignKey, Integer, String, Table, UniqueConstraint
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+
+if TYPE_CHECKING:
+    from app.models.user import User
 
 user_roles = Table(
     "user_roles",
@@ -24,16 +31,16 @@ role_permissions = Table(
 
 class Role(Base):
     __tablename__ = "roles"
-    id = Column(Integer, primary_key=True)
-    name = Column(String(64), unique=True, nullable=False, index=True)
-    description = Column(String(256), default="")
-    users = relationship("User", secondary=user_roles, back_populates="roles", lazy="selectin")
-    permissions = relationship("Permission", secondary=role_permissions, back_populates="roles", lazy="selectin")
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    description: Mapped[str | None] = mapped_column(String(256), default="")
+    users: Mapped[list[User]] = relationship("User", secondary=user_roles, back_populates="roles", lazy="selectin")
+    permissions: Mapped[list[Permission]] = relationship("Permission", secondary=role_permissions, back_populates="roles", lazy="selectin")
 
 
 class Permission(Base):
     __tablename__ = "permissions"
-    id = Column(Integer, primary_key=True)
-    name = Column(String(64), unique=True, nullable=False, index=True)
-    description = Column(String(256), default="")
-    roles = relationship("Role", secondary=role_permissions, back_populates="permissions", lazy="selectin")
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    description: Mapped[str | None] = mapped_column(String(256), default="")
+    roles: Mapped[list[Role]] = relationship("Role", secondary=role_permissions, back_populates="permissions", lazy="selectin")

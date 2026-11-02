@@ -2,6 +2,7 @@ import os
 
 import pytest
 import requests
+from sqlalchemy import insert
 from sqlalchemy.exc import IntegrityError
 
 from app.db import Base, engine
@@ -20,7 +21,7 @@ def setup_test_db():
     try:
         # Use SQL to insert to avoid ORM session complexities in tests
         conn.execute(
-            User.__table__.insert(),
+            insert(User),
             [
                 {
                     "username": "testuser",

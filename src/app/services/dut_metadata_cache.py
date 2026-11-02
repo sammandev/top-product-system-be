@@ -49,7 +49,7 @@ def get_cached(key: str) -> Any | None:
     if _redis_client is not None:
         try:
             payload = _redis_client.get(key)
-            if payload is None:
+            if not isinstance(payload, (str, bytes, bytearray)):
                 return None
             value = json.loads(payload)
             _local_cache[key] = (now + DEFAULT_TTL, value)

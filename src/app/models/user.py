@@ -1,12 +1,18 @@
+from __future__ import annotations
+
 import enum
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, Boolean, Column, DateTime, Enum, Integer, String
+from sqlalchemy import JSON, Boolean, DateTime, Enum, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 from app.models.rbac import user_roles
+
+if TYPE_CHECKING:
+    from app.models.rbac import Role
 
 
 def _utc_now():
@@ -74,21 +80,21 @@ def get_default_menu_permissions() -> dict[str, list[str]]:
 
 class User(Base):
     __tablename__ = "users"
-    id = Column(Integer, primary_key=True, index=True)
-    username = Column(String(150), unique=True, index=True, nullable=False)
-    password_hash = Column(String(256), nullable=False)
-    email = Column(String(255), nullable=True)  # Optional email field
-    worker_id = Column(String(64), nullable=True)  # External worker_id (from DUT API)
-    is_admin = Column(Boolean, default=False)  # Local admin privileges (manually granted)
-    is_ptb_admin = Column(Boolean, default=False)  # External PTB admin status (synced from external API)
-    is_superuser = Column(Boolean, default=False)  # Synced from external API (is_superuser)
-    is_staff = Column(Boolean, default=False)  # Synced from external API (is_staff)
-    is_active = Column(Boolean, default=True)
-    role = Column(Enum(UserRole), default=UserRole.user, nullable=False, server_default="user")  # Access control role
-    menu_permissions = Column(JSON().with_variant(JSONB(), "postgresql"), nullable=True)  # Per-resource CRUD permissions dict
-    permission_updated_at = Column(DateTime, nullable=True)  # When permissions were last changed
-    token_version = Column(Integer, default=1, nullable=False)
-    last_login = Column(DateTime, nullable=True)  # Track last login time
-    created_at = Column(DateTime, default=_utc_now, nullable=False)  # Track creation time
-    updated_at = Column(DateTime, default=_utc_now, onupdate=_utc_now, nullable=False)  # Track update time
-    roles = relationship("Role", secondary=user_roles, back_populates="users", lazy="selectin")
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    username: Mapped[str] = mapped_column(String(150), unique=True, index=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)  # Optional email field
+    worker_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # External worker_id (from DUT API)
+    is_admin: Mapped[bool | None] = mapped_column(Boolean, default=False)  # Local admin privileges (manually granted)
+    is_ptb_admin: Mapped[bool | None] = mapped_column(Boolean, default=False)  # External PTB admin status (synced from external API)
+    is_superuser: Mapped[bool | None] = mapped_column(Boolean, default=False)  # Synced from external API (is_superuser)
+    is_staff: Mapped[bool | None] = mapped_column(Boolean, default=False)  # Synced from external API (is_staff)
+    is_active: Mapped[bool | None] = mapped_column(Boolean, default=True)
+    role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.user, nullable=False, server_default="user")  # Access control role
+    menu_permissions: Mapped[dict[str, list[str]] | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"), nullable=True)
+    permission_updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # When permissions were last changed
+    token_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    last_login: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # Track last login time
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now, nullable=False)  # Track creation time
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now, onupdate=_utc_now, nullable=False)  # Track update time
+    roles: Mapped[list[Role]] = relationship("Role", secondary=user_roles, back_populates="users", lazy="selectin")

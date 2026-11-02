@@ -105,22 +105,7 @@ async def list_access_control_users(
         user_list = []
         for u in users:
             user_list.append(
-                AccessControlUserSchema(
-                    id=u.id,
-                    username=u.username,
-                    email=u.email,
-                    worker_id=u.worker_id,
-                    is_admin=u.is_admin,
-                    is_ptb_admin=u.is_ptb_admin,
-                    is_superuser=u.is_superuser,
-                    is_staff=u.is_staff,
-                    is_active=u.is_active,
-                    role=u.role.value if u.role else "user",
-                    menu_permissions=u.menu_permissions,
-                    permission_updated_at=u.permission_updated_at,
-                    last_login=u.last_login,
-                    created_at=u.created_at,
-                )
+                AccessControlUserSchema.model_validate(u, from_attributes=True)
             )
 
         return AccessControlUserListResponse(
@@ -280,22 +265,7 @@ async def update_user_access(
 
         logger.info(f"Access settings updated for {target_user.username} (ID: {target_user.id}) by {current_user.username}")
 
-        return AccessControlUserSchema(
-            id=target_user.id,
-            username=target_user.username,
-            email=target_user.email,
-            worker_id=target_user.worker_id,
-            is_admin=target_user.is_admin,
-            is_ptb_admin=target_user.is_ptb_admin,
-            is_superuser=target_user.is_superuser,
-            is_staff=target_user.is_staff,
-            is_active=target_user.is_active,
-            role=target_user.role.value if target_user.role else "user",
-            menu_permissions=target_user.menu_permissions,
-            permission_updated_at=target_user.permission_updated_at,
-            last_login=target_user.last_login,
-            created_at=target_user.created_at,
-        )
+        return AccessControlUserSchema.model_validate(target_user, from_attributes=True)
 
     except HTTPException:
         raise

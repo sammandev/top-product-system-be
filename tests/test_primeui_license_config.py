@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.db import Base
 from app.models.app_config import AppConfig
+from app.models.user import User, UserRole
 from app.routers.app_config import (
     get_primeui_license_runtime,
     get_primeui_license_status,
@@ -49,7 +50,7 @@ def db_session():
 def test_primeui_license_is_encrypted_masked_and_available_at_runtime(db_session: Session) -> None:
     license_key = make_license()
     settings = SimpleNamespace(app_name="Test App")
-    developer = SimpleNamespace(username="developer", worker_id=None, role="developer")
+    developer = User(username="developer", worker_id=None, role=UserRole.developer)
 
     status = update_primeui_license(
         PrimeUILicenseUpdateRequest(license_key=license_key),
@@ -84,7 +85,7 @@ def test_primeui_license_rejects_invalid_claims(
     expected_detail: str,
 ) -> None:
     settings = SimpleNamespace(app_name="Test App")
-    developer = SimpleNamespace(username="developer", worker_id=None, role="developer")
+    developer = User(username="developer", worker_id=None, role=UserRole.developer)
 
     with pytest.raises(HTTPException) as exc_info:
         update_primeui_license(
@@ -100,7 +101,7 @@ def test_primeui_license_rejects_invalid_claims(
 
 def test_primeui_license_update_requires_superadmin(db_session: Session) -> None:
     settings = SimpleNamespace(app_name="Test App")
-    admin = SimpleNamespace(username="admin", worker_id=None, role="admin")
+    admin = User(username="admin", worker_id=None, role=UserRole.admin)
 
     with pytest.raises(HTTPException) as exc_info:
         update_primeui_license(
@@ -125,7 +126,7 @@ def test_expired_stored_license_remains_visible_but_not_runtime_active(db_sessio
     db_session.add(config)
     db_session.commit()
     settings = SimpleNamespace(app_name="Test App")
-    developer = SimpleNamespace(username="developer", worker_id=None, role="developer")
+    developer = User(username="developer", worker_id=None, role=UserRole.developer)
 
     status = get_primeui_license_status(db_session, developer, settings)
 

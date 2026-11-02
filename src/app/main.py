@@ -5,16 +5,18 @@ import os
 import warnings
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
+from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.openapi.docs import get_swagger_ui_html, get_swagger_ui_oauth2_redirect_html
+from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi_cache import FastAPICache
 from fastapi_cache.backends.redis import RedisBackend
 from redis import asyncio as aioredis
 from starlette.staticfiles import StaticFiles
+
 try:
     import sentry_sdk
     from sentry_sdk.integrations.fastapi import FastApiIntegration
@@ -22,16 +24,15 @@ except ImportError:  # pragma: no cover - optional dependency
     sentry_sdk = None
     FastApiIntegration = None
 try:
-    from swagger_ui_bundle import swagger_ui_5_path
-except (ImportError, AttributeError):  # pragma: no cover - optional dependency for offline Swagger
-    # Fallback: try to find swagger-ui-dist package path
-    try:
-        import swagger_ui_bundle
+    import swagger_ui_bundle
+
+    swagger_ui_5_path = getattr(swagger_ui_bundle, "swagger_ui_5_path", None)
+    if swagger_ui_5_path is None:
         swagger_ui_5_path = os.path.join(os.path.dirname(swagger_ui_bundle.__file__), "vendor", "swagger-ui-5.18.2")
         if not os.path.exists(swagger_ui_5_path):
             swagger_ui_5_path = None
-    except Exception:
-        swagger_ui_5_path = None
+except ImportError:  # pragma: no cover - optional dependency for offline Swagger
+    swagger_ui_5_path = None
 try:
     from fastapi_mcp import AuthConfig, FastApiMCP
 except ImportError:  # pragma: no cover - optional dependency
@@ -41,8 +42,8 @@ except ImportError:  # pragma: no cover - optional dependency
 # Load local env before importing app modules that read env at import time.
 load_dotenv()
 
-from app.dependencies.external_api_client import get_settings
 from app.dependencies.authz import get_current_user
+from app.dependencies.external_api_client import get_settings
 from app.utils.auth import validate_auth_configuration
 from app.utils.helpers import _start_cleanup_worker
 
@@ -207,7 +208,7 @@ settings = get_settings()
 if sentry_sdk is not None and os.getenv("SENTRY_DSN"):
     sentry_sdk.init(
         dsn=os.getenv("SENTRY_DSN"),
-        integrations=[FastApiIntegration()] if FastApiIntegration else None,
+        integrations=[FastApiIntegration()] if FastApiIntegration else [],
         traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0")),
         environment=os.getenv("ENVIRONMENT", "local"),
         release=os.getenv("APP_VERSION", None),
@@ -230,7 +231,12 @@ tags_metadata = [
 
 use_local_swagger = swagger_ui_5_path is not None
 
-app = FastAPI(
+class _Application(FastAPI):
+    def openapi(self) -> dict[str, Any]:
+        return _custom_openapi(self)
+
+
+app = _Application(
     title=settings.app_name,
     debug=settings.debug,
     openapi_tags=tags_metadata,
@@ -250,13 +256,10 @@ for t in tags_metadata:
         continue
     else:
         new_tags.append(t)
-_original_openapi = app.openapi
-
-
-def _custom_openapi():
+def _custom_openapi(app: FastAPI) -> dict[str, Any]:
     if app.openapi_schema:
         return app.openapi_schema
-    schema = _original_openapi()
+    schema = FastAPI.openapi(app)
     schema["tags"] = new_tags
 
     # Ensure we have a bearer security scheme so Swagger UI shows the Authorize button
@@ -332,12 +335,10 @@ def _custom_openapi():
     return app.openapi_schema
 
 
-app.openapi = _custom_openapi
-
-
 # Mount static files for offline Swagger UI
 # Path resolution: from src/app/main.py go up to project root then to static/
 import pathlib
+
 _project_root = pathlib.Path(__file__).parent.parent.parent
 _static_dir = _project_root / "static"
 if _static_dir.exists():
@@ -349,6 +350,8 @@ else:
 # Custom Swagger UI endpoint using local static files (fully offline)
 @app.get("/swagger", include_in_schema=False)
 async def custom_swagger_ui_html():
+    if app.openapi_url is None:
+        raise HTTPException(status_code=404, detail="OpenAPI schema is disabled")
     return get_swagger_ui_html(
         openapi_url=app.openapi_url,
         title=f"{settings.app_name} - Swagger UI",
@@ -365,8 +368,11 @@ async def redirect_docs():
 # Custom ReDoc endpoint (still needs CDN unless we download redoc standalone)
 from fastapi.openapi.docs import get_redoc_html
 
+
 @app.get("/redoc", include_in_schema=False)
 async def custom_redoc_html():
+    if app.openapi_url is None:
+        raise HTTPException(status_code=404, detail="OpenAPI schema is disabled")
     return get_redoc_html(
         openapi_url=app.openapi_url,
         title=f"{settings.app_name} - ReDoc",

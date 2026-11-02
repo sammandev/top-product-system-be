@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Column, DateTime, Integer, String, func
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, Integer, String, func
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
 
@@ -22,17 +25,17 @@ class CachedTestItem(Base):
     
     __tablename__ = "cached_test_items"
 
-    id = Column(Integer, primary_key=True, index=True)
-    site = Column(String(100), nullable=False, index=True)
-    project = Column(String(100), nullable=False, index=True)
-    station = Column(String(255), nullable=False, index=True)
-    test_item_name = Column(String(255), nullable=False)
-    is_value = Column(Boolean, nullable=False, default=False)
-    is_bin = Column(Boolean, nullable=False, default=False)
-    has_ucl = Column(Boolean, nullable=False, default=False)
-    has_lcl = Column(Boolean, nullable=False, default=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    site: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    project: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    station: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    test_item_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_value: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_bin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    has_ucl: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    has_lcl: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
     def __repr__(self) -> str:
         return f"<CachedTestItem {self.site}/{self.project}/{self.station}: {self.test_item_name}>"

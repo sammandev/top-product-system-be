@@ -86,7 +86,7 @@ class _MockDUTClient:
 
 @pytest.fixture(autouse=True)
 def reset_top_product_tables():
-    tables = [TopProductMeasurement.__table__, TopProduct.__table__]
+    tables = [Base.metadata.tables[TopProductMeasurement.__tablename__], Base.metadata.tables[TopProduct.__tablename__]]
     Base.metadata.drop_all(bind=engine, tables=tables)
     Base.metadata.create_all(bind=engine, tables=tables)
     yield

@@ -171,7 +171,7 @@ async def get_roles(
             perm_names = [p.name for p in role.permissions]
             users_count = len(role.users)
 
-            roles.append(RoleSchema(id=role.id, name=role.name, description=role.description or "", permissions=perm_names, users_count=users_count))
+            roles.append(RoleSchema(id=role.id, name=role.name, permissions=perm_names, users_count=users_count))
 
         # Calculate statistics
         active_users = sum(1 for user in all_users if user.is_active)
@@ -215,7 +215,7 @@ async def create_role(
         db.commit()
         db.refresh(new_role)
 
-        return RoleSchema(id=new_role.id, name=new_role.name, description=new_role.description or "", permissions=[], users_count=0)
+        return RoleSchema(id=new_role.id, name=new_role.name, permissions=[], users_count=0)
 
     except HTTPException:
         raise
@@ -304,7 +304,7 @@ async def update_role(
         db.commit()
         db.refresh(role)
 
-        return RoleSchema(id=role.id, name=role.name, description=role.description or "", permissions=[p.name for p in role.permissions], users_count=len(role.users))
+        return RoleSchema(id=role.id, name=role.name, permissions=[p.name for p in role.permissions], users_count=len(role.users))
 
     except HTTPException:
         raise

@@ -51,7 +51,6 @@ class TestPAEndpointStructure:
                         "WiFi_PA1_ADJUSTED_POW_MID_5985_11AX_MCS9_B80": 0.37,
                         "WiFi_PA1_ADJUSTED_POW_MEAN_5985_11AX_MCS9_B80": 0.35,
                     },
-                    error=None,
                 )
             ],
             time_window_start=datetime(2025, 11, 23, 10, 30, 0),
@@ -82,7 +81,6 @@ class TestPAEndpointStructure:
                         "WiFi_PA1_ADJUSTED_POW_MID_5985_11AX_MCS9_B80": 0.37,
                         "WiFi_PA1_ADJUSTED_POW_MEAN_5985_11AX_MCS9_B80": 0.35,
                     },
-                    error=None,
                 )
             ],
             time_window_start=datetime(2025, 11, 23, 10, 30, 0),
@@ -114,7 +112,6 @@ class TestPAEndpointStructure:
                         "WiFi_PA1_ADJUSTED_POW_MID_5985_11AX_MCS9_B80": 0.37,
                         "WiFi_PA1_ADJUSTED_POW_MEAN_5985_11AX_MCS9_B80": 0.35,
                     },
-                    error=None,
                 ),
                 PAAdjustedPowerTrendItemSchema(
                     test_pattern="WiFi_PA2_6275_11AC_VHT40_MCS9",
@@ -122,7 +119,6 @@ class TestPAEndpointStructure:
                         "WiFi_PA2_ADJUSTED_POW_MID_6275_11AC_VHT40_MCS9": 0.42,
                         "WiFi_PA2_ADJUSTED_POW_MEAN_6275_11AC_VHT40_MCS9": 0.40,
                     },
-                    error=None,
                 ),
             ],
             time_window_start=None,

@@ -18,12 +18,12 @@ import logging
 import os
 import threading
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from hashlib import sha1
-from typing import Any, Literal
+from typing import Any, Literal, Never
 from uuid import uuid4
 
 import httpx
@@ -60,17 +60,17 @@ from app.schemas.iplas_schemas import (
     IplasIsnSearchResponse,
     IplasRecordTestItemsRequest,
     IplasRecordTestItemsResponse,
+    IplasServerTimeResponse,
     IplasSiteProjectListResponse,
+    IplasStation,
+    IplasStationListRequest,
+    IplasStationListResponse,
     IplasStationSearchRunCreateRequest,
     IplasStationSearchRunRecordsRequest,
     IplasStationSearchRunRecordsResponse,
     IplasStationSearchRunResponse,
     IplasStationSearchRunSelection,
     IplasStationSearchRunStationSummary,
-    IplasStation,
-    IplasStationListRequest,
-    IplasStationListResponse,
-    IplasServerTimeResponse,
     IplasStationsFromIsnBatchItem,
     IplasStationsFromIsnBatchRequest,
     IplasStationsFromIsnBatchResponse,
@@ -91,12 +91,12 @@ from app.schemas.iplas_schemas import (
 logger = logging.getLogger(__name__)
 
 
-def _raise_iplas_response_error(response: httpx.Response, detail: str) -> None:
+def _raise_iplas_response_error(response: httpx.Response, detail: str) -> Never:
     logger.error("iPLAS upstream error: status=%s", response.status_code)
     raise HTTPException(status_code=response.status_code, detail=detail)
 
 
-def _raise_iplas_unavailable(detail: str, exc: httpx.RequestError) -> None:
+def _raise_iplas_unavailable(detail: str, exc: httpx.RequestError) -> Never:
     logger.error("%s: %s", detail, exc)
     raise HTTPException(status_code=503, detail=detail) from None
 
@@ -381,7 +381,7 @@ async def close_http_client() -> None:
 
 
 @asynccontextmanager
-async def _pooled_client() -> AsyncIterator[httpx.AsyncClient]:
+async def _pooled_client() -> AsyncGenerator[httpx.AsyncClient]:
     """Yield the shared pooled httpx client.
 
     Drop-in replacement for ``async with httpx.AsyncClient(...) as client:``
@@ -442,6 +442,17 @@ def get_redis_client() -> Redis | None:
 
 async def _get_redis_client_async() -> Redis | None:
     return await asyncio.to_thread(get_redis_client)
+
+
+async def _get_redis_cached_value(redis: Redis, key: str) -> bytes | str | None:
+    value = await asyncio.to_thread(redis.get, key)
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, str):
+        return value
+    raise TypeError("Redis GET returned a value that is not bytes or text")
 
 
 async def close_redis_client() -> None:
@@ -1195,7 +1206,7 @@ async def _fetch_station_bucket_with_cache(
     bucket_window: StationBucketWindow,
     user_token: str | None,
     observable_now: datetime,
-) -> tuple[list[dict[str, Any]], bool, int, int, bool]:
+) -> StationBucketFetchResult:
     """Fetch a station bucket using bucket-aware Redis caching."""
     scope_hash = _build_station_bucket_scope_hash(
         site,
@@ -1767,7 +1778,9 @@ async def _fetch_devices_in_parallel(
     results = await asyncio.gather(*(fetch_device(device_id) for device_id in device_ids), return_exceptions=True)
 
     for result in results:
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
+            if not isinstance(result, Exception):
+                raise result
             logger.error(f"Device fetch failed with exception: {result}")
             continue
         records, truncated = result
@@ -2703,7 +2716,7 @@ async def get_record_test_items(
     # Try cache first
     if redis:
         try:
-            cached_data = redis.get(cache_key)
+            cached_data = await _get_redis_cached_value(redis, cache_key)
             if cached_data:
                 records = json_loads(cached_data)
                 cached = True
@@ -2796,7 +2809,7 @@ async def get_test_item_names(
     # Try cache first
     if redis:
         try:
-            cached_data = redis.get(cache_key)
+            cached_data = await _get_redis_cached_value(redis, cache_key)
             if cached_data:
                 records = json_loads(cached_data)
                 logger.debug(f"Cache HIT (names): {cache_key}")
@@ -3119,7 +3132,7 @@ async def get_site_projects(
     # Try cache first unless caller requests a refresh.
     if redis and not force_refresh:
         try:
-            cached_data = redis.get(cache_key)
+            cached_data = await _get_redis_cached_value(redis, cache_key)
             if cached_data:
                 data = json_loads(cached_data)
                 all_projects = [SiteProject(**item) for item in data]
@@ -3203,7 +3216,7 @@ async def get_stations(
     # Try cache first
     if redis:
         try:
-            cached_data = redis.get(cache_key)
+            cached_data = await _get_redis_cached_value(redis, cache_key)
             if cached_data:
                 data = json_loads(cached_data)
                 stations = [IplasStation(**item) for item in data]
@@ -3278,7 +3291,7 @@ async def get_devices(
     # Try cache first
     if redis:
         try:
-            cached_data = redis.get(cache_key)
+            cached_data = await _get_redis_cached_value(redis, cache_key)
             if cached_data:
                 devices = json_loads(cached_data)
                 cached = True
@@ -3357,7 +3370,7 @@ async def search_by_isn(
     # Try cache first
     if redis:
         try:
-            cached_data = redis.get(cache_key)
+            cached_data = await _get_redis_cached_value(redis, cache_key)
             if cached_data:
                 results = json_loads(cached_data)
                 cached = True
@@ -3421,7 +3434,9 @@ async def search_by_isn(
 
             # Collect results from first site that has data
             for result in site_results:
-                if isinstance(result, Exception):
+                if isinstance(result, BaseException):
+                    if not isinstance(result, Exception):
+                        raise result
                     continue
                 site_name, site_data = result
                 if site_data:
@@ -3481,7 +3496,7 @@ async def search_by_isn_batch(
             # Try cache first
             if redis:
                 try:
-                    cached_data = redis.get(cache_key)
+                    cached_data = await _get_redis_cached_value(redis, cache_key)
                     if cached_data:
                         results = json_loads(cached_data)
                         cached = True
@@ -3546,7 +3561,9 @@ async def search_by_isn_batch(
 
                     # Collect results from first site that has data
                     for site_result in site_results:
-                        if isinstance(site_result, Exception):
+                        if isinstance(site_result, BaseException):
+                            if not isinstance(site_result, Exception):
+                                raise site_result
                             error_msg = str(site_result)
                             continue
                         site_name, site_data = site_result
@@ -3582,7 +3599,9 @@ async def search_by_isn_batch(
     failed_count = 0
 
     for i, result in enumerate(results):
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
+            if not isinstance(result, Exception):
+                raise result
             batch_results.append(
                 IplasIsnSearchBatchItem(
                     isn=request.isns[i],
@@ -3633,7 +3652,7 @@ async def _search_isn_for_project(
     # Try cache first
     if redis:
         try:
-            cached_data = redis.get(cache_key)
+            cached_data = await _get_redis_cached_value(redis, cache_key)
             if cached_data:
                 data = json_loads(cached_data)
                 logger.debug(f"Cache HIT: {cache_key}")
@@ -3726,7 +3745,7 @@ async def _get_stations_for_project(
     # Try cache first
     if redis:
         try:
-            cached_data = redis.get(cache_key)
+            cached_data = await _get_redis_cached_value(redis, cache_key)
             if cached_data:
                 data = json_loads(cached_data)
                 stations = [IplasStation(**item) for item in data]
@@ -4351,7 +4370,7 @@ async def get_test_item_by_isn(
     # Try cache first
     if redis:
         try:
-            cached_data = redis.get(cache_key)
+            cached_data = await _get_redis_cached_value(redis, cache_key)
             if cached_data:
                 data = json_loads(cached_data)
                 results = [IplasTestItemByIsnRecord(**item) for item in data]
@@ -4497,7 +4516,7 @@ async def stream_csv_test_items(
             # Try cache first
             if redis:
                 try:
-                    cached_data = redis.get(cache_key)
+                    cached_data = await _get_redis_cached_value(redis, cache_key)
                     if cached_data:
                         records = json_loads(cached_data)
                         cached = True

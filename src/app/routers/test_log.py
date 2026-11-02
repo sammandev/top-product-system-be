@@ -561,13 +561,16 @@ async def compare_test_logs(
     try:
         # Save all uploaded files temporarily
         for file in files:
-            temp_path = UPLOAD_DIR / file.filename
+            filename = file.filename
+            if not filename:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File with no name provided.")
+            temp_path = UPLOAD_DIR / filename
             with open(temp_path, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
             temp_file_paths.append(temp_path)
 
             # Check if archive
-            if file.filename.lower().endswith((".zip", ".rar", ".7z")):
+            if filename.lower().endswith((".zip", ".rar", ".7z")):
                 # Extract archive and get .txt files
                 extracted_files = TestLogParser.extract_archive(str(temp_path))
 

@@ -343,9 +343,31 @@ backend_fastapi/
 | `make start`     | Uvicorn without reload (staging/production)                           |
 | `make format`    | Ruff format (`uv run ruff format`)                                  |
 | `make lint`      | Ruff lint (`uv run ruff check`)                                     |
+| `uv check`       | Static type checking with ty (experimental uv command)              |
 | `make fix`       | Ruff lint (`uv run ruff check --fix`)                               |
 | `make test`      | Run pytest (`uv run pytest -v`)                                     |
 | `uv run uv lock` | Refresh`uv.lock` and `requirements.txt`                           |
+
+### Type checking versus linting
+
+Run `uv check` from the backend directory. This native uv command runs **ty**,
+not Ruff or the `check` entry in `[tool.uv_scripts]`. Diagnostics identify
+incompatible types, missing imports, and potentially invalid operations; they
+are not a count of runtime crashes. Ruff linting remains a separate check:
+
+```bash
+uv check
+uv run ruff check .
+uv run python -m pytest -q
+```
+
+Only the unrelated bundled `.agents` skill scripts are excluded from ty.
+Application code, migrations, project scripts, and tests remain checked, with
+no diagnostic rules disabled. SQLAlchemy models use `Mapped`/`mapped_column`
+so ty distinguishes instance values from class-level SQL expressions; these
+typing declarations preserve existing database column types and nullability.
+`uv check --preview-features check-command` silences the experimental-command
+notice without suppressing diagnostics.
 
 ---
 

@@ -30,6 +30,7 @@ def _raise_compare_error(exc: Exception) -> None:
     responses={200: {"description": "Comparison payload (rows/summary)"}},
 )
 async def compare(
+    request: Request,
     file_a: str = Form(..., description="First file identifier (from /api/upload-preview) (e.g., 9f2d1c3e_A.csv)"),
     file_b: str = Form(..., description="Second file identifier (from /api/upload-preview) (e.g., 4b7d8e2f_B.csv)"),
     mode: str = Form(..., description="Comparison mode: 'columns', 'rows', or 'both' (e.g., both)"),
@@ -43,7 +44,6 @@ async def compare(
     b_exclude_rows: str | None = Form(None, description="JSON array of row indices to exclude from file B (e.g., [0])"),
     a_join_on: str | None = Form(None, description='JSON array or string of column(s) to join on in file A (e.g., ["ISN"])'),
     b_join_on: str | None = Form(None, description='JSON array or string of column(s) to join on in file B (e.g., ["ISN"])'),
-    request: Request = None,
 ):
     if request is not None and not os.environ.get("ASTPARSER_API_KEY"):
         # keep existing behavior (API key optional)
@@ -105,6 +105,7 @@ async def compare(
     responses={200: {"description": "CSV download of compare results"}},
 )
 async def compare_download(
+    request: Request,
     file_a: str = Form(..., description="First file identifier (from /api/upload-preview) (e.g., 9f2d1c3e_A.csv)"),
     file_b: str = Form(..., description="Second file identifier (from /api/upload-preview) (e.g., 4b7d8e2f_B.csv)"),
     mode: str = Form(..., description="Comparison mode: 'columns', 'rows', or 'both' (e.g., columns)"),
@@ -118,7 +119,6 @@ async def compare_download(
     b_exclude_rows: str | None = Form(None, description="JSON array of row indices to exclude from file B (e.g., [0])"),
     a_join_on: str | None = Form(None, description='JSON array or string of column(s) to join on in file A (e.g., ["ISN"])'),
     b_join_on: str | None = Form(None, description='JSON array or string of column(s) to join on in file B (e.g., ["ISN"])'),
-    request: Request = None,
 ):
     def _loads(s):
         if not s:

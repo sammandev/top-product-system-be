@@ -3,7 +3,7 @@ import os
 from typing import Annotated
 
 import httpx
-from fastapi import APIRouter, Depends, Form, Header, HTTPException, logger
+from fastapi import APIRouter, Depends, Form, Header, HTTPException
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
@@ -20,6 +20,7 @@ from app.utils import auth as auth_utils
 from app.utils.admin_access import is_developer_identity, is_user_admin
 
 router = APIRouter(prefix="/api/auth", tags=["Auth"])
+logger = logging.getLogger(__name__)
 # module-level dependency to avoid calling Depends() inside function defaults
 db_dependency = Depends(get_db)
 dut_client_dependency = Depends(get_dut_client)
@@ -312,7 +313,10 @@ def token_refresh(
     if not payload or payload.get("type") != "refresh":
         raise HTTPException(401, "invalid refresh token", headers={"WWW-Authenticate": "Bearer"})
 
-    user = auth_utils.get_user(db, payload.get("sub"))
+    subject = payload.get("sub")
+    if not isinstance(subject, str) or not subject:
+        raise HTTPException(401, "invalid refresh token", headers={"WWW-Authenticate": "Bearer"})
+    user = auth_utils.get_user(db, subject)
     if not user:
         raise HTTPException(401, "user not found")
 

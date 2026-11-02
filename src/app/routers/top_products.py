@@ -9,7 +9,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 from fastapi_cache.decorator import cache
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import case, desc, func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -225,7 +225,7 @@ async def get_top_products_list(
         # Apply sorting
         sort_column = getattr(TopProduct, sort_by, TopProduct.created_at)
         if sort_desc:
-            query = query.order_by(desc(sort_column))
+            query = query.order_by(sort_column.desc())
         else:
             query = query.order_by(sort_column)
 
@@ -266,7 +266,7 @@ async def get_top_products_list(
                 "created_at": product.created_at,
                 "measurements_count": measurement_counts.get(product.id, 0),
             }
-            products_with_count.append(TopProductSchema(**product_dict))
+            products_with_count.append(TopProductSchema.model_validate(product_dict))
 
         return TopProductListResponse(
             total=total,
@@ -337,7 +337,7 @@ async def get_top_product_detail(
             "measurements": measurements,
         }
 
-        return TopProductDetailSchema(**product_dict)
+        return TopProductDetailSchema.model_validate(product_dict)
 
     except Exception as e:
         logger.error(f"Error fetching top product detail: {e}", exc_info=True)
@@ -432,7 +432,7 @@ async def get_unique_projects(
     """Get unique project names."""
     try:
         projects = db.query(TopProduct.project_name).filter(TopProduct.project_name.isnot(None)).distinct().order_by(TopProduct.project_name).all()
-        return [ProjectOption(value=p[0], label=p[0]) for p in projects]
+        return [ProjectOption(value=p[0], label=p[0]) for p in projects if p[0] is not None]
     except Exception as e:
         logger.error(f"Error fetching projects: {e}", exc_info=True)
         raise

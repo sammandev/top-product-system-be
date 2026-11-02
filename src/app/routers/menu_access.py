@@ -5,7 +5,7 @@ Allows superadmin to control which menus are visible to which roles.
 """
 
 import logging
-from typing import Literal
+from typing import Literal, NotRequired, TypedDict
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -110,7 +110,17 @@ class UserMenusResponse(BaseModel):
 # ============================================================================
 
 
-DEFAULT_MENUS = [
+class _DefaultMenu(TypedDict):
+    menu_key: str
+    title: str
+    path: str
+    icon: str
+    section: str
+    sort_order: int
+    parent_key: NotRequired[str]
+
+
+DEFAULT_MENUS: list[_DefaultMenu] = [
     # Main Section
     {"menu_key": "dashboard", "title": "Dashboard", "path": "/dashboard", "icon": "mdi-view-dashboard", "section": "main", "sort_order": 0},
     {"menu_key": "top-products", "title": "Top Products", "path": "", "icon": "mdi-trophy", "section": "main", "sort_order": 10},
@@ -295,6 +305,8 @@ async def get_all_menus(
         menu_list = []
         for menu in menus:
             role_names = [access.role_name for access in menu.role_access if access.can_view]
+            if menu.icon is None or menu.sort_order is None or menu.is_active is None:
+                raise ValueError(f"Menu {menu.menu_key} has incomplete display settings")
             menu_list.append(
                 MenuItemSchema(
                     id=menu.id,

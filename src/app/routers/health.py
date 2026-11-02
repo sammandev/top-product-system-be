@@ -1,7 +1,7 @@
 # Health check endpoint configuration
 # Add to your FastAPI main.py or create a dedicated health router
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, status
 from fastapi.responses import JSONResponse
@@ -25,7 +25,7 @@ async def health_check():
     """
     health_status = {
         "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(UTC).replace(tzinfo=None).isoformat(),
         "service": "ast-tools-backend",
         "version": "1.0.0",
     }

@@ -6,13 +6,13 @@ import os
 import re
 import traceback
 from collections import defaultdict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path as FilePath
 from statistics import StatisticsError, median
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, TypedDict
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, UploadFile
@@ -778,6 +778,12 @@ class MeasurementScore:
     score_breakdown: dict | None = None
 
 
+class _PaSromItem(TypedDict):
+    name: str
+    hex: str
+    decimal: int
+
+
 _GLOBAL_CRITERIA_KEY = "__global__"
 
 
@@ -799,7 +805,7 @@ class StationEvaluation:
     score: float
     status: int | None
     order: int | None
-    data: list[list[str | int | float | None]]
+    data: list[list[str | float | None]] | list[dict[str, str | float | None | dict]]
     measurements: list[MeasurementScore]
     site_name: str | None
     project_name: str | None
@@ -1086,7 +1092,7 @@ async def get_stations_by_model(
     """
     try:
         site_hint = _select_identifier(site_identifier, label="site")
-        model_id = _select_identifier(model_id, label="model")
+        model_id = _select_identifier(model_id, label="model") or model_id
         resolved_model_id = await _resolve_model_id(client, model_id, site_hint=site_hint)
         stations = await _get_cached_stations(client, resolved_model_id)
         if not isinstance(stations, list):
@@ -1629,9 +1635,10 @@ async def get_station_top_products(
     model_name = metadata.get("model_name") or str(resolved_model_id)
     station_status = metadata.get("station_status")
     station_order = metadata.get("station_order")
-    fallback_model_hint = None
-    if isinstance(metadata.get("model_name"), str) and metadata.get("model_name").strip():
-        fallback_model_hint = _normalize_optional_string(metadata.get("model_name"))
+    fallback_model_hint: str | None = None
+    metadata_model_name = metadata.get("model_name")
+    if isinstance(metadata_model_name, str) and metadata_model_name.strip():
+        fallback_model_hint = _normalize_optional_string(metadata_model_name)
     elif isinstance(model_id, str) and model_id.strip():
         fallback_model_hint = _normalize_optional_string(model_id)
 
@@ -1781,7 +1788,10 @@ async def get_station_top_products(
                 continue
 
         run_index = _find_run_index(station_payload, latest_entry)
-        measurement_matrix = _compress_station_data(station_payload, run_index)
+        measurement_matrix: list[
+            list[str | float | None] | dict[str, str | float | None | dict]
+        ] = []
+        measurement_matrix.extend(_compress_station_data(station_payload, run_index))
 
         # FEATURE: Fetch PA trend measurements and merge into measurement matrix
         # Compares PA trend (historical average) with PA nonvalue (current state)
@@ -1817,7 +1827,7 @@ async def get_station_top_products(
                 exc,
             )
 
-        measurement_rows: list[list[str | float | None]] = []
+        measurement_rows: list[dict[str, str | float | None | dict]] = []
         score_values: list[float] = []
 
         for idx, row in enumerate(measurement_matrix):
@@ -2938,7 +2948,7 @@ async def get_latest_station_nonvalue_bin_record(
     return StationRecordResponseSchema(record=latest_record, data=trimmed_data)
 
 
-def _convert_hex_to_decimal(hex_value: str) -> int | None:
+def _convert_hex_to_decimal(hex_value: str | int | float | None) -> int | None:
     """
     Convert hexadecimal string to decimal integer.
 
@@ -3106,7 +3116,7 @@ def _process_pa_srom_enhanced(validated: StationRecordResponseSchema) -> tuple[l
     from ..schemas.dut_schemas import GenericTestItemSchema, PAAdjustedPowerDataItemSchema, PASROMDataItemSchema
 
     # Step 1: Extract PA SROM items with hex-to-decimal conversion
-    pa_srom_items = {}  # {test_item_name: {"hex": "0x2c89", "decimal": 11190}}
+    pa_srom_items: dict[str, _PaSromItem] = {}
 
     for row in validated.data:
         if not isinstance(row, list) or len(row) < 2:
@@ -3130,21 +3140,25 @@ def _process_pa_srom_enhanced(validated: StationRecordResponseSchema) -> tuple[l
             if not hex_str.lower().startswith("0x"):
                 hex_str = f"0x{hex_str}"
 
-            pa_srom_items[test_item_name] = {"hex": hex_str, "decimal": decimal_value}
+            pa_srom_items[test_item_name] = {
+                "name": test_item_name,
+                "hex": hex_str,
+                "decimal": decimal_value,
+            }
 
     # Step 2: Pair SROM_OLD and SROM_NEW items for adjusted power calculation
-    old_items = {}  # {base_key: {"name": ..., "hex": ..., "decimal": ...}}
-    new_items = {}  # {base_key: {"name": ..., "hex": ..., "decimal": ...}}
+    old_items: dict[str, _PaSromItem] = {}
+    new_items: dict[str, _PaSromItem] = {}
 
     for test_item_name, values in pa_srom_items.items():
         if _is_pa_srom_test_item(test_item_name, "old"):
             # Extract base key: WiFi_PA1_SROM_OLD_5985... -> WiFi_PA1_SROM_5985...
             base_key = re.sub(r"_SROM_OLD_", "_SROM_", test_item_name, flags=re.IGNORECASE)
-            old_items[base_key] = {"name": test_item_name, "hex": values["hex"], "decimal": values["decimal"]}
+            old_items[base_key] = values
         elif _is_pa_srom_test_item(test_item_name, "new"):
             # Extract base key: WiFi_PA1_SROM_NEW_5985... -> WiFi_PA1_SROM_5985...
             base_key = re.sub(r"_SROM_NEW_", "_SROM_", test_item_name, flags=re.IGNORECASE)
-            new_items[base_key] = {"name": test_item_name, "hex": values["hex"], "decimal": values["decimal"]}
+            new_items[base_key] = values
 
     # Step 3: Create structured data items and calculate adjusted power
     result_items = []
@@ -3862,14 +3876,16 @@ def _attach_record_metadata(
     )
 
 
-def _iter_station_values(station: dict[str, Any], field_names: list[str]) -> Any:
+def _iter_station_values(station: dict[str, Any], field_names: list[str]) -> Iterator[Any]:
     if not isinstance(station, dict):
-        return []
+        return
     for field in field_names:
         value = station.get(field)
         if value is not None:
             yield value
-    data_entries = station.get("data") if isinstance(station.get("data"), list) else []
+    data_entries = station.get("data")
+    if not isinstance(data_entries, list):
+        data_entries = []
     for item in data_entries:
         if not isinstance(item, dict):
             continue
@@ -3890,7 +3906,7 @@ def _parse_value_test_items(payload: Any) -> list[TestItemDefinitionSchema]:
             continue
         usl = _coerce_optional_float(row[1] if len(row) > 1 else None)
         lsl = _coerce_optional_float(row[2] if len(row) > 2 else None)
-        items.append(TestItemDefinitionSchema(name=name, usl=usl, lsl=lsl, status=None))
+        items.append(TestItemDefinitionSchema(name=name, usl=usl, lsl=lsl))
     items.sort(key=lambda item: item.name.lower())
     return items
 
@@ -4221,20 +4237,25 @@ async def _fetch_station_metadata(client: DUTAPIClient, station_id: int) -> dict
         *(bounded(_get_cached_models(client, site_id)) for _, site_id in site_contexts),
         return_exceptions=True,
     )
-    model_contexts = [
-        (site, site_id, model, model_id)
-        for (site, site_id), models in zip(site_contexts, model_results, strict=True)
-        if not isinstance(models, Exception)
-        for model in models
-        if (model_id := _coerce_optional_int(model.get("id"))) is not None
-    ]
+    model_contexts = []
+    for (site, site_id), models in zip(site_contexts, model_results, strict=True):
+        if isinstance(models, BaseException):
+            if not isinstance(models, Exception):
+                raise models
+            continue
+        for model in models:
+            model_id = _coerce_optional_int(model.get("id"))
+            if model_id is not None:
+                model_contexts.append((site, site_id, model, model_id))
     station_results = await asyncio.gather(
         *(bounded(_get_cached_stations(client, model_id)) for _, _, _, model_id in model_contexts),
         return_exceptions=True,
     )
 
     for (site, site_id, model, model_id), stations in zip(model_contexts, station_results, strict=True):
-        if isinstance(stations, Exception):
+        if isinstance(stations, BaseException):
+            if not isinstance(stations, Exception):
+                raise stations
             continue
         for station in stations:
             candidate_id = _coerce_optional_int(station.get("id"))
@@ -4380,7 +4401,9 @@ async def _generate_top_product_batch(
 
     # Collect results and errors
     for item in completed:
-        if isinstance(item, Exception):
+        if isinstance(item, BaseException):
+            if not isinstance(item, Exception):
+                raise item
             # If a task raised an exception (shouldn't happen with our error handling)
             if len(normalized_isns) == 1:
                 raise item
@@ -4427,8 +4450,8 @@ def _parse_measurement_components(test_item: str) -> tuple[str, str, str, str] |
     if core_tokens and core_tokens[0].lower() == "wifi":
         core_tokens = core_tokens[1:]
 
-    subgroup = None
-    antenna = None
+    subgroup: str | None = None
+    antenna: str | None = None
     category_tokens: list[str] = []
     antenna_pattern = re.compile(r"^(tx|rx|pa|ant|rssi)(\d+)$", re.IGNORECASE)
 
@@ -4451,8 +4474,9 @@ def _parse_measurement_components(test_item: str) -> tuple[str, str, str, str] |
 
     if subgroup is None:
         subgroup = "OTHER"
-        antenna = "OTHER"
         category_tokens = [tok.upper() for tok in core_tokens]
+    if antenna is None:
+        antenna = "OTHER"
 
     if not category_tokens:
         category_tokens = ["RESULT"]
@@ -4462,7 +4486,8 @@ def _parse_measurement_components(test_item: str) -> tuple[str, str, str, str] |
 
 
 def _build_hierarchical_scores(
-    measurements: list[list[str | float | None]],
+    measurements: list[dict[str, str | float | None | dict]]
+    | list[list[str | float | None]],
 ) -> tuple[dict[str, Any], dict[str, float]]:
     def _round_score(value: float) -> float:
         return round(value + 1e-9, 2)
@@ -5612,7 +5637,19 @@ def _build_station_result_schema(evaluation: StationEvaluation) -> TopProductSta
         pass_count=evaluation.pass_count,
         fail_count=evaluation.fail_count,
         error_item=evaluation.error_item,
-        data=measurement_rows or evaluation.data,
+        data=measurement_rows
+        or [
+            row
+            if isinstance(row, dict)
+            else {
+                "test_item": str(row[0]) if row else "",
+                "usl": _to_float(row[1]) if len(row) > 1 else None,
+                "lsl": _to_float(row[2]) if len(row) > 2 else None,
+                "actual": _to_float(row[3]) if len(row) > 3 else None,
+                "score_breakdown": None,
+            }
+            for row in evaluation.data
+        ],
         overall_data_score=evaluation.score,
         metadata=evaluation.metadata or {},
     )
@@ -6493,7 +6530,10 @@ async def _compute_top_product_response(
                 continue
 
         run_index = _find_run_index(station_payload, latest_entry)
-        measurement_matrix = _compress_station_data(station_payload, run_index)
+        measurement_matrix: list[
+            list[str | float | None] | dict[str, str | float | None | dict]
+        ] = []
+        measurement_matrix.extend(_compress_station_data(station_payload, run_index))
 
         # FEATURE: PA trend measurement integration (optional)
         # Fetch PA trend measurements only if explicitly requested via include_pa_trends flag
@@ -6529,7 +6569,7 @@ async def _compute_top_product_response(
                     exc,
                 )
 
-        measurement_rows: list[list[str | float | None]] = []
+        measurement_rows: list[dict[str, str | float | None | dict]] = []
         measurement_scores: list[MeasurementScore] = []
 
         for idx, row in enumerate(measurement_matrix):
@@ -6537,13 +6577,14 @@ async def _compute_top_product_response(
             if isinstance(row, dict):
                 # PA trend measurement (already in dict format with breakdown)
                 test_item = str(row.get("test_item", ""))
-                usl = row.get("usl")
-                lsl = row.get("lsl")
-                actual = row.get("actual")
-                breakdown = row.get("score_breakdown", {})
+                usl = _to_float(row.get("usl"))
+                lsl = _to_float(row.get("lsl"))
+                actual = _to_float(row.get("actual"))
+                breakdown_value = row.get("score_breakdown")
+                breakdown = breakdown_value if isinstance(breakdown_value, dict) else {}
                 # PA trends don't need criteria rules
-                existing_score = breakdown.get("score") if breakdown else None
-                target = breakdown.get("target_used") if breakdown else None
+                existing_score = _to_float(breakdown.get("score")) if breakdown else None
+                target = _to_float(breakdown.get("target_used")) if breakdown else None
 
                 if actual is None:
                     continue
@@ -6598,7 +6639,7 @@ async def _compute_top_product_response(
 
             target = target_override if target_override is not None else _determine_target_value(rule, usl, lsl, actual, test_item)
             display_usl = rule.usl if rule and rule.usl is not None else usl
-            display_lsl = rule.lsl if rule.lsl is not None else lsl
+            display_lsl = rule.lsl if rule and rule.lsl is not None else lsl
             # UPDATED: Pass test_item for category-specific scoring (EVM, PER, POW_DIF_ABS)
             deviation, computed_score, breakdown = _calculate_measurement_metrics(display_usl, display_lsl, target, actual, test_item)
             # FEATURE: Always compute score for POW_DIF_ABS items (don't use existing_score from external API)
@@ -6851,7 +6892,12 @@ async def _resolve_station_id(
         if site_id is None and target_models is None:
             continue
         try:
-            models = target_models or await _get_cached_models(client, site_id)  # type: ignore[arg-type]
+            if target_models is not None:
+                models = target_models
+            else:
+                if site_id is None:
+                    continue
+                models = await _get_cached_models(client, site_id)
         except Exception as exc:
             logger.warning(
                 "Error fetching models for site %s while resolving station '%s': %s",
@@ -7801,12 +7847,14 @@ async def _fetch_and_calculate_pa_adjusted_power(
 
         # Store both MID and MEAN values if available
         result_dict: dict[str, float] = {}
-        if adjusted_power_result.get("adjusted_mid") is not None:
-            result_dict["mid"] = adjusted_power_result["adjusted_mid"]
+        adjusted_mid = adjusted_power_result["adjusted_mid"]
+        if adjusted_mid is not None:
+            result_dict["mid"] = adjusted_mid
             logger.debug("Calculated PA adjusted power (MID) for %s: %.2f", base_name, result_dict["mid"])
 
-        if adjusted_power_result.get("adjusted_mean") is not None:
-            result_dict["mean"] = adjusted_power_result["adjusted_mean"]
+        adjusted_mean = adjusted_power_result["adjusted_mean"]
+        if adjusted_mean is not None:
+            result_dict["mean"] = adjusted_mean
             logger.debug("Calculated PA adjusted power (MEAN) for %s: %.2f", base_name, result_dict["mean"])
 
         if result_dict:
@@ -7815,7 +7863,7 @@ async def _fetch_and_calculate_pa_adjusted_power(
     return adjusted_power_values
 
 
-def _extract_pa_base_name(test_item_name: str) -> str | None:
+def _extract_pa_base_name(test_item_name: str | None) -> str | None:
     """Extract base test item name by removing SROM_OLD or SROM_NEW suffix.
 
     Examples:
@@ -9067,13 +9115,15 @@ async def get_latest_pa_srom_all_decimal(
 
                 # Sort the data array by test_item_name
                 if result.data:
-                    result.data.sort(key=lambda row: _get_pa_srom_sort_key(row[0]) if row else (float("inf"), 0, 0, ""))
+                    result.data.sort(key=lambda row: _get_pa_srom_sort_key(str(row[0])) if row else (float("inf"), 0, 0, ""))
 
                 # Convert to PAItemValueSchema format
                 station_data = []
                 for row in result.data:
                     if len(row) >= 2:
-                        station_data.append(PAItemValueSchema(test_item_name=row[0], value=row[1]))
+                        value = _to_float(row[1])
+                        if value is not None:
+                            station_data.append(PAItemValueSchema(test_item_name=str(row[0]), value=value))
 
                 if not station_data:
                     logger.warning(f"[PA Nonvalue] No PA SROM data after filtering for station={station}, dut={dut}")
@@ -9222,14 +9272,16 @@ async def get_latest_pa_srom_adjusted(
                 logger.info(f"[PA Adjusted] Processed SROM data: {len(processed.data)} items")
 
                 # Organize items by SROM type
-                old_items = {}
-                new_items = {}
+                old_items: dict[str, int] = {}
+                new_items: dict[str, int] = {}
 
                 for row in processed.data:
                     if len(row) < 2:
                         continue
-                    item_name = row[0]
-                    item_value = row[1]
+                    item_name = str(row[0])
+                    item_value = _coerce_optional_int(row[1])
+                    if item_value is None:
+                        continue
 
                     # Extract base key by removing SROM_OLD or SROM_NEW
                     if "_SROM_OLD_" in item_name.upper():

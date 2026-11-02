@@ -1,16 +1,9 @@
+from app.models.user import User
 from app.utils import auth as auth_utils
 
 
 def test_token_normalization_roundtrip():
-    # Create a dummy user-like object with the attributes used by the token helpers
-    class DummyUser:
-        def __init__(self):
-            self.username = "norm_user"
-            self.is_admin = False
-            self.is_ptb_admin = False
-            self.token_version = 1
-
-    user = DummyUser()
+    user = User(username="norm_user", is_admin=False, is_ptb_admin=False, token_version=1)
 
     token = auth_utils.create_access_token(user)
     assert token

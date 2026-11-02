@@ -83,6 +83,7 @@ class TestEVMScoring:
         """Test EVM scoring when exceeding USL (failing)."""
         # USL = -5, Actual = -3 (exceeds USL, worse than spec)
         deviation, score, _ = _calculate_evm_score(usl=-5.0, actual=-3.0)
+        assert deviation is not None
         assert deviation > 0, "Exceeding USL should have positive deviation"
         assert score < 6.0, f"Exceeding USL should score < 6.0, got {score}"
         assert score >= 0.0, f"Score should not be negative, got {score}"

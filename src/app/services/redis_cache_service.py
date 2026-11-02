@@ -46,7 +46,7 @@ class RedisCacheService:
         self.default_ttl = default_ttl
         self.enabled = enabled and redis_client is not None
 
-        if self.enabled:
+        if self.enabled and self.redis is not None:
             try:
                 self.redis.ping()
                 logger.info("Redis cache service initialized successfully")
@@ -99,7 +99,8 @@ class RedisCacheService:
         Returns:
             Cached or freshly fetched data
         """
-        if not self.enabled:
+        redis_client = self.redis
+        if not self.enabled or redis_client is None:
             # Cache disabled, call function directly
             return await fetch_func(*args, **kwargs)
 
@@ -108,8 +109,8 @@ class RedisCacheService:
 
         try:
             # Try to get from cache
-            cached = self.redis.get(cache_key)
-            if cached:
+            cached = redis_client.get(cache_key)
+            if isinstance(cached, (str, bytes, bytearray, memoryview)) and cached:
                 logger.debug("Cache HIT: %s", cache_key)
                 return orjson.loads(cached)
         except (RedisConnectionError, RedisError) as exc:
@@ -122,7 +123,7 @@ class RedisCacheService:
         # Store in cache
         try:
             serialized = orjson.dumps(data)
-            self.redis.setex(cache_key, ttl, serialized)
+            redis_client.setex(cache_key, ttl, serialized)
             logger.debug("Cached: %s (TTL=%ds)", cache_key, ttl)
         except (RedisConnectionError, RedisError, TypeError) as exc:
             logger.warning("Redis SET error for %s: %s", cache_key, exc)
@@ -139,15 +140,16 @@ class RedisCacheService:
         Returns:
             Number of keys deleted
         """
-        if not self.enabled:
+        redis_client = self.redis
+        if not self.enabled or redis_client is None:
             return 0
 
         try:
-            keys = list(self.redis.scan_iter(match=pattern, count=100))
+            keys = list(redis_client.scan_iter(match=pattern, count=100))
             if keys:
-                deleted = self.redis.delete(*keys)
+                deleted = redis_client.delete(*keys)
                 logger.info("Invalidated %d keys matching %s", deleted, pattern)
-                return deleted
+                return deleted if isinstance(deleted, int) else 0
         except (RedisConnectionError, RedisError) as exc:
             logger.warning("Redis invalidation error for %s: %s", pattern, exc)
 
@@ -163,11 +165,12 @@ class RedisCacheService:
         Returns:
             True if key was deleted
         """
-        if not self.enabled:
+        redis_client = self.redis
+        if not self.enabled or redis_client is None:
             return False
 
         try:
-            deleted = self.redis.delete(key)
+            deleted = redis_client.delete(key)
             if deleted:
                 logger.debug("Invalidated key: %s", key)
             return bool(deleted)
@@ -182,22 +185,35 @@ class RedisCacheService:
         Returns:
             Dict with cache stats (keys count, memory usage, etc.)
         """
-        if not self.enabled:
+        redis_client = self.redis
+        if not self.enabled or redis_client is None:
             return {"enabled": False}
 
         try:
-            info = self.redis.info("stats")
-            memory = self.redis.info("memory")
+            info = redis_client.info("stats")
+            memory = redis_client.info("memory")
+            if not isinstance(info, dict) or not isinstance(memory, dict):
+                raise TypeError("Redis INFO returned an unexpected result")
+
+            hits_value = info.get("keyspace_hits", 0)
+            misses_value = info.get("keyspace_misses", 0)
+            used_memory = memory.get("used_memory", 0)
+            if (
+                not isinstance(hits_value, int)
+                or not isinstance(misses_value, int)
+                or not isinstance(used_memory, int)
+            ):
+                raise TypeError("Redis INFO returned non-integer statistics")
 
             return {
                 "enabled": True,
-                "total_keys": self.redis.dbsize(),
-                "hits": info.get("keyspace_hits", 0),
-                "misses": info.get("keyspace_misses", 0),
-                "memory_used_mb": memory.get("used_memory", 0) / (1024 * 1024),
+                "total_keys": redis_client.dbsize(),
+                "hits": hits_value,
+                "misses": misses_value,
+                "memory_used_mb": used_memory / (1024 * 1024),
                 "hit_rate": self._calculate_hit_rate(
-                    info.get("keyspace_hits", 0),
-                    info.get("keyspace_misses", 0),
+                    hits_value,
+                    misses_value,
                 ),
             }
         except (RedisConnectionError, RedisError) as exc:

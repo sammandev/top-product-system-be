@@ -18,7 +18,7 @@ RUN apt-get update && apt-get install -y \
 
 # Install the build tool and dependency metadata before application source.
 # Source edits therefore do not invalidate the expensive dependency layer.
-RUN pip install --no-cache-dir uv==0.11.8
+RUN pip install --no-cache-dir uv==0.13.6
 COPY pyproject.toml uv.lock ./
 
 RUN python -m venv /opt/venv

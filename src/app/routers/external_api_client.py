@@ -28,7 +28,7 @@ from app.dependencies.authz import get_current_user
 from app.external_services.dut_api_client import DUTAPIClient
 from app.models.test_log import ScoreBreakdown
 from app.models.top_product import TopProduct, TopProductMeasurement
-from app.routers.iplas_proxy import IPLAS_SITES, _get_site_config
+from app.routers.iplas_proxy import IPLAS_SITES, _get_http_client, _get_site_config
 from app.schemas.dut_schemas import (
     AdjustedPowerRequestSchema,
     AdjustedPowerResponseSchema,
@@ -10036,9 +10036,9 @@ async def download_test_log(request: TestLogDownloadRequest, current_user: Annot
         logger.info(f"Request payload: {payload} ({len(request.info_list)} test log(s))")
 
         # Call iPLAS API
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
+        client = await _get_http_client()
+        response = await client.post(url, json=payload, timeout=timeout)
+        response.raise_for_status()
 
         # Parse response
         response_data = response.json()

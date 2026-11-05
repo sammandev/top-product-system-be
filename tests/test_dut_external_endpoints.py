@@ -143,7 +143,7 @@ class _StubDownloadAsyncClient:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
-    async def post(self, url, json):
+    async def post(self, url, json, **kwargs):
         self.last_post = (url, json)
         return self._response
 
@@ -199,11 +199,10 @@ def test_download_test_log_uses_site_specific_iplas_config(monkeypatch):
             "v2_url": "http://iplas.test/api/v2",
         },
     )
-    monkeypatch.setattr(
-        external_api_client.httpx,
-        "AsyncClient",
-        lambda *args, **kwargs: stub_client,
-    )
+    async def _shared_client():
+        return stub_client
+
+    monkeypatch.setattr(external_api_client, "_get_http_client", _shared_client)
 
     client = TestClient(app)
     response = client.post(

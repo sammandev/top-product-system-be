@@ -18,10 +18,12 @@ import logging
 import os
 import threading
 import time
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from collections import deque
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
+from functools import partial
 from hashlib import sha1
 from typing import Any, Literal, Never
 from uuid import uuid4
@@ -185,6 +187,10 @@ IPLAS_CACHE_TTL_STATIONS = int(os.getenv("IPLAS_CACHE_TTL_STATIONS", "3600"))  #
 IPLAS_CACHE_TTL_DEVICES = int(os.getenv("IPLAS_CACHE_TTL_DEVICES", "300"))  # 5 minutes
 IPLAS_CACHE_TTL_ISN = int(os.getenv("IPLAS_CACHE_TTL_ISN", "300"))  # 5 minutes
 IPLAS_CACHE_TTL_EMPTY = int(os.getenv("IPLAS_CACHE_TTL_EMPTY", "15"))
+# Query windows that ended long ago no longer change upstream, so they can be cached longer.
+IPLAS_HISTORICAL_AGE_SECONDS = int(os.getenv("IPLAS_HISTORICAL_AGE_SECONDS", "21600"))  # 6 hours
+IPLAS_CACHE_TTL_HISTORICAL = int(os.getenv("IPLAS_CACHE_TTL_HISTORICAL", "3600"))  # 1 hour
+IPLAS_CACHE_TTL_HISTORICAL_EMPTY = int(os.getenv("IPLAS_CACHE_TTL_HISTORICAL_EMPTY", "300"))  # 5 minutes
 
 # Station Search bucket-cache configuration (v3)
 IPLAS_STATION_BUCKET_CACHE_VERSION = os.getenv("IPLAS_STATION_BUCKET_CACHE_VERSION", "v3")
@@ -271,70 +277,96 @@ def _iter_active_iplas_sites() -> list[tuple[str, dict[str, str]]]:
 # Request Deduplication (In-Flight Request Coalescing)
 # ============================================================================
 # When multiple users request the same data simultaneously, we only make one
-# upstream request and share the result. This dramatically reduces load on
-# the iPLAS server and improves response times for concurrent requests.
-
-# Dictionary to track in-flight requests: cache_key -> asyncio.Event
-_in_flight_requests: dict[str, asyncio.Event] = {}
-# Lock to safely access _in_flight_requests
-_in_flight_lock = asyncio.Lock()
-# Temporary storage for in-flight results
-_in_flight_results: dict[str, tuple[list[dict[str, Any]], bool, int, int, bool, "StationRangeResponseMetadata"]] = {}
+# upstream request and share its result (or error) with every waiter. This
+# dramatically reduces load on the iPLAS server and improves response times.
 
 
-async def _get_or_wait_in_flight(cache_key: str) -> tuple[list[dict[str, Any]], bool, int, int, bool, "StationRangeResponseMetadata"] | None:
-    """
-    Check if there's already an in-flight request for this cache key.
-    If so, wait for it to complete and return its result.
+@dataclass(slots=True)
+class _InFlightRequest:
+    task: asyncio.Task[Any]
+    waiters: int = 0
 
-    Returns:
-        The result tuple if we waited for an in-flight request, None if we should start a new request.
-    """
-    async with _in_flight_lock:
-        if cache_key in _in_flight_requests:
-            event = _in_flight_requests[cache_key]
-            logger.info(f"Request coalescing: waiting for in-flight request {cache_key[:50]}...")
-        else:
-            # No in-flight request, we'll be the one to make it
-            return None
 
-    # Wait outside the lock for the in-flight request to complete
+# "<kind>|<cache_key>" -> shared upstream fetch. The kind keeps result shapes apart
+# when different code paths reuse the same Redis cache key.
+_in_flight_requests: dict[str, _InFlightRequest] = {}
+
+
+def _consume_task_exception(task: asyncio.Task[Any]) -> None:
+    if not task.cancelled():
+        task.exception()
+
+
+async def _run_in_flight_fetch[T](flight_key: str, fetch: Callable[[], Awaitable[T]]) -> T:
     try:
-        await asyncio.wait_for(event.wait(), timeout=IPLAS_TIMEOUT + 30)
-        result = _in_flight_results.get(cache_key)
-        if result:
-            logger.info(f"Request coalescing: got result from in-flight request {cache_key[:50]}")
-            return result
-    except TimeoutError:
-        logger.warning(f"Request coalescing: timed out waiting for {cache_key[:50]}")
-
-    return None
+        return await fetch()
+    finally:
+        entry = _in_flight_requests.get(flight_key)
+        if entry is not None and entry.task is asyncio.current_task():
+            del _in_flight_requests[flight_key]
 
 
-async def _register_in_flight(cache_key: str) -> asyncio.Event:
-    """Register that we're starting an in-flight request."""
-    async with _in_flight_lock:
-        event = asyncio.Event()
-        _in_flight_requests[cache_key] = event
-        return event
+async def _run_singleflight[T](kind: str, cache_key: str, fetch: Callable[[], Awaitable[T]]) -> T:
+    """Run ``fetch`` once for all concurrent callers with the same kind and cache key.
+
+    Every waiter receives the same result or exception. The shared fetch runs in its
+    own task so one caller's cancellation does not affect the others; it is cancelled
+    only when its last waiter goes away.
+    """
+    flight_key = f"{kind}|{cache_key}"
+    entry = _in_flight_requests.get(flight_key)
+    if entry is None or entry.task.done():
+        task = asyncio.create_task(_run_in_flight_fetch(flight_key, fetch))
+        task.add_done_callback(_consume_task_exception)
+        entry = _InFlightRequest(task=task)
+        _in_flight_requests[flight_key] = entry
+    else:
+        logger.info("Request coalescing: joining in-flight request %s", flight_key[:80])
+
+    entry.waiters += 1
+    try:
+        return await asyncio.shield(entry.task)
+    except asyncio.CancelledError:
+        if entry.waiters == 1 and not entry.task.done():
+            entry.task.cancel()
+        raise
+    finally:
+        entry.waiters -= 1
+        if entry.waiters == 0 and _in_flight_requests.get(flight_key) is entry:
+            del _in_flight_requests[flight_key]
 
 
-async def _complete_in_flight(cache_key: str, result: tuple[list[dict[str, Any]], bool, int, int, bool, "StationRangeResponseMetadata"]) -> None:
-    """Mark an in-flight request as complete and store its result."""
-    async with _in_flight_lock:
-        _in_flight_results[cache_key] = result
-        if cache_key in _in_flight_requests:
-            _in_flight_requests[cache_key].set()
-            # Clean up after a short delay to allow waiting tasks to get the result
-            asyncio.create_task(_cleanup_in_flight(cache_key))
+async def _iter_bounded_in_order[T](
+    factories: Sequence[Callable[[], Coroutine[Any, Any, T]]],
+    concurrency: int,
+) -> AsyncGenerator[T, None]:
+    """Run ``factories`` with at most ``concurrency`` in flight, yielding results in input order.
 
+    Sliding window: a new task starts only when the oldest one has finished, so at most
+    ``concurrency`` results are buffered. Pending tasks are cancelled if the consumer
+    stops early or an exception propagates.
+    """
+    pending: deque[asyncio.Task[T]] = deque()
+    remaining = iter(factories)
 
-async def _cleanup_in_flight(cache_key: str, delay: float = 2.0) -> None:
-    """Clean up in-flight tracking after a delay."""
-    await asyncio.sleep(delay)
-    async with _in_flight_lock:
-        _in_flight_requests.pop(cache_key, None)
-        _in_flight_results.pop(cache_key, None)
+    def schedule_next() -> None:
+        factory = next(remaining, None)
+        if factory is not None:
+            pending.append(asyncio.create_task(factory()))
+
+    try:
+        for _ in range(max(1, concurrency)):
+            schedule_next()
+        while pending:
+            result = await pending[0]
+            pending.popleft()
+            schedule_next()
+            yield result
+    finally:
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 # ============================================================================
@@ -664,6 +696,27 @@ def _ensure_utc_datetime(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _select_iplas_cache_ttl(
+    query_end: datetime | None,
+    recent_ttl: int,
+    *,
+    is_empty: bool = False,
+    now: datetime | None = None,
+) -> int:
+    """Return the cache TTL for a query window, extending it once the window is historical.
+
+    Windows that ended at least IPLAS_HISTORICAL_AGE_SECONDS ago keep the historical TTL
+    (never shorter than ``recent_ttl``); recent or unknown windows keep ``recent_ttl``.
+    """
+    if query_end is None:
+        return recent_ttl
+    reference = _ensure_utc_datetime(now) if now is not None else datetime.now(UTC)
+    if (reference - _ensure_utc_datetime(query_end)).total_seconds() < IPLAS_HISTORICAL_AGE_SECONDS:
+        return recent_ttl
+    historical_ttl = IPLAS_CACHE_TTL_HISTORICAL_EMPTY if is_empty else IPLAS_CACHE_TTL_HISTORICAL
+    return max(recent_ttl, historical_ttl)
 
 
 def _bucket_cache_datetime_to_str(value: datetime | None) -> str:
@@ -1111,6 +1164,9 @@ def _write_station_bucket(
 ) -> None:
     """Write a station bucket payload and metadata to Redis."""
     ttl = _get_station_bucket_ttl(metadata.state)
+    if metadata.state == "partial":
+        # Hot buckets are never historical and complete buckets already use the longest TTL.
+        ttl = _select_iplas_cache_ttl(metadata.bucket_end, ttl, is_empty=metadata.record_count == 0, now=metadata.fetched_at)
     data_key = _build_station_bucket_data_key(scope_hash, metadata.bucket_start)
     meta_key = _build_station_bucket_meta_key(scope_hash, metadata.bucket_start)
     scope_key = _build_station_bucket_scope_key(scope_hash)
@@ -1372,19 +1428,33 @@ async def _fetch_station_range_with_bucket_cache(
     # Buckets are independent (own cache keys and locks), so fetch them concurrently.
     # gather preserves input order, keeping record ordering and bucket stats stable.
     bucket_semaphore = asyncio.Semaphore(max(1, IPLAS_STATION_BUCKET_CONCURRENCY))
+    bucket_scope_hash = _build_station_bucket_scope_hash(
+        site,
+        project,
+        station,
+        device_scope,
+        test_status,
+        _credential_cache_scope(site, user_token),
+    )
 
     async def fetch_bucket(bucket_window: StationBucketWindow) -> StationBucketFetchResult:
         async with bucket_semaphore:
-            return await _fetch_station_bucket_with_cache(
-                redis=redis,
-                site=site,
-                project=project,
-                station=station,
-                device_scope=device_scope,
-                test_status=test_status,
-                bucket_window=bucket_window,
-                user_token=user_token,
-                observable_now=observable_now,
+            flight_key = f"{bucket_scope_hash}:{_bucket_cache_datetime_to_str(bucket_window.query_start)}:{_bucket_cache_datetime_to_str(bucket_window.query_end)}"
+            return await _run_singleflight(
+                "station-bucket",
+                flight_key,
+                partial(
+                    _fetch_station_bucket_with_cache,
+                    redis=redis,
+                    site=site,
+                    project=project,
+                    station=station,
+                    device_scope=device_scope,
+                    test_status=test_status,
+                    bucket_window=bucket_window,
+                    user_token=user_token,
+                    observable_now=observable_now,
+                ),
             )
 
     bucket_results = await asyncio.gather(*(fetch_bucket(window) for window in bucket_windows))
@@ -1438,24 +1508,11 @@ async def _fetch_station_range_for_request(
 
     logger.debug("Station bucket fetch start: %s", cache_key)
 
-    in_flight_result = await _get_or_wait_in_flight(cache_key)
-    if in_flight_result is not None:
-        records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy, response_metadata = in_flight_result
-        cached = chunks_fetched == 0
-        logger.info(f"Used coalesced result for {cache_key[:50]}")
-        return records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy, cached, response_metadata
-
-    await _register_in_flight(cache_key)
-    try:
-        (
-            records,
-            possibly_truncated,
-            chunks_fetched,
-            total_chunks,
-            used_hybrid_strategy,
-            cached,
-            response_metadata,
-        ) = await _fetch_station_range_with_bucket_cache(
+    return await _run_singleflight(
+        "station-range",
+        cache_key,
+        partial(
+            _fetch_station_range_with_bucket_cache,
             redis=redis,
             site=request.site,
             project=request.project,
@@ -1465,13 +1522,8 @@ async def _fetch_station_range_for_request(
             end_time=request.end_time,
             test_status=request.test_status,
             user_token=request.token,
-        )
-
-        await _complete_in_flight(cache_key, (records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy, response_metadata))
-        return records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid_strategy, cached, response_metadata
-    except Exception:
-        await _cleanup_in_flight(cache_key, delay=0)
-        raise
+        ),
+    )
 
 
 def _generate_cache_key(
@@ -1641,6 +1693,8 @@ async def _fetch_from_iplas(
 # Maximum days per chunk (iPLAS API limit is 7 days, use 6 for safety margin)
 MAX_DAYS_PER_CHUNK = int(os.getenv("IPLAS_MAX_DAYS_PER_CHUNK", "6"))
 MAX_RECORDS_WARNING = 5000  # iPLAS API limit per request
+# Maximum concurrent time-chunk fetches for CSV test-item queries (stream / test-item names)
+IPLAS_CSV_CHUNK_CONCURRENCY = int(os.getenv("IPLAS_CSV_CHUNK_CONCURRENCY", "3"))
 
 # Hybrid V1/V2 configuration
 # When device count exceeds this threshold, fetch per-device to avoid 5000 limit
@@ -1894,13 +1948,15 @@ async def _fetch_chunked_from_iplas(
     test_status: str,
     user_token: str | None = None,
     use_hybrid: bool = True,
+    chunk_concurrency: int = 1,
 ) -> tuple[list[dict[str, Any]], bool, int, int, bool]:
     """
     Fetch test item data from iPLAS v1 API with automatic time-range chunking.
 
     If the date range exceeds MAX_DAYS_PER_CHUNK, splits into multiple
-    sequential requests and aggregates results. This bypasses the 7-day
-    query limit imposed by the iPLAS API.
+    requests (up to chunk_concurrency in flight) and aggregates results in
+    chronological chunk order. This bypasses the 7-day query limit imposed
+    by the iPLAS API.
 
     When use_hybrid=True and device_id="ALL", uses hybrid V1/V2 strategy:
     - Checks device count via V2 API
@@ -1917,6 +1973,7 @@ async def _fetch_chunked_from_iplas(
         test_status: PASS, FAIL, or ALL
         user_token: Optional user-provided token
         use_hybrid: Use hybrid V1/V2 strategy for high-density stations
+        chunk_concurrency: Maximum chunk requests in flight at once (1 = sequential)
 
     Returns:
         Tuple of (records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid) where:
@@ -1944,50 +2001,98 @@ async def _fetch_chunked_from_iplas(
     # Chunked requests for larger date ranges
     all_records: list[dict[str, Any]] = []
     possibly_truncated = False
-    current_start = begin_time
     chunk_count = 0
     estimated_chunks = (total_days // MAX_DAYS_PER_CHUNK) + 1
+    use_hybrid_for_chunks = use_hybrid and device_id.upper() == "ALL"
+
+    chunk_windows: list[tuple[datetime, datetime]] = []
+    current_start = begin_time
+    while current_start < end_time:
+        chunk_end = min(current_start + timedelta(days=MAX_DAYS_PER_CHUNK), end_time)
+        chunk_windows.append((current_start, chunk_end))
+        current_start = chunk_end
 
     logger.info(f"Chunked fetch: {site}/{project}/{station} spanning {total_days} days (~{estimated_chunks} chunks){' with hybrid V1/V2 strategy' if use_hybrid else ''}")
 
-    while current_start < end_time:
-        chunk_end = min(current_start + timedelta(days=MAX_DAYS_PER_CHUNK), end_time)
-        chunk_count += 1
-
+    async def fetch_chunk(chunk_start: datetime, chunk_end: datetime) -> tuple[list[dict[str, Any]], bool, bool] | HTTPException:
         try:
             # Use hybrid strategy if enabled and device_id is ALL
-            if use_hybrid and device_id.upper() == "ALL":
-                chunk_records, chunk_truncated, chunk_used_hybrid = await _fetch_with_hybrid_strategy(site, project, station, device_id, current_start, chunk_end, test_status, user_token)
-                if chunk_truncated:
-                    possibly_truncated = True
-                if chunk_used_hybrid:
-                    used_hybrid_any = True
-            else:
-                chunk_records = await _fetch_from_iplas(site, project, station, device_id, current_start, chunk_end, test_status, user_token)
-                # Check if chunk hit the 5000 limit
-                if len(chunk_records) >= MAX_RECORDS_WARNING:
-                    possibly_truncated = True
+            if use_hybrid_for_chunks:
+                return await _fetch_with_hybrid_strategy(site, project, station, device_id, chunk_start, chunk_end, test_status, user_token)
+            chunk_records = await _fetch_from_iplas(site, project, station, device_id, chunk_start, chunk_end, test_status, user_token)
+            return chunk_records, len(chunk_records) >= MAX_RECORDS_WARNING, False
+        except HTTPException as e:
+            # Returned instead of raised so later chunks can still contribute partial results
+            return e
+
+    chunk_results = _iter_bounded_in_order([partial(fetch_chunk, start, end) for start, end in chunk_windows], chunk_concurrency)
+    async with aclosing(chunk_results):
+        async for chunk_result in chunk_results:
+            chunk_start, chunk_end = chunk_windows[chunk_count]
+            chunk_count += 1
+
+            if isinstance(chunk_result, HTTPException):
+                # Log but continue with other chunks for partial results
+                logger.error(f"Chunk {chunk_count} failed: {chunk_result.detail}")
+                # Re-raise if this is a critical error (auth, etc.); pending chunks are cancelled
+                if chunk_result.status_code in (401, 403):
+                    raise chunk_result
+                continue
+
+            chunk_records, chunk_truncated, chunk_used_hybrid = chunk_result
+            if chunk_truncated:
+                possibly_truncated = True
+                if not use_hybrid_for_chunks:
                     logger.warning(f"Chunk {chunk_count} returned {len(chunk_records)} records (may be truncated). Consider narrowing date range or filters.")
+            if chunk_used_hybrid:
+                used_hybrid_any = True
 
             all_records.extend(chunk_records)
-            logger.debug(f"Chunk {chunk_count}/{estimated_chunks}: {len(chunk_records)} records ({current_start.date()} to {chunk_end.date()})")
-
-        except HTTPException as e:
-            # Log but continue with other chunks for partial results
-            logger.error(f"Chunk {chunk_count} failed: {e.detail}")
-            # Re-raise if this is a critical error (auth, etc.)
-            if e.status_code in (401, 403):
-                raise
-
-        current_start = chunk_end
-
-        # Small delay between chunks to avoid rate limiting
-        if current_start < end_time:
-            await asyncio.sleep(0.1)
+            logger.debug(f"Chunk {chunk_count}/{estimated_chunks}: {len(chunk_records)} records ({chunk_start.date()} to {chunk_end.date()})")
 
     logger.info(f"Chunked fetch complete: {len(all_records)} total records from {chunk_count} chunks{' (used hybrid strategy)' if used_hybrid_any else ''}")
 
     return all_records, possibly_truncated, chunk_count, estimated_chunks, used_hybrid_any
+
+
+async def _fetch_and_cache_csv_test_items(
+    redis: Redis | None,
+    cache_key: str,
+    site: str,
+    project: str,
+    station: str,
+    device_id: str,
+    begin_time: datetime,
+    end_time: datetime,
+    test_status: str,
+    user_token: str | None,
+) -> tuple[list[dict[str, Any]], bool, int, int, bool]:
+    """Fetch CSV test items on a cache miss (one upstream call per cache key) and cache them."""
+
+    async def fetch() -> tuple[list[dict[str, Any]], bool, int, int, bool]:
+        result = await _fetch_chunked_from_iplas(
+            site,
+            project,
+            station,
+            device_id,
+            begin_time,
+            end_time,
+            test_status,
+            user_token,
+            chunk_concurrency=IPLAS_CSV_CHUNK_CONCURRENCY,
+        )
+        records = result[0]
+        if redis:
+            try:
+                serialized = json_dumps(records)
+                cache_ttl = _select_iplas_cache_ttl(end_time, IPLAS_CACHE_TTL, is_empty=not records)
+                await _set_redis_cached_value(redis, cache_key, cache_ttl, serialized)
+                logger.debug(f"Cached: {cache_key} (TTL={cache_ttl}s)")
+            except Exception as e:
+                logger.warning(f"Redis SET error: {e}")
+        return result
+
+    return await _run_singleflight("csv-test-items", cache_key, fetch)
 
 
 def _filter_test_items(
@@ -2610,11 +2715,7 @@ async def get_csv_test_items_compact(
     if filtered:
         records = _filter_test_items(records, request.test_item_filters, request.exclude_test_item_filters)
 
-    for record in records:
-        test_items = record.get("TestItem", [])
-        record["__test_item_count"] = len(test_items) if isinstance(test_items, list) else 0
-        record.pop("TestItem", None)
-
+    # Records may be shared with concurrent requests via singleflight; never mutate them.
     compact_records = [_convert_to_compact_record_dict(r) for r in records]
 
     total_records = len(compact_records)
@@ -2742,25 +2843,31 @@ async def get_record_test_items(
     # Fetch from iPLAS if cache miss
     if not cached:
         logger.debug(f"Cache MISS (record-test-items): {cache_key}")
-        records = await _fetch_from_iplas(
-            request.site,
-            request.project,
-            request.station,
-            request.device_id,
-            begin_time,
-            end_time,
-            request.test_status,
-            request.token,
-        )
 
-        # Store in cache
-        if redis:
-            try:
-                serialized = json_dumps(records)
-                await _set_redis_cached_value(redis, cache_key, IPLAS_CACHE_TTL, serialized)
-                logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL}s)")
-            except Exception as e:
-                logger.warning(f"Redis SET error: {e}")
+        async def fetch_records() -> list[dict[str, Any]]:
+            fetched = await _fetch_from_iplas(
+                request.site,
+                request.project,
+                request.station,
+                request.device_id,
+                begin_time,
+                end_time,
+                request.test_status,
+                request.token,
+            )
+
+            # Store in cache
+            if redis:
+                try:
+                    serialized = json_dumps(fetched)
+                    cache_ttl = _select_iplas_cache_ttl(end_time, IPLAS_CACHE_TTL, is_empty=not fetched)
+                    await _set_redis_cached_value(redis, cache_key, cache_ttl, serialized)
+                    logger.debug(f"Cached: {cache_key} (TTL={cache_ttl}s)")
+                except Exception as e:
+                    logger.warning(f"Redis SET error: {e}")
+            return fetched
+
+        records = await _run_singleflight("record-test-items", cache_key, fetch_records)
 
     # Find the specific record by ISN and test start time
     target_record = None
@@ -2834,7 +2941,10 @@ async def get_test_item_names(
     # Fetch from iPLAS if cache miss (using chunked fetching for large date ranges)
     if not records:
         logger.debug(f"Cache MISS (names): {cache_key}")
-        records, _, _, _, _ = await _fetch_chunked_from_iplas(
+        # Caches the result (benefits both endpoints)
+        records, _, _, _, _ = await _fetch_and_cache_csv_test_items(
+            redis,
+            cache_key,
             request.site,
             request.project,
             request.station,
@@ -2844,15 +2954,6 @@ async def get_test_item_names(
             request.test_status,
             request.token,  # Pass user token if provided
         )
-
-        # Store in cache (benefits both endpoints)
-        if redis:
-            try:
-                serialized = json_dumps(records)
-                await _set_redis_cached_value(redis, cache_key, IPLAS_CACHE_TTL, serialized)
-                logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL}s)")
-            except Exception as e:
-                logger.warning(f"Redis SET error: {e}")
 
     # Extract unique test item names
     test_items = _extract_unique_test_items(records)
@@ -2950,79 +3051,91 @@ async def get_test_item_names_cached(
     # Cache miss or force refresh - fetch from iPLAS
     logger.info(f"DB cache MISS: {site}/{project}/{station} - fetching from iPLAS")
 
-    records = []
-    last_error = None
+    async def fetch_records() -> tuple[list[dict[str, Any]], HTTPException | None]:
+        records = []
+        last_error = None
 
-    # UPDATED: If user provides time range, use it directly (single attempt)
-    if request.begin_time and request.end_time:
-        logger.info(f"Using user-provided time range for {site}/{project}/{station}")
-        try:
-            records, _, _, _, _ = await _fetch_chunked_from_iplas(
-                site=site,
-                project=project,
-                station=station,
-                device_id="ALL",
-                begin_time=request.begin_time,
-                end_time=request.end_time,
-                test_status="ALL",
-                user_token=request.token,
-            )
-            if records:
-                logger.info(f"Found {len(records)} records with user-provided time range")
-        except HTTPException as e:
-            last_error = e
-            logger.warning(f"Failed with user-provided time range: {e.detail}")
-        except Exception as e:
-            last_error = HTTPException(
-                status_code=502,
-                detail="Failed to fetch test items from iPLAS",
-            )
-            logger.error(f"Failed to fetch from iPLAS: {e}")
-
-    # Fallback: Try progressively larger time windows if no user-provided range
-    # or if user-provided range failed
-    if not records:
-        time_windows_days = [3, 5, 7]
-        for days in time_windows_days:
-            end_time = datetime.now()
-            begin_time = end_time - timedelta(days=days)
-
-            logger.info(f"Trying {days}-day window for {site}/{project}/{station}")
-
+        # UPDATED: If user provides time range, use it directly (single attempt)
+        if request.begin_time and request.end_time:
+            logger.info(f"Using user-provided time range for {site}/{project}/{station}")
             try:
                 records, _, _, _, _ = await _fetch_chunked_from_iplas(
                     site=site,
                     project=project,
                     station=station,
                     device_id="ALL",
-                    begin_time=begin_time,
-                    end_time=end_time,
+                    begin_time=request.begin_time,
+                    end_time=request.end_time,
                     test_status="ALL",
                     user_token=request.token,
                 )
-
                 if records:
-                    logger.info(f"Found {len(records)} records with {days}-day window")
-                    break
-                else:
-                    logger.info(f"No records found with {days}-day window, trying larger")
-
+                    logger.info(f"Found {len(records)} records with user-provided time range")
             except HTTPException as e:
                 last_error = e
-                # If this is a time interval error, try smaller window
-                if "time interval" in str(e.detail).lower():
-                    logger.warning(f"Time interval error with {days}-day window, trying smaller")
-                    continue
-                # For other errors, try next window
-                logger.warning(f"Error with {days}-day window: {e.detail}")
-                continue
+                logger.warning(f"Failed with user-provided time range: {e.detail}")
             except Exception as e:
                 last_error = HTTPException(
                     status_code=502,
                     detail="Failed to fetch test items from iPLAS",
                 )
                 logger.error(f"Failed to fetch from iPLAS: {e}")
-                continue
+
+        # Fallback: Try progressively larger time windows if no user-provided range
+        # or if user-provided range failed
+        if not records:
+            time_windows_days = [3, 5, 7]
+            for days in time_windows_days:
+                end_time = datetime.now()
+                begin_time = end_time - timedelta(days=days)
+
+                logger.info(f"Trying {days}-day window for {site}/{project}/{station}")
+
+                try:
+                    records, _, _, _, _ = await _fetch_chunked_from_iplas(
+                        site=site,
+                        project=project,
+                        station=station,
+                        device_id="ALL",
+                        begin_time=begin_time,
+                        end_time=end_time,
+                        test_status="ALL",
+                        user_token=request.token,
+                    )
+
+                    if records:
+                        logger.info(f"Found {len(records)} records with {days}-day window")
+                        break
+                    else:
+                        logger.info(f"No records found with {days}-day window, trying larger")
+
+                except HTTPException as e:
+                    last_error = e
+                    # If this is a time interval error, try smaller window
+                    if "time interval" in str(e.detail).lower():
+                        logger.warning(f"Time interval error with {days}-day window, trying smaller")
+                        continue
+                    # For other errors, try next window
+                    logger.warning(f"Error with {days}-day window: {e.detail}")
+                    continue
+                except Exception as e:
+                    last_error = HTTPException(
+                        status_code=502,
+                        detail="Failed to fetch test items from iPLAS",
+                    )
+                    logger.error(f"Failed to fetch from iPLAS: {e}")
+                    continue
+        return records, last_error
+
+    # Concurrent misses for the same station/window share one upstream fetch
+    credential_scope = _credential_cache_scope(site, request.token)
+    begin_key = request.begin_time.isoformat() if request.begin_time else "auto"
+    end_key = request.end_time.isoformat() if request.end_time else "auto"
+    records, last_error = await _run_singleflight(
+        "test-item-names-cached",
+        f"{site}:{project}:{station}:{begin_key}:{end_key}:{credential_scope}",
+        fetch_records,
+    )
 
     if not records and last_error:
         raise last_error
@@ -3160,45 +3273,51 @@ async def get_site_projects(
     if not cached:
         logger.debug(f"Cache {'REFRESH' if force_refresh else 'MISS'}: {cache_key}")
 
-        # Query all configured sites concurrently; one slow site no longer delays the rest.
-        async def fetch_site(site_name: str, site_config: dict[str, str]) -> list[SiteProject]:
-            site_projects: list[SiteProject] = []
-            try:
-                url = f"{site_config['v2_url']}/site_project_list"
+        async def fetch_site_projects() -> list[SiteProject]:
+            all_projects: list[SiteProject] = []
 
-                async with _pooled_client() as client:
-                    response = await client.get(
-                        url,
-                        params={"data_type": data_type},
-                        headers={"Authorization": f"Bearer {site_config['token']}"},
-                    )
+            # Query all configured sites concurrently; one slow site no longer delays the rest.
+            async def fetch_site(site_name: str, site_config: dict[str, str]) -> list[SiteProject]:
+                site_projects: list[SiteProject] = []
+                try:
+                    url = f"{site_config['v2_url']}/site_project_list"
 
-                    if response.status_code == 200:
-                        data = response.json()
-                        for item in data:
-                            site_projects.append(SiteProject(**item))
-                    else:
-                        logger.warning(
-                            f"iPLAS v2 error for {site_name}: {response.status_code} {response.text[:200]}"
+                    async with _pooled_client() as client:
+                        response = await client.get(
+                            url,
+                            params={"data_type": data_type},
+                            headers={"Authorization": f"Bearer {site_config['token']}"},
                         )
-            except Exception as e:
-                logger.warning(f"Failed to fetch site/projects from {site_name}: {e}")
-            return site_projects
 
-        site_results = await asyncio.gather(
-            *(fetch_site(site_name, site_config) for site_name, site_config in _iter_active_iplas_sites())
-        )
-        for site_projects in site_results:
-            all_projects.extend(site_projects)
+                        if response.status_code == 200:
+                            data = response.json()
+                            for item in data:
+                                site_projects.append(SiteProject(**item))
+                        else:
+                            logger.warning(
+                                f"iPLAS v2 error for {site_name}: {response.status_code} {response.text[:200]}"
+                            )
+                except Exception as e:
+                    logger.warning(f"Failed to fetch site/projects from {site_name}: {e}")
+                return site_projects
 
-        # Store in cache
-        if redis and all_projects:
-            try:
-                serialized = json_dumps([p.model_dump() for p in all_projects])
-                await _set_redis_cached_value(redis, cache_key, IPLAS_CACHE_TTL_SITE_PROJECTS, serialized)
-                logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_SITE_PROJECTS}s)")
-            except Exception as e:
-                logger.warning(f"Redis SET error: {e}")
+            site_results = await asyncio.gather(
+                *(fetch_site(site_name, site_config) for site_name, site_config in _iter_active_iplas_sites())
+            )
+            for site_projects in site_results:
+                all_projects.extend(site_projects)
+
+            # Store in cache
+            if redis and all_projects:
+                try:
+                    serialized = json_dumps([p.model_dump() for p in all_projects])
+                    await _set_redis_cached_value(redis, cache_key, IPLAS_CACHE_TTL_SITE_PROJECTS, serialized)
+                    logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_SITE_PROJECTS}s)")
+                except Exception as e:
+                    logger.warning(f"Redis SET error: {e}")
+            return all_projects
+
+        all_projects = await _run_singleflight("site-projects", cache_key, fetch_site_projects)
 
     return IplasSiteProjectListResponse(
         data=all_projects,
@@ -3244,34 +3363,39 @@ async def get_stations(
     # Fetch from iPLAS if cache miss
     if not cached:
         logger.debug(f"Cache MISS: {cache_key}")
-        site_config = _get_site_config(request.site, request.token)
-        url = f"{site_config['v2_url']}/{request.site}/{request.project}/station_list"
+        async def fetch_stations() -> list[IplasStation]:
+            stations: list[IplasStation] = []
+            site_config = _get_site_config(request.site, request.token)
+            url = f"{site_config['v2_url']}/{request.site}/{request.project}/station_list"
 
-        try:
-            async with _pooled_client() as client:
-                response = await client.get(
-                    url,
-                    headers={"Authorization": f"Bearer {site_config['token']}"},
-                )
-
-                if response.status_code != 200:
-                    _raise_iplas_response_error(response, "iPLAS v2 request failed")
-
-                data = response.json()
-                stations = [IplasStation(**item) for item in data]
-                stations.sort(key=lambda s: (s.order is None, s.order))
-
-        except httpx.RequestError as e:
-            _raise_iplas_unavailable("iPLAS v2 service unavailable", e)
-
-        # Store in cache
-        if redis and stations:
             try:
-                serialized = json_dumps([s.model_dump() for s in stations])
-                await _set_redis_cached_value(redis, cache_key, IPLAS_CACHE_TTL_STATIONS, serialized)
-                logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_STATIONS}s)")
-            except Exception as e:
-                logger.warning(f"Redis SET error: {e}")
+                async with _pooled_client() as client:
+                    response = await client.get(
+                        url,
+                        headers={"Authorization": f"Bearer {site_config['token']}"},
+                    )
+
+                    if response.status_code != 200:
+                        _raise_iplas_response_error(response, "iPLAS v2 request failed")
+
+                    data = response.json()
+                    stations = [IplasStation(**item) for item in data]
+                    stations.sort(key=lambda s: (s.order is None, s.order))
+
+            except httpx.RequestError as e:
+                _raise_iplas_unavailable("iPLAS v2 service unavailable", e)
+
+            # Store in cache
+            if redis and stations:
+                try:
+                    serialized = json_dumps([s.model_dump() for s in stations])
+                    await _set_redis_cached_value(redis, cache_key, IPLAS_CACHE_TTL_STATIONS, serialized)
+                    logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_STATIONS}s)")
+                except Exception as e:
+                    logger.warning(f"Redis SET error: {e}")
+            return stations
+
+        stations = await _run_singleflight("stations", cache_key, fetch_stations)
 
     return IplasStationListResponse(
         data=stations,
@@ -3317,37 +3441,42 @@ async def get_devices(
     # Fetch from iPLAS if cache miss
     if not cached:
         logger.debug(f"Cache MISS: {cache_key}")
-        site_config = _get_site_config(request.site, request.token)
-        url = f"{site_config['v2_url']}/{request.site}/{request.project}/{request.station}/test_station_device_list"
+        async def fetch_devices() -> list[str]:
+            devices: list[str] = []
+            site_config = _get_site_config(request.site, request.token)
+            url = f"{site_config['v2_url']}/{request.site}/{request.project}/{request.station}/test_station_device_list"
 
-        try:
-            async with _pooled_client() as client:
-                response = await client.get(
-                    url,
-                    params={
-                        "start_time": _format_datetime_for_iplas_v2(request.start_time),
-                        "end_time": _format_datetime_for_iplas_v2(request.end_time),
-                    },
-                    headers={"Authorization": f"Bearer {site_config['token']}"},
-                )
-
-                if response.status_code != 200:
-                    _raise_iplas_response_error(response, "iPLAS v2 request failed")
-
-                devices = response.json()
-
-        except httpx.RequestError as e:
-            _raise_iplas_unavailable("iPLAS v2 service unavailable", e)
-
-        # Store in cache
-        if redis:
             try:
-                serialized = json_dumps(devices)
-                cache_ttl = IPLAS_CACHE_TTL_DEVICES if devices else IPLAS_CACHE_TTL_EMPTY
-                await _set_redis_cached_value(redis, cache_key, cache_ttl, serialized)
-                logger.debug(f"Cached: {cache_key} (TTL={cache_ttl}s)")
-            except Exception as e:
-                logger.warning(f"Redis SET error: {e}")
+                async with _pooled_client() as client:
+                    response = await client.get(
+                        url,
+                        params={
+                            "start_time": _format_datetime_for_iplas_v2(request.start_time),
+                            "end_time": _format_datetime_for_iplas_v2(request.end_time),
+                        },
+                        headers={"Authorization": f"Bearer {site_config['token']}"},
+                    )
+
+                    if response.status_code != 200:
+                        _raise_iplas_response_error(response, "iPLAS v2 request failed")
+
+                    devices = response.json()
+
+            except httpx.RequestError as e:
+                _raise_iplas_unavailable("iPLAS v2 service unavailable", e)
+
+            # Store in cache
+            if redis:
+                try:
+                    serialized = json_dumps(devices)
+                    cache_ttl = _select_iplas_cache_ttl(request.end_time, IPLAS_CACHE_TTL_DEVICES if devices else IPLAS_CACHE_TTL_EMPTY, is_empty=not devices)
+                    await _set_redis_cached_value(redis, cache_key, cache_ttl, serialized)
+                    logger.debug(f"Cached: {cache_key} (TTL={cache_ttl}s)")
+                except Exception as e:
+                    logger.warning(f"Redis SET error: {e}")
+            return devices
+
+        devices = await _run_singleflight("devices", cache_key, fetch_devices)
 
     return IplasDeviceListResponse(
         data=devices,
@@ -3397,76 +3526,82 @@ async def search_by_isn(
     if not cached:
         logger.debug(f"Cache MISS: {cache_key}")
 
-        # If user provided a token, use it with PTB as default site
-        if request.token:
-            site_config = _get_site_config("PTB", request.token)
-            try:
-                url = f"{site_config['v2_url']}/isn_search"
-                async with _pooled_client() as client:
-                    response = await client.get(
-                        url,
-                        params={"isn": request.isn},
-                        headers={"Authorization": f"Bearer {site_config['token']}"},
-                    )
-                    if response.status_code == 200:
-                        data = response.json()
-                        if data.get("status_code") == 200 and data.get("data"):
-                            results = data["data"]
-            except Exception as e:
-                logger.warning(f"Failed to search ISN with user token: {e}")
-        else:
-            # UPDATED: Query all configured sites in PARALLEL instead of sequentially
-            # This dramatically reduces search time from O(N * timeout) to O(timeout)
-            async def search_site(site_name: str, site_cfg: dict) -> tuple[str, list[dict]]:
-                """Search a single site for the ISN."""
-                if not site_cfg.get("token"):
-                    return site_name, []
+        async def fetch_isn_results() -> list[dict]:
+            results: list[dict] = []
+
+            # If user provided a token, use it with PTB as default site
+            if request.token:
+                site_config = _get_site_config("PTB", request.token)
                 try:
-                    v2_url = f"{site_cfg['base_url']}:{IPLAS_PORT}{IPLAS_V2_VERSION}"
-                    url = f"{v2_url}/isn_search"
-                    # Use shorter timeout for parallel requests (30s per site)
+                    url = f"{site_config['v2_url']}/isn_search"
                     async with _pooled_client() as client:
                         response = await client.get(
                             url,
                             params={"isn": request.isn},
-                            headers={"Authorization": f"Bearer {site_cfg['token']}"},
-                            timeout=30.0,
+                            headers={"Authorization": f"Bearer {site_config['token']}"},
                         )
                         if response.status_code == 200:
                             data = response.json()
                             if data.get("status_code") == 200 and data.get("data"):
-                                logger.info(f"Found ISN {request.isn} in {site_name}")
-                                return site_name, data["data"]
-                        else:
-                            logger.debug(f"ISN not found in {site_name}: {response.status_code}")
+                                results = data["data"]
                 except Exception as e:
-                    logger.warning(f"Failed to search ISN in {site_name}: {e}")
-                return site_name, []
+                    logger.warning(f"Failed to search ISN with user token: {e}")
+            else:
+                # UPDATED: Query all configured sites in PARALLEL instead of sequentially
+                # This dramatically reduces search time from O(N * timeout) to O(timeout)
+                async def search_site(site_name: str, site_cfg: dict) -> tuple[str, list[dict]]:
+                    """Search a single site for the ISN."""
+                    if not site_cfg.get("token"):
+                        return site_name, []
+                    try:
+                        v2_url = f"{site_cfg['base_url']}:{IPLAS_PORT}{IPLAS_V2_VERSION}"
+                        url = f"{v2_url}/isn_search"
+                        # Use shorter timeout for parallel requests (30s per site)
+                        async with _pooled_client() as client:
+                            response = await client.get(
+                                url,
+                                params={"isn": request.isn},
+                                headers={"Authorization": f"Bearer {site_cfg['token']}"},
+                                timeout=30.0,
+                            )
+                            if response.status_code == 200:
+                                data = response.json()
+                                if data.get("status_code") == 200 and data.get("data"):
+                                    logger.info(f"Found ISN {request.isn} in {site_name}")
+                                    return site_name, data["data"]
+                            else:
+                                logger.debug(f"ISN not found in {site_name}: {response.status_code}")
+                    except Exception as e:
+                        logger.warning(f"Failed to search ISN in {site_name}: {e}")
+                    return site_name, []
 
-            # Execute all site searches in parallel
-            tasks = [search_site(site_name, site_cfg) for site_name, site_cfg in _iter_active_iplas_sites()]
-            site_results = await asyncio.gather(*tasks, return_exceptions=True)
+                # Execute all site searches in parallel
+                tasks = [search_site(site_name, site_cfg) for site_name, site_cfg in _iter_active_iplas_sites()]
+                site_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Collect results from first site that has data
-            for result in site_results:
-                if isinstance(result, BaseException):
-                    if not isinstance(result, Exception):
-                        raise result
-                    continue
-                site_name, site_data = result
-                if site_data:
-                    results = site_data
-                    break  # Use first site with results
+                # Collect results from first site that has data
+                for result in site_results:
+                    if isinstance(result, BaseException):
+                        if not isinstance(result, Exception):
+                            raise result
+                        continue
+                    site_name, site_data = result
+                    if site_data:
+                        results = site_data
+                        break  # Use first site with results
 
-        # Store in cache
-        if redis:
-            try:
-                serialized = json_dumps(results)
-                cache_ttl = IPLAS_CACHE_TTL_ISN if results else IPLAS_CACHE_TTL_EMPTY
-                await _set_redis_cached_value(redis, cache_key, cache_ttl, serialized)
-                logger.debug(f"Cached: {cache_key} (TTL={cache_ttl}s)")
-            except Exception as e:
-                logger.warning(f"Redis SET error: {e}")
+            # Store in cache
+            if redis:
+                try:
+                    serialized = json_dumps(results)
+                    cache_ttl = IPLAS_CACHE_TTL_ISN if results else IPLAS_CACHE_TTL_EMPTY
+                    await _set_redis_cached_value(redis, cache_key, cache_ttl, serialized)
+                    logger.debug(f"Cached: {cache_key} (TTL={cache_ttl}s)")
+                except Exception as e:
+                    logger.warning(f"Redis SET error: {e}")
+            return results
+
+        results = await _run_singleflight("isn-search", cache_key, fetch_isn_results)
 
     return IplasIsnSearchResponse(
         data=results,
@@ -3523,78 +3658,85 @@ async def search_by_isn_batch(
             if not cached:
                 logger.debug(f"Cache MISS: {cache_key}")
 
-                # If user provided a token, use it with PTB as default site
-                if request.token:
-                    site_config = _get_site_config("PTB", request.token)
-                    try:
-                        url = f"{site_config['v2_url']}/isn_search"
-                        async with _pooled_client() as client:
-                            response = await client.get(
-                                url,
-                                params={"isn": isn},
-                                headers={"Authorization": f"Bearer {site_config['token']}"},
-                                timeout=30.0,
-                            )
-                            if response.status_code == 200:
-                                data = response.json()
-                                if data.get("status_code") == 200 and data.get("data"):
-                                    results = data["data"]
-                    except Exception as e:
-                        error_msg = str(e)
-                        logger.warning(f"Failed to search ISN {isn} with user token: {e}")
-                else:
-                    # UPDATED: Query all configured sites in PARALLEL instead of sequentially
-                    async def search_site_for_isn(site_name: str, site_cfg: dict) -> tuple[str, list[dict]]:
-                        """Search a single site for the ISN."""
-                        if not site_cfg.get("token"):
-                            return site_name, []
+                async def fetch_isn_results() -> tuple[list[dict], str | None]:
+                    results: list[dict] = []
+                    error_msg: str | None = None
+
+                    # If user provided a token, use it with PTB as default site
+                    if request.token:
+                        site_config = _get_site_config("PTB", request.token)
                         try:
-                            v2_url = f"{site_cfg['base_url']}:{IPLAS_PORT}{IPLAS_V2_VERSION}"
-                            url = f"{v2_url}/isn_search"
-                            # Use shorter timeout for parallel requests (30s per site)
+                            url = f"{site_config['v2_url']}/isn_search"
                             async with _pooled_client() as client:
                                 response = await client.get(
                                     url,
                                     params={"isn": isn},
-                                    headers={"Authorization": f"Bearer {site_cfg['token']}"},
+                                    headers={"Authorization": f"Bearer {site_config['token']}"},
                                     timeout=30.0,
                                 )
                                 if response.status_code == 200:
                                     data = response.json()
                                     if data.get("status_code") == 200 and data.get("data"):
-                                        logger.debug(f"Found ISN {isn} in {site_name}")
-                                        return site_name, data["data"]
-                                else:
-                                    logger.debug(f"ISN not found in {site_name}: {response.status_code}")
+                                        results = data["data"]
                         except Exception as e:
-                            logger.warning(f"Failed to search ISN {isn} in {site_name}: {e!r}")
-                        return site_name, []
+                            error_msg = str(e)
+                            logger.warning(f"Failed to search ISN {isn} with user token: {e}")
+                    else:
+                        # UPDATED: Query all configured sites in PARALLEL instead of sequentially
+                        async def search_site_for_isn(site_name: str, site_cfg: dict) -> tuple[str, list[dict]]:
+                            """Search a single site for the ISN."""
+                            if not site_cfg.get("token"):
+                                return site_name, []
+                            try:
+                                v2_url = f"{site_cfg['base_url']}:{IPLAS_PORT}{IPLAS_V2_VERSION}"
+                                url = f"{v2_url}/isn_search"
+                                # Use shorter timeout for parallel requests (30s per site)
+                                async with _pooled_client() as client:
+                                    response = await client.get(
+                                        url,
+                                        params={"isn": isn},
+                                        headers={"Authorization": f"Bearer {site_cfg['token']}"},
+                                        timeout=30.0,
+                                    )
+                                    if response.status_code == 200:
+                                        data = response.json()
+                                        if data.get("status_code") == 200 and data.get("data"):
+                                            logger.debug(f"Found ISN {isn} in {site_name}")
+                                            return site_name, data["data"]
+                                    else:
+                                        logger.debug(f"ISN not found in {site_name}: {response.status_code}")
+                            except Exception as e:
+                                logger.warning(f"Failed to search ISN {isn} in {site_name}: {e!r}")
+                            return site_name, []
 
-                    # Execute all site searches in parallel
-                    site_tasks = [search_site_for_isn(site_name, site_cfg) for site_name, site_cfg in _iter_active_iplas_sites()]
-                    site_results = await asyncio.gather(*site_tasks, return_exceptions=True)
+                        # Execute all site searches in parallel
+                        site_tasks = [search_site_for_isn(site_name, site_cfg) for site_name, site_cfg in _iter_active_iplas_sites()]
+                        site_results = await asyncio.gather(*site_tasks, return_exceptions=True)
 
-                    # Collect results from first site that has data
-                    for site_result in site_results:
-                        if isinstance(site_result, BaseException):
-                            if not isinstance(site_result, Exception):
-                                raise site_result
-                            error_msg = str(site_result)
-                            continue
-                        site_name, site_data = site_result
-                        if site_data:
-                            results = site_data
-                            break  # Use first site with results
+                        # Collect results from first site that has data
+                        for site_result in site_results:
+                            if isinstance(site_result, BaseException):
+                                if not isinstance(site_result, Exception):
+                                    raise site_result
+                                error_msg = str(site_result)
+                                continue
+                            site_name, site_data = site_result
+                            if site_data:
+                                results = site_data
+                                break  # Use first site with results
 
-                # Store in cache
-                if redis:
-                    try:
-                        serialized = json_dumps(results)
-                        cache_ttl = IPLAS_CACHE_TTL_ISN if results else IPLAS_CACHE_TTL_EMPTY
-                        await _set_redis_cached_value(redis, cache_key, cache_ttl, serialized)
-                        logger.debug(f"Cached: {cache_key} (TTL={cache_ttl}s)")
-                    except Exception as e:
-                        logger.warning(f"Redis SET error: {e}")
+                    # Store in cache
+                    if redis:
+                        try:
+                            serialized = json_dumps(results)
+                            cache_ttl = IPLAS_CACHE_TTL_ISN if results else IPLAS_CACHE_TTL_EMPTY
+                            await _set_redis_cached_value(redis, cache_key, cache_ttl, serialized)
+                            logger.debug(f"Cached: {cache_key} (TTL={cache_ttl}s)")
+                        except Exception as e:
+                            logger.warning(f"Redis SET error: {e}")
+                    return results, error_msg
+
+                results, error_msg = await _run_singleflight("isn-search-batch", cache_key, fetch_isn_results)
 
         return IplasIsnSearchBatchItem(
             isn=isn,
@@ -3677,65 +3819,69 @@ async def _search_isn_for_project(
 
     logger.debug(f"Cache MISS: {cache_key}")
 
-    site: str | None = None
-    project: str | None = None
+    async def fetch_site_project() -> tuple[str | None, str | None]:
+        site: str | None = None
+        project: str | None = None
 
-    # If user provided a token, use it with PTB as default site
-    if token:
-        site_config = _get_site_config("PTB", token)
-        try:
-            url = f"{site_config['v2_url']}/isn_search"
-            async with _pooled_client() as client:
-                response = await client.get(
-                    url,
-                    params={"isn": isn},
-                    headers={"Authorization": f"Bearer {site_config['token']}"},
-                )
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get("status_code") == 200 and data.get("data"):
-                        first_record = data["data"][0]
-                        site = first_record.get("site")
-                        project = first_record.get("project")
-        except Exception as e:
-            logger.warning(f"Failed to search ISN with user token: {e}")
-    else:
-        # Query all configured sites until we find results
-        for site_name, site_config in _iter_active_iplas_sites():
-            if site and project:
-                break  # Found results, stop querying
-
+        # If user provided a token, use it with PTB as default site
+        if token:
+            site_config = _get_site_config("PTB", token)
             try:
                 url = f"{site_config['v2_url']}/isn_search"
-
                 async with _pooled_client() as client:
                     response = await client.get(
                         url,
                         params={"isn": isn},
                         headers={"Authorization": f"Bearer {site_config['token']}"},
                     )
-
                     if response.status_code == 200:
                         data = response.json()
                         if data.get("status_code") == 200 and data.get("data"):
                             first_record = data["data"][0]
                             site = first_record.get("site")
                             project = first_record.get("project")
-                            logger.info(f"Found ISN {isn} in {site_name}: {site}/{project}")
-                    else:
-                        logger.debug(f"ISN not found in {site_name}: {response.status_code}")
-
             except Exception as e:
-                logger.warning(f"Failed to search ISN in {site_name}: {e}")
+                logger.warning(f"Failed to search ISN with user token: {e}")
+        else:
+            # Query all configured sites until we find results
+            for site_name, site_config in _iter_active_iplas_sites():
+                if site and project:
+                    break  # Found results, stop querying
 
-    # Cache the result
-    if redis and site and project:
-        try:
-            serialized = json_dumps({"site": site, "project": project})
-            await _set_redis_cached_value(redis, cache_key, IPLAS_CACHE_TTL_ISN, serialized)
-            logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_ISN}s)")
-        except Exception as e:
-            logger.warning(f"Redis SET error: {e}")
+                try:
+                    url = f"{site_config['v2_url']}/isn_search"
+
+                    async with _pooled_client() as client:
+                        response = await client.get(
+                            url,
+                            params={"isn": isn},
+                            headers={"Authorization": f"Bearer {site_config['token']}"},
+                        )
+
+                        if response.status_code == 200:
+                            data = response.json()
+                            if data.get("status_code") == 200 and data.get("data"):
+                                first_record = data["data"][0]
+                                site = first_record.get("site")
+                                project = first_record.get("project")
+                                logger.info(f"Found ISN {isn} in {site_name}: {site}/{project}")
+                        else:
+                            logger.debug(f"ISN not found in {site_name}: {response.status_code}")
+
+                except Exception as e:
+                    logger.warning(f"Failed to search ISN in {site_name}: {e}")
+
+        # Cache the result
+        if redis and site and project:
+            try:
+                serialized = json_dumps({"site": site, "project": project})
+                await _set_redis_cached_value(redis, cache_key, IPLAS_CACHE_TTL_ISN, serialized)
+                logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_ISN}s)")
+            except Exception as e:
+                logger.warning(f"Redis SET error: {e}")
+        return site, project
+
+    site, project = await _run_singleflight("isn-project", cache_key, fetch_site_project)
 
     return site, project, False
 
@@ -3771,36 +3917,41 @@ async def _get_stations_for_project(
             logger.warning(f"Redis GET error: {e}")
 
     logger.debug(f"Cache MISS: {cache_key}")
-    site_config = _get_site_config(site, token)
-    url = f"{site_config['v2_url']}/{site}/{project}/station_list"
+    async def fetch_project_stations() -> list[IplasStation]:
+        stations: list[IplasStation] = []
+        site_config = _get_site_config(site, token)
+        url = f"{site_config['v2_url']}/{site}/{project}/station_list"
 
-    try:
-        async with _pooled_client() as client:
-            response = await client.get(
-                url,
-                headers={"Authorization": f"Bearer {site_config['token']}"},
-            )
-
-            if response.status_code != 200:
-                logger.warning(f"Failed to get stations for {site}/{project}: {response.status_code}")
-                return [], False
-
-            data = response.json()
-            stations = [IplasStation(**item) for item in data]
-            stations.sort(key=lambda s: (s.order is None, s.order))
-
-    except httpx.RequestError as e:
-        logger.warning(f"iPLAS v2 API unavailable for station list: {e}")
-        return [], False
-
-    # Store in cache
-    if redis and stations:
         try:
-            serialized = json_dumps([s.model_dump() for s in stations])
-            await _set_redis_cached_value(redis, cache_key, IPLAS_CACHE_TTL_STATIONS, serialized)
-            logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_STATIONS}s)")
-        except Exception as e:
-            logger.warning(f"Redis SET error: {e}")
+            async with _pooled_client() as client:
+                response = await client.get(
+                    url,
+                    headers={"Authorization": f"Bearer {site_config['token']}"},
+                )
+
+                if response.status_code != 200:
+                    logger.warning(f"Failed to get stations for {site}/{project}: {response.status_code}")
+                    return []
+
+                data = response.json()
+                stations = [IplasStation(**item) for item in data]
+                stations.sort(key=lambda s: (s.order is None, s.order))
+
+        except httpx.RequestError as e:
+            logger.warning(f"iPLAS v2 API unavailable for station list: {e}")
+            return []
+
+        # Store in cache
+        if redis and stations:
+            try:
+                serialized = json_dumps([s.model_dump() for s in stations])
+                await _set_redis_cached_value(redis, cache_key, IPLAS_CACHE_TTL_STATIONS, serialized)
+                logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_STATIONS}s)")
+            except Exception as e:
+                logger.warning(f"Redis SET error: {e}")
+        return stations
+
+    stations = await _run_singleflight("project-stations", cache_key, fetch_project_stations)
 
     return stations, False
 
@@ -4397,83 +4548,89 @@ async def get_test_item_by_isn(
     # Fetch from iPLAS if cache miss
     if not cached:
         logger.debug(f"Cache MISS: {cache_key}")
-        site_config = _get_site_config(request.site, request.token)
-        url = f"{site_config['v1_url']}/{request.site}/{request.project}/dut/get_test_item_by_isn"
+        async def fetch_test_items_by_isn() -> list[IplasTestItemByIsnRecord]:
+            results: list[IplasTestItemByIsnRecord] = []
+            site_config = _get_site_config(request.site, request.token)
+            url = f"{site_config['v1_url']}/{request.site}/{request.project}/dut/get_test_item_by_isn"
 
-        # Build payload for iPLAS v1 API
-        payload = {
-            "ISN": request.isn,
-            "station": request.station or "",
-            "model": "",  # Leave empty as per API doc
-            "line": "",  # Leave empty as per API doc
-            "device": request.device or "",
-            "begintime": request.begin_time.strftime("%Y/%m/%d %H:%M:%S"),
-            "endtime": request.end_time.strftime("%Y/%m/%d %H:%M:%S"),
-            "token": site_config["token"],
-        }
+            # Build payload for iPLAS v1 API
+            payload = {
+                "ISN": request.isn,
+                "station": request.station or "",
+                "model": "",  # Leave empty as per API doc
+                "line": "",  # Leave empty as per API doc
+                "device": request.device or "",
+                "begintime": request.begin_time.strftime("%Y/%m/%d %H:%M:%S"),
+                "endtime": request.end_time.strftime("%Y/%m/%d %H:%M:%S"),
+                "token": site_config["token"],
+            }
 
-        logger.info(f"Fetching test items by ISN: {request.isn} from {request.site}/{request.project}")
+            logger.info(f"Fetching test items by ISN: {request.isn} from {request.site}/{request.project}")
 
-        try:
-            async with _pooled_client() as client:
-                response = await client.post(url, json=payload)
+            try:
+                async with _pooled_client() as client:
+                    response = await client.post(url, json=payload)
 
-                if response.status_code != 200:
-                    _raise_iplas_response_error(response, "iPLAS v1 request failed")
+                    if response.status_code != 200:
+                        _raise_iplas_response_error(response, "iPLAS v1 request failed")
 
-                data = response.json()
+                    data = response.json()
 
-                # Check for error response
-                if "error_msg" in data:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="iPLAS v1 request failed",
-                    )
+                    # Check for error response
+                    if "error_msg" in data:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="iPLAS v1 request failed",
+                        )
 
-                # Parse the response data
-                raw_data = data.get("data", [])
-                for item in raw_data:
-                    # Convert test_item format from API to our schema
-                    test_items = []
-                    for ti in item.get("test_item", []):
-                        test_items.append(
-                            IplasTestItemByIsnTestItem(
-                                name=ti.get("name", ""),
-                                Status=ti.get("Status", ""),
-                                LSL=ti.get("LSL", ""),
-                                Value=ti.get("Value", ""),
-                                USL=ti.get("USL", ""),
-                                CYCLE=ti.get("CYCLE", ""),
+                    # Parse the response data
+                    raw_data = data.get("data", [])
+                    for item in raw_data:
+                        # Convert test_item format from API to our schema
+                        test_items = []
+                        for ti in item.get("test_item", []):
+                            test_items.append(
+                                IplasTestItemByIsnTestItem(
+                                    name=ti.get("name", ""),
+                                    Status=ti.get("Status", ""),
+                                    LSL=ti.get("LSL", ""),
+                                    Value=ti.get("Value", ""),
+                                    USL=ti.get("USL", ""),
+                                    CYCLE=ti.get("CYCLE", ""),
+                                )
+                            )
+
+                        results.append(
+                            IplasTestItemByIsnRecord(
+                                site=item.get("site", request.site),
+                                project=item.get("project", request.project),
+                                ISN=item.get("ISN", request.isn),
+                                station=item.get("station", ""),
+                                model=item.get("model", ""),
+                                line=item.get("line", ""),
+                                device=item.get("device", ""),
+                                test_end_time=item.get("test_end_time", ""),
+                                test_item=test_items,
                             )
                         )
 
-                    results.append(
-                        IplasTestItemByIsnRecord(
-                            site=item.get("site", request.site),
-                            project=item.get("project", request.project),
-                            ISN=item.get("ISN", request.isn),
-                            station=item.get("station", ""),
-                            model=item.get("model", ""),
-                            line=item.get("line", ""),
-                            device=item.get("device", ""),
-                            test_end_time=item.get("test_end_time", ""),
-                            test_item=test_items,
-                        )
-                    )
+                    logger.info(f"Found {len(results)} records for ISN {request.isn}")
 
-                logger.info(f"Found {len(results)} records for ISN {request.isn}")
+            except httpx.RequestError as e:
+                _raise_iplas_unavailable("iPLAS v1 service unavailable", e)
 
-        except httpx.RequestError as e:
-            _raise_iplas_unavailable("iPLAS v1 service unavailable", e)
+            # Store in cache
+            if redis and results:
+                try:
+                    serialized = json_dumps([r.model_dump() for r in results])
+                    cache_ttl = _select_iplas_cache_ttl(request.end_time, IPLAS_CACHE_TTL_ISN)
+                    await _set_redis_cached_value(redis, cache_key, cache_ttl, serialized)
+                    logger.debug(f"Cached: {cache_key} (TTL={cache_ttl}s)")
+                except Exception as e:
+                    logger.warning(f"Redis SET error: {e}")
+            return results
 
-        # Store in cache
-        if redis and results:
-            try:
-                serialized = json_dumps([r.model_dump() for r in results])
-                await _set_redis_cached_value(redis, cache_key, IPLAS_CACHE_TTL_ISN, serialized)
-                logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_ISN}s)")
-            except Exception as e:
-                logger.warning(f"Redis SET error: {e}")
+        results = await _run_singleflight("test-item-by-isn", cache_key, fetch_test_items_by_isn)
 
     return IplasTestItemByIsnResponse(
         data=results,
@@ -4539,10 +4696,12 @@ async def stream_csv_test_items(
                 except Exception as e:
                     logger.warning(f"Redis GET error in stream: {e}")
 
-            # Fetch from iPLAS if cache miss
+            # Fetch from iPLAS if cache miss (chunks fetched concurrently, merged in order, then cached)
             if not cached:
                 logger.debug(f"Cache MISS (stream): {cache_key}")
-                records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid = await _fetch_chunked_from_iplas(
+                records, possibly_truncated, chunks_fetched, total_chunks, used_hybrid = await _fetch_and_cache_csv_test_items(
+                    redis,
+                    cache_key,
                     request.site,
                     request.project,
                     request.station,
@@ -4552,15 +4711,6 @@ async def stream_csv_test_items(
                     request.test_status,
                     request.token,
                 )
-
-                # Store in cache for subsequent requests
-                if redis:
-                    try:
-                        serialized = json_dumps(records)
-                        await _set_redis_cached_value(redis, cache_key, IPLAS_CACHE_TTL, serialized)
-                        logger.debug(f"Cached (stream): {cache_key} (TTL={IPLAS_CACHE_TTL}s)")
-                    except Exception as e:
-                        logger.warning(f"Redis SET error in stream: {e}")
             else:
                 possibly_truncated = False
                 chunks_fetched = 1

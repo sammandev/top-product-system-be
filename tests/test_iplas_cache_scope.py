@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -80,12 +80,13 @@ async def test_empty_device_response_is_cached_briefly(monkeypatch):
         "_get_site_config",
         lambda _site, _token: {"v2_url": "http://iplas.test", "token": "configured"},
     )
+    end_time = datetime.now(UTC)
     request = IplasDeviceListRequest(
         site="PTB",
         project="HH5K",
         station="Wireless_Test_2_5G",
-        start_time=datetime(2026, 8, 21, 8),
-        end_time=datetime(2026, 8, 21, 9),
+        start_time=end_time - timedelta(hours=1),
+        end_time=end_time,
     )
 
     first = await iplas_proxy.get_devices(request)

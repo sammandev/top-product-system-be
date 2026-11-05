@@ -1,3 +1,4 @@
+import asyncio
 import io
 import logging
 
@@ -23,6 +24,11 @@ MC2_FILE_DEFAULT = File(
     ...,
     description="MC2 CSV or XLSX file",
 )
+
+
+def _workbook_to_csv(raw: bytes) -> str:
+    df = pd.read_excel(io.BytesIO(raw), sheet_name=0, dtype=str, header=0)
+    return df.to_csv(index=False)
 
 
 @router.post(
@@ -54,8 +60,7 @@ async def analyze_multi_dut(
     # Convert XLSX to CSV if needed
     if filename_lower.endswith((".xls", ".xlsx")):
         try:
-            df = pd.read_excel(io.BytesIO(raw), sheet_name=0, dtype=str, header=0)
-            mc2_text = df.to_csv(index=False)
+            mc2_text = await asyncio.to_thread(_workbook_to_csv, raw)
         except Exception as e:
             logger.warning("Failed to parse uploaded MC2 workbook: %s", e)
             raise HTTPException(status_code=400, detail="Failed to parse uploaded MC2 workbook") from e
@@ -91,7 +96,8 @@ async def analyze_multi_dut(
         raise HTTPException(status_code=400, detail="Spec file did not provide usable configuration")
 
     try:
-        xlsx_bytes, summary = analyze_mc2_with_spec(
+        xlsx_bytes, summary = await asyncio.to_thread(
+            analyze_mc2_with_spec,
             mc2_text,
             spec,
             criteria_rules=criteria_rules,

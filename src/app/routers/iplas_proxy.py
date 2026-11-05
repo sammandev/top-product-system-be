@@ -455,6 +455,10 @@ async def _get_redis_cached_value(redis: Redis, key: str) -> bytes | str | None:
     raise TypeError("Redis GET returned a value that is not bytes or text")
 
 
+async def _set_redis_cached_value(redis: Redis, key: str, ttl: int, value: str | bytes) -> None:
+    await asyncio.to_thread(redis.setex, key, ttl, value)
+
+
 async def close_redis_client() -> None:
     """Close the shared synchronous Redis client without blocking the event loop."""
     global _redis_client
@@ -979,7 +983,7 @@ async def _wait_for_station_bucket_unlock(
     deadline = asyncio.get_running_loop().time() + timeout
 
     while asyncio.get_running_loop().time() < deadline:
-        if not redis.exists(lock_key):
+        if not await asyncio.to_thread(redis.exists, lock_key):
             return
         await asyncio.sleep(poll_interval_seconds)
 
@@ -1219,7 +1223,9 @@ async def _fetch_station_bucket_with_cache(
     scope_label = _build_station_bucket_scope_label(site, project, station, device_scope, test_status)
 
     if redis:
-        cached_meta, cached_records = _read_station_bucket(redis, scope_hash, bucket_window.bucket_start)
+        cached_meta, cached_records = await asyncio.to_thread(
+            _read_station_bucket, redis, scope_hash, bucket_window.bucket_start
+        )
         if cached_meta is not None and cached_records is not None:
             if _is_station_bucket_cache_reusable(cached_meta, observable_now):
                 logger.debug(
@@ -1237,10 +1243,14 @@ async def _fetch_station_bucket_with_cache(
 
     lock_token: str | None = None
     if redis:
-        lock_token = _acquire_station_bucket_lock(redis, scope_hash, bucket_window.bucket_start)
+        lock_token = await asyncio.to_thread(
+            _acquire_station_bucket_lock, redis, scope_hash, bucket_window.bucket_start
+        )
         if lock_token is None:
             await _wait_for_station_bucket_unlock(redis, scope_hash, bucket_window.bucket_start)
-            cached_meta, cached_records = _read_station_bucket(redis, scope_hash, bucket_window.bucket_start)
+            cached_meta, cached_records = await asyncio.to_thread(
+                _read_station_bucket, redis, scope_hash, bucket_window.bucket_start
+            )
             if cached_meta is not None and cached_records is not None:
                 logger.debug(
                     "Station bucket cache HIT after wait: %s",
@@ -1254,7 +1264,9 @@ async def _fetch_station_bucket_with_cache(
                     bucket_total_chunks=0,
                 )
 
-            lock_token = _acquire_station_bucket_lock(redis, scope_hash, bucket_window.bucket_start)
+            lock_token = await asyncio.to_thread(
+                _acquire_station_bucket_lock, redis, scope_hash, bucket_window.bucket_start
+            )
 
     try:
         bucket_records, bucket_truncated, bucket_chunks_fetched, bucket_total_chunks, bucket_used_hybrid = await _fetch_chunked_from_iplas(
@@ -1308,7 +1320,8 @@ async def _fetch_station_bucket_with_cache(
 
         if redis:
             try:
-                _write_station_bucket(
+                await asyncio.to_thread(
+                    _write_station_bucket,
                     redis,
                     scope_hash=scope_hash,
                     scope_label=scope_label,
@@ -1327,7 +1340,9 @@ async def _fetch_station_bucket_with_cache(
         )
     finally:
         if redis and lock_token is not None:
-            _release_station_bucket_lock(redis, scope_hash, bucket_window.bucket_start, token=lock_token)
+            await asyncio.to_thread(
+                _release_station_bucket_lock, redis, scope_hash, bucket_window.bucket_start, token=lock_token
+            )
 
 
 async def _fetch_station_range_with_bucket_cache(
@@ -2742,7 +2757,7 @@ async def get_record_test_items(
         if redis:
             try:
                 serialized = json_dumps(records)
-                redis.setex(cache_key, IPLAS_CACHE_TTL, serialized)
+                await _set_redis_cached_value(redis, cache_key, IPLAS_CACHE_TTL, serialized)
                 logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL}s)")
             except Exception as e:
                 logger.warning(f"Redis SET error: {e}")
@@ -2834,7 +2849,7 @@ async def get_test_item_names(
         if redis:
             try:
                 serialized = json_dumps(records)
-                redis.setex(cache_key, IPLAS_CACHE_TTL, serialized)
+                await _set_redis_cached_value(redis, cache_key, IPLAS_CACHE_TTL, serialized)
                 logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL}s)")
             except Exception as e:
                 logger.warning(f"Redis SET error: {e}")
@@ -3180,7 +3195,7 @@ async def get_site_projects(
         if redis and all_projects:
             try:
                 serialized = json_dumps([p.model_dump() for p in all_projects])
-                redis.setex(cache_key, IPLAS_CACHE_TTL_SITE_PROJECTS, serialized)
+                await _set_redis_cached_value(redis, cache_key, IPLAS_CACHE_TTL_SITE_PROJECTS, serialized)
                 logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_SITE_PROJECTS}s)")
             except Exception as e:
                 logger.warning(f"Redis SET error: {e}")
@@ -3253,7 +3268,7 @@ async def get_stations(
         if redis and stations:
             try:
                 serialized = json_dumps([s.model_dump() for s in stations])
-                redis.setex(cache_key, IPLAS_CACHE_TTL_STATIONS, serialized)
+                await _set_redis_cached_value(redis, cache_key, IPLAS_CACHE_TTL_STATIONS, serialized)
                 logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_STATIONS}s)")
             except Exception as e:
                 logger.warning(f"Redis SET error: {e}")
@@ -3329,7 +3344,7 @@ async def get_devices(
             try:
                 serialized = json_dumps(devices)
                 cache_ttl = IPLAS_CACHE_TTL_DEVICES if devices else IPLAS_CACHE_TTL_EMPTY
-                redis.setex(cache_key, cache_ttl, serialized)
+                await _set_redis_cached_value(redis, cache_key, cache_ttl, serialized)
                 logger.debug(f"Cached: {cache_key} (TTL={cache_ttl}s)")
             except Exception as e:
                 logger.warning(f"Redis SET error: {e}")
@@ -3448,7 +3463,7 @@ async def search_by_isn(
             try:
                 serialized = json_dumps(results)
                 cache_ttl = IPLAS_CACHE_TTL_ISN if results else IPLAS_CACHE_TTL_EMPTY
-                redis.setex(cache_key, cache_ttl, serialized)
+                await _set_redis_cached_value(redis, cache_key, cache_ttl, serialized)
                 logger.debug(f"Cached: {cache_key} (TTL={cache_ttl}s)")
             except Exception as e:
                 logger.warning(f"Redis SET error: {e}")
@@ -3576,7 +3591,7 @@ async def search_by_isn_batch(
                     try:
                         serialized = json_dumps(results)
                         cache_ttl = IPLAS_CACHE_TTL_ISN if results else IPLAS_CACHE_TTL_EMPTY
-                        redis.setex(cache_key, cache_ttl, serialized)
+                        await _set_redis_cached_value(redis, cache_key, cache_ttl, serialized)
                         logger.debug(f"Cached: {cache_key} (TTL={cache_ttl}s)")
                     except Exception as e:
                         logger.warning(f"Redis SET error: {e}")
@@ -3717,7 +3732,7 @@ async def _search_isn_for_project(
     if redis and site and project:
         try:
             serialized = json_dumps({"site": site, "project": project})
-            redis.setex(cache_key, IPLAS_CACHE_TTL_ISN, serialized)
+            await _set_redis_cached_value(redis, cache_key, IPLAS_CACHE_TTL_ISN, serialized)
             logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_ISN}s)")
         except Exception as e:
             logger.warning(f"Redis SET error: {e}")
@@ -3782,7 +3797,7 @@ async def _get_stations_for_project(
     if redis and stations:
         try:
             serialized = json_dumps([s.model_dump() for s in stations])
-            redis.setex(cache_key, IPLAS_CACHE_TTL_STATIONS, serialized)
+            await _set_redis_cached_value(redis, cache_key, IPLAS_CACHE_TTL_STATIONS, serialized)
             logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_STATIONS}s)")
         except Exception as e:
             logger.warning(f"Redis SET error: {e}")
@@ -4455,7 +4470,7 @@ async def get_test_item_by_isn(
         if redis and results:
             try:
                 serialized = json_dumps([r.model_dump() for r in results])
-                redis.setex(cache_key, IPLAS_CACHE_TTL_ISN, serialized)
+                await _set_redis_cached_value(redis, cache_key, IPLAS_CACHE_TTL_ISN, serialized)
                 logger.debug(f"Cached: {cache_key} (TTL={IPLAS_CACHE_TTL_ISN}s)")
             except Exception as e:
                 logger.warning(f"Redis SET error: {e}")
@@ -4542,7 +4557,7 @@ async def stream_csv_test_items(
                 if redis:
                     try:
                         serialized = json_dumps(records)
-                        redis.setex(cache_key, IPLAS_CACHE_TTL, serialized)
+                        await _set_redis_cached_value(redis, cache_key, IPLAS_CACHE_TTL, serialized)
                         logger.debug(f"Cached (stream): {cache_key} (TTL={IPLAS_CACHE_TTL}s)")
                     except Exception as e:
                         logger.warning(f"Redis SET error in stream: {e}")

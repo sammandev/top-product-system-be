@@ -4,6 +4,7 @@ Redis caching service for DUT API responses.
 Provides automatic caching with TTL, cache invalidation, and fallback to direct API calls.
 """
 
+import asyncio
 import hashlib
 import logging
 from collections.abc import Callable
@@ -109,7 +110,7 @@ class RedisCacheService:
 
         try:
             # Try to get from cache
-            cached = redis_client.get(cache_key)
+            cached = await asyncio.to_thread(redis_client.get, cache_key)
             if isinstance(cached, (str, bytes, bytearray, memoryview)) and cached:
                 logger.debug("Cache HIT: %s", cache_key)
                 return orjson.loads(cached)
@@ -123,7 +124,7 @@ class RedisCacheService:
         # Store in cache
         try:
             serialized = orjson.dumps(data)
-            redis_client.setex(cache_key, ttl, serialized)
+            await asyncio.to_thread(redis_client.setex, cache_key, ttl, serialized)
             logger.debug("Cached: %s (TTL=%ds)", cache_key, ttl)
         except (RedisConnectionError, RedisError, TypeError) as exc:
             logger.warning("Redis SET error for %s: %s", cache_key, exc)

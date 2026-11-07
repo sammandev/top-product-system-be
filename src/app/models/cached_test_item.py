@@ -13,16 +13,16 @@ from app.db import Base
 class CachedTestItem(Base):
     """
     Stores cached test item names from iPLAS.
-    
+
     This table reduces load time for the station configuration dialog
     by caching unique test item names for each site/project/station combination.
-    
+
     Cache strategy:
     - Key: site + project + station (date range NOT included since test items rarely change)
     - TTL: Managed at application level (default 7 days)
     - Refresh: Manual via "Refresh Test Items" button or when cache expires
     """
-    
+
     __tablename__ = "cached_test_items"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)

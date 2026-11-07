@@ -15,7 +15,6 @@ from app.routers import scoring as scoring_router
 from app.routers import test_log as test_log_router
 from app.routers.external_api_client import get_user_dut_client
 
-
 BASE_DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 client = TestClient(app)
 

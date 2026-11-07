@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import pathlib
 import warnings
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
@@ -11,7 +12,7 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi_cache import FastAPICache
 from fastapi_cache.backends.redis import RedisBackend
 from redis import asyncio as aioredis
@@ -42,10 +43,10 @@ except ImportError:  # pragma: no cover - optional dependency
 # Load local env before importing app modules that read env at import time.
 load_dotenv()
 
-from app.dependencies.authz import get_current_user
-from app.dependencies.external_api_client import get_settings
-from app.utils.auth import validate_auth_configuration
-from app.utils.helpers import _start_cleanup_worker
+from app.dependencies.authz import get_current_user  # noqa: E402
+from app.dependencies.external_api_client import get_settings  # noqa: E402
+from app.utils.auth import validate_auth_configuration  # noqa: E402
+from app.utils.helpers import _start_cleanup_worker  # noqa: E402
 
 # Suppress Pydantic v1 compatibility warning for Python 3.14+
 warnings.filterwarnings("ignore", message="Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater", category=UserWarning, module="fastapi._compat.v1")
@@ -173,9 +174,13 @@ async def _lifespan(_app: FastAPI):
         redis_client = None
         from fastapi_cache.backends.inmemory import InMemoryBackend
 
-        FastAPICache.init(InMemoryBackend(), prefix="api-cache")
+        from app.utils.cache_manager import api_cache_key_builder
+
+        FastAPICache.init(InMemoryBackend(), prefix="api-cache", key_builder=api_cache_key_builder)
     else:
-        FastAPICache.init(RedisBackend(redis_client), prefix="api-cache")
+        from app.utils.cache_manager import api_cache_key_builder
+
+        FastAPICache.init(RedisBackend(redis_client), prefix="api-cache", key_builder=api_cache_key_builder)
         logger.info(f"FastAPI Cache initialized with Redis at {safe_redis_url}")
 
     try:
@@ -337,8 +342,6 @@ def _custom_openapi(app: FastAPI) -> dict[str, Any]:
 
 # Mount static files for offline Swagger UI
 # Path resolution: from src/app/main.py go up to project root then to static/
-import pathlib
-
 _project_root = pathlib.Path(__file__).parent.parent.parent
 _static_dir = _project_root / "static"
 if _static_dir.exists():
@@ -366,9 +369,6 @@ async def redirect_docs():
     return await custom_swagger_ui_html()
 
 # Custom ReDoc endpoint (still needs CDN unless we download redoc standalone)
-from fastapi.openapi.docs import get_redoc_html
-
-
 @app.get("/redoc", include_in_schema=False)
 async def custom_redoc_html():
     if app.openapi_url is None:

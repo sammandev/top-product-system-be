@@ -21,7 +21,6 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 _IS_WINDOWS = os.name == "nt" or sys.platform == "win32"
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)  # unix-only; refuses to open through a pre-placed symlink at the lock path
@@ -521,7 +520,7 @@ def configured_provider() -> str:
     return provider
 
 
-def configured_model(default_model: Optional[str] = None) -> Optional[str]:
+def configured_model(default_model: str | None = None) -> str | None:
     model = (
         os.environ.get(ENV_COMPRESS_MODEL)
         or os.environ.get(ENV_FALLBACK_MODEL)
@@ -534,9 +533,9 @@ def configured_model(default_model: Optional[str] = None) -> Optional[str]:
 
 def run_cli(
     binary_name: str,
-    args: List[str],
-    stdin_prompt: Optional[str] = None,
-    env: Optional[dict] = None,
+    args: list[str],
+    stdin_prompt: str | None = None,
+    env: dict | None = None,
 ) -> str:
     binary = shutil.which(binary_name) or binary_name
     command = [binary, *args]
@@ -792,7 +791,7 @@ TEXT:
 """
 
 
-def build_fix_prompt(original: str, compressed: str, errors: List[str]) -> str:
+def build_fix_prompt(original: str, compressed: str, errors: list[str]) -> str:
     errors_str = "\n".join(f"- {e}" for e in errors)
     return f"""You are fixing a caveman-compressed markdown file. Specific validation errors were found.
 
@@ -828,14 +827,14 @@ NOCOMPRESS_OPEN_RE = re.compile(r"^[ ]{0,3}<!--\s*nocompress\s*-->\s*$", re.IGNO
 NOCOMPRESS_CLOSE_RE = re.compile(r"^[ ]{0,3}<!--\s*/nocompress\s*-->\s*$", re.IGNORECASE)
 
 
-def mask_code_blocks(text: str) -> Tuple[str, List[Tuple[str, str]]]:
+def mask_code_blocks(text: str) -> tuple[str, list[tuple[str, str]]]:
     """Replace fenced and four-space-indented code, and <!-- nocompress -->
     regions, with opaque line markers."""
     if CODE_MARKER_PREFIX in text:
         raise ValueError("Input contains reserved Caveman code-preservation marker")
     lines = text.splitlines(keepends=True)
-    out: List[str] = []
-    blocks: List[Tuple[str, str]] = []
+    out: list[str] = []
+    blocks: list[tuple[str, str]] = []
     i = 0
     while i < len(lines):
         line_without_newline = lines[i].rstrip("\r\n")
@@ -885,7 +884,7 @@ def mask_code_blocks(text: str) -> Tuple[str, List[Tuple[str, str]]]:
     return "".join(out), blocks
 
 
-def restore_code_blocks(text: str, blocks: List[Tuple[str, str]]) -> str:
+def restore_code_blocks(text: str, blocks: list[tuple[str, str]]) -> str:
     """Restore markers exactly; fail closed if model removed, copied, or altered one."""
     restored = text
     for marker, block in blocks:

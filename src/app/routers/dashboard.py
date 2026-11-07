@@ -183,7 +183,7 @@ async def get_dashboard_stats(
 
             cache_stats = get_cache_stats()
             cache_enabled = cache_stats.get("enabled", False)
-            
+
             if cache_enabled and "error" not in cache_stats:
                 cache_status = "Online"
                 cache_total_keys = cache_stats.get("total_keys")
@@ -254,7 +254,7 @@ async def get_upload_stats(
     """
     try:
         upload_dir = Path("data/uploads/test_logs")
-        
+
         if not upload_dir.exists():
             return {
                 "upload_dir_exists": False,

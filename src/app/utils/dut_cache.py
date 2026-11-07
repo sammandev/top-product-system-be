@@ -174,6 +174,25 @@ async def cached_get_dut_summary(
     )
 
 
+async def cached_get_station_records(
+    client: DUTAPIClient,
+    station_id: int,
+    dut_id: int,
+) -> dict[str, Any]:
+    """Get station records with caching."""
+
+    async def fetch(sid: int, did: int):
+        return await client.get_station_records(sid, did)
+
+    return await _cache.get_or_fetch(
+        "dut:records",
+        fetch,
+        station_id,
+        dut_id,
+        ttl=get_cache_ttl("dut:records"),
+    )
+
+
 async def cached_get_station_nonvalue_records(
     client: DUTAPIClient,
     station_id: int,
@@ -185,7 +204,7 @@ async def cached_get_station_nonvalue_records(
         return await client.get_station_nonvalue_records(sid, did)
 
     return await _cache.get_or_fetch(
-        "dut:records",
+        "dut:records:nonvalue",
         fetch,
         station_id,
         dut_id,

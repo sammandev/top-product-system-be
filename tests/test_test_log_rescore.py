@@ -5,7 +5,6 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.routers.test_log import _apply_universal_scoring_to_parse_result, _build_scoring_config_map
 
-
 client = TestClient(app)
 
 

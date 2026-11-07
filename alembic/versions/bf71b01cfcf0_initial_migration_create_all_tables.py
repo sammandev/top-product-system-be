@@ -18,8 +18,7 @@ depends_on = None
 def upgrade() -> None:
     # Import SQLAlchemy types
     import sqlalchemy as sa
-    from sqlalchemy.dialects import postgresql
-    
+
     # Create users table
     op.create_table(
         'users',
@@ -40,7 +39,7 @@ def upgrade() -> None:
     )
     op.create_index('ix_users_id', 'users', ['id'])
     op.create_index('ix_users_username', 'users', ['username'])
-    
+
     # Create roles table
     op.create_table(
         'roles',
@@ -51,7 +50,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('id'),
         sa.UniqueConstraint('name')
     )
-    
+
     # Create permissions table
     op.create_table(
         'permissions',
@@ -62,7 +61,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('id'),
         sa.UniqueConstraint('name')
     )
-    
+
     # Create user_roles junction table
     op.create_table(
         'user_roles',
@@ -74,7 +73,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('user_id', 'role_id')
     )
     op.create_unique_constraint("uq_user_role", "user_roles", ["user_id", "role_id"])
-    
+
     # Create role_permissions junction table
     op.create_table(
         'role_permissions',

@@ -1,8 +1,8 @@
 """Alembic environment configuration for FastAPI backend database migrations."""
 
 import os
-from pathlib import Path
 from logging.config import fileConfig
+from pathlib import Path
 
 from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
@@ -22,10 +22,10 @@ if config.config_file_name is not None:
 
 # Import Base and all models for autogenerate support
 from app.db import Base  # noqa: E402
+from app.models.app_config import AppConfig, GuestCredential, IplasToken, SfistspConfig  # noqa: E402, F401
 
 # Import all models so Alembic can detect them
 from app.models.rbac import Permission, Role  # noqa: E402, F401
-from app.models.app_config import AppConfig, GuestCredential, IplasToken, SfistspConfig  # noqa: E402, F401
 from app.models.top_product import TopProduct, TopProductMeasurement  # noqa: E402, F401
 from app.models.user import User  # noqa: E402, F401
 

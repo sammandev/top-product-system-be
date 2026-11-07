@@ -54,7 +54,7 @@ def test_login_and_me():
             pytest.skip("Test server not running - skipping integration test")
     except requests.exceptions.RequestException:
         pytest.skip("Test server not running - skipping integration test")
-    
+
     # Seed DB with test user
     setup_test_db()
 

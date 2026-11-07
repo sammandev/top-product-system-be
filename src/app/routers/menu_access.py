@@ -458,14 +458,14 @@ async def get_user_menus(
         accessible_menus = (
             db.query(MenuDefinition)
             .join(MenuRoleAccess, MenuDefinition.id == MenuRoleAccess.menu_id)
-            .filter(MenuRoleAccess.role_name == role, MenuRoleAccess.can_view == True, MenuDefinition.is_active == True)
+            .filter(MenuRoleAccess.role_name == role, MenuRoleAccess.can_view.is_(True), MenuDefinition.is_active.is_(True))
             .order_by(MenuDefinition.section, MenuDefinition.sort_order)
             .all()
         )
 
         # Also get admin menus if user is admin
         if role == "admin":
-            accessible_menus = db.query(MenuDefinition).filter(MenuDefinition.is_active == True).order_by(MenuDefinition.section, MenuDefinition.sort_order).all()
+            accessible_menus = db.query(MenuDefinition).filter(MenuDefinition.is_active.is_(True)).order_by(MenuDefinition.section, MenuDefinition.sort_order).all()
 
         # Build menu structure
         menus = []
@@ -495,7 +495,7 @@ async def get_guest_menus(
         accessible_menus = (
             db.query(MenuDefinition)
             .join(MenuRoleAccess, MenuDefinition.id == MenuRoleAccess.menu_id)
-            .filter(MenuRoleAccess.role_name == "guest", MenuRoleAccess.can_view == True, MenuDefinition.is_active == True)
+            .filter(MenuRoleAccess.role_name == "guest", MenuRoleAccess.can_view.is_(True), MenuDefinition.is_active.is_(True))
             .order_by(MenuDefinition.section, MenuDefinition.sort_order)
             .all()
         )

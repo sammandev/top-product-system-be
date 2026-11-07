@@ -5,13 +5,65 @@ Provides cache monitoring, statistics, and invalidation functionality
 for the FastAPI Cache system.
 """
 
+import hashlib
 import logging
+from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlencode
 
 from fastapi_cache import FastAPICache
 from fastapi_cache.backends.redis import RedisBackend
+from sqlalchemy.orm import Session
+from starlette.requests import Request
+from starlette.responses import Response
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_cache_arg(key: str | None, value: Any) -> Any:
+    if key == "db" or isinstance(value, Session):
+        return "__db_session__"
+    base_url = getattr(value, "base_url", None)
+    if isinstance(base_url, str):
+        return ("dut_client", base_url)
+    username = getattr(value, "username", None)
+    if isinstance(username, str):
+        return (
+            "user",
+            getattr(value, "id", None),
+            username,
+            getattr(value, "is_admin", None),
+        )
+    return repr(value)
+
+
+def api_cache_key_builder(
+    func: Callable[..., Any],
+    namespace: str = "",
+    *,
+    request: Request | None = None,
+    response: Response | None = None,
+    args: tuple[Any, ...] = (),
+    kwargs: dict[str, Any] | None = None,
+) -> str:
+    kwargs_dict = kwargs or {}
+    normalized_args = tuple(_normalize_cache_arg(None, arg) for arg in args)
+    normalized_kwargs = {
+        k: _normalize_cache_arg(k, v)
+        for k, v in sorted(kwargs_dict.items())
+        if k != "db" and not isinstance(v, Session)
+    }
+    func_module = getattr(func, "__module__", "")
+    func_name = getattr(func, "__name__", type(func).__qualname__)
+    arg_digest = hashlib.md5(  # noqa: S324
+        f"{func_module}:{func_name}:{normalized_args}:{normalized_kwargs}".encode()
+    ).hexdigest()
+    if request is not None:
+        query_str = urlencode(sorted(request.query_params.multi_items()))
+        route_part = f"{request.url.path}?{query_str}" if query_str else request.url.path
+    else:
+        route_part = f"{func_module}.{func_name}"
+    return f"{namespace}:{route_part}:{arg_digest}"
 
 
 def _get_redis_backend() -> RedisBackend | None:
@@ -26,7 +78,7 @@ def _get_redis_backend() -> RedisBackend | None:
 async def get_cache_stats() -> dict[str, Any]:
     """
     Get comprehensive cache statistics.
-    
+
     Returns:
         Dictionary with cache statistics including:
         - hit_rate: Percentage of cache hits
@@ -41,27 +93,27 @@ async def get_cache_stats() -> dict[str, Any]:
                 "status": "disabled",
                 "message": "Cache backend not initialized"
             }
-        
+
         redis_client = backend.redis
-        
+
         # Get Redis info
         info = await redis_client.info("stats")
         memory_info = await redis_client.info("memory")
-        
+
         # Calculate hit rate
         hits = int(info.get("keyspace_hits", 0))
         misses = int(info.get("keyspace_misses", 0))
         total_requests = hits + misses
         hit_rate = (hits / total_requests * 100) if total_requests > 0 else 0
-        
+
         # Get key count for api-cache prefix
         keys = await redis_client.keys("api-cache:*")
         total_keys = len(keys)
-        
+
         # Memory usage
         used_memory = memory_info.get("used_memory_human", "N/A")
         used_memory_bytes = int(memory_info.get("used_memory", 0))
-        
+
         return {
             "status": "active",
             "hit_rate": round(hit_rate, 2),
@@ -74,7 +126,7 @@ async def get_cache_stats() -> dict[str, Any]:
             "connection_status": "connected",
             "backend_type": "redis"
         }
-        
+
     except Exception as e:
         logger.error(f"Error getting cache stats: {e}", exc_info=True)
         return {
@@ -87,10 +139,10 @@ async def get_cache_stats() -> dict[str, Any]:
 async def clear_cache_by_pattern(pattern: str) -> dict[str, Any]:
     """
     Clear cache entries matching a specific pattern.
-    
+
     Args:
         pattern: Redis key pattern (e.g., "api-cache:*", "api-cache:/api/dut/records/*")
-        
+
     Returns:
         Dictionary with operation results
     """
@@ -98,12 +150,12 @@ async def clear_cache_by_pattern(pattern: str) -> dict[str, Any]:
         backend = _get_redis_backend()
         if not backend:
             return {"status": "error", "message": "Cache backend not initialized"}
-        
+
         redis_client = backend.redis
-        
+
         # Find matching keys
         keys = await redis_client.keys(pattern)
-        
+
         if not keys:
             return {
                 "status": "success",
@@ -111,19 +163,19 @@ async def clear_cache_by_pattern(pattern: str) -> dict[str, Any]:
                 "pattern": pattern,
                 "message": "No keys found matching pattern"
             }
-        
+
         # Delete keys
         deleted_count = await redis_client.delete(*keys)
-        
+
         logger.info(f"Cleared {deleted_count} cache keys matching pattern: {pattern}")
-        
+
         return {
             "status": "success",
             "keys_deleted": deleted_count,
             "pattern": pattern,
             "message": f"Successfully deleted {deleted_count} cache entries"
         }
-        
+
     except Exception as e:
         logger.error(f"Error clearing cache by pattern '{pattern}': {e}", exc_info=True)
         return {
@@ -136,10 +188,10 @@ async def clear_cache_by_pattern(pattern: str) -> dict[str, Any]:
 async def clear_cache_by_tag(tag: str) -> dict[str, Any]:
     """
     Clear cache entries for a specific tag/category.
-    
+
     Args:
         tag: Cache tag (e.g., "dut_records", "sites", "models")
-        
+
     Returns:
         Dictionary with operation results
     """
@@ -150,7 +202,7 @@ async def clear_cache_by_tag(tag: str) -> dict[str, Any]:
 async def clear_all_cache() -> dict[str, Any]:
     """
     Clear all API cache entries.
-    
+
     Returns:
         Dictionary with operation results
     """
@@ -160,10 +212,10 @@ async def clear_all_cache() -> dict[str, Any]:
 async def invalidate_dut_cache(dut_isn: str) -> dict[str, Any]:
     """
     Invalidate all cache entries related to a specific DUT ISN.
-    
+
     Args:
         dut_isn: DUT ISN identifier
-        
+
     Returns:
         Dictionary with operation results
     """
@@ -176,17 +228,17 @@ async def invalidate_dut_cache(dut_isn: str) -> dict[str, Any]:
         f"api-cache:*/pa/*{dut_isn}*",
         f"api-cache:*/top-product*{dut_isn}*",
     ]
-    
+
     total_deleted = 0
     results = []
-    
+
     for pattern in patterns:
         result = await clear_cache_by_pattern(pattern)
         deleted = result.get("keys_deleted", 0)
         total_deleted += deleted
         if deleted > 0:
             results.append({"pattern": pattern, "deleted": deleted})
-    
+
     return {
         "status": "success",
         "dut_isn": dut_isn,
@@ -199,10 +251,10 @@ async def invalidate_dut_cache(dut_isn: str) -> dict[str, Any]:
 async def invalidate_station_cache(station_id: str) -> dict[str, Any]:
     """
     Invalidate all cache entries related to a specific station.
-    
+
     Args:
         station_id: Station identifier
-        
+
     Returns:
         Dictionary with operation results
     """
@@ -211,12 +263,12 @@ async def invalidate_station_cache(station_id: str) -> dict[str, Any]:
         f"api-cache:*/stations/{station_id}/*",
         f"api-cache:*{station_id}*",
     ]
-    
+
     total_deleted = 0
     for pattern in patterns:
         result = await clear_cache_by_pattern(pattern)
         total_deleted += result.get("keys_deleted", 0)
-    
+
     return {
         "status": "success",
         "station_id": station_id,
@@ -228,10 +280,10 @@ async def invalidate_station_cache(station_id: str) -> dict[str, Any]:
 async def get_cache_keys_info(limit: int = 100) -> dict[str, Any]:
     """
     Get information about cached keys.
-    
+
     Args:
         limit: Maximum number of keys to return
-        
+
     Returns:
         Dictionary with key information
     """
@@ -239,20 +291,20 @@ async def get_cache_keys_info(limit: int = 100) -> dict[str, Any]:
         backend = _get_redis_backend()
         if not backend:
             return {"status": "error", "message": "Cache backend not initialized"}
-        
+
         redis_client = backend.redis
-        
+
         # Get all cache keys
         keys = await redis_client.keys("api-cache:*")
         total_keys = len(keys)
-        
+
         # Get detailed info for first 'limit' keys
         key_details = []
         for key in keys[:limit]:
             try:
                 ttl = await redis_client.ttl(key)
                 key_type = await redis_client.type(key)
-                
+
                 key_details.append({
                     "key": key.decode() if isinstance(key, bytes) else key,
                     "ttl": ttl,
@@ -260,14 +312,14 @@ async def get_cache_keys_info(limit: int = 100) -> dict[str, Any]:
                 })
             except Exception as e:
                 logger.warning(f"Error getting info for key {key}: {e}")
-        
+
         return {
             "status": "success",
             "total_keys": total_keys,
             "keys_shown": len(key_details),
             "keys": key_details
         }
-        
+
     except Exception as e:
         logger.error(f"Error getting cache keys info: {e}", exc_info=True)
         return {
@@ -279,11 +331,11 @@ async def get_cache_keys_info(limit: int = 100) -> dict[str, Any]:
 async def adjust_cache_ttl(pattern: str, new_ttl: int) -> dict[str, Any]:
     """
     Adjust TTL for cache entries matching a pattern.
-    
+
     Args:
         pattern: Redis key pattern
         new_ttl: New TTL in seconds
-        
+
     Returns:
         Dictionary with operation results
     """
@@ -291,12 +343,12 @@ async def adjust_cache_ttl(pattern: str, new_ttl: int) -> dict[str, Any]:
         backend = _get_redis_backend()
         if not backend:
             return {"status": "error", "message": "Cache backend not initialized"}
-        
+
         redis_client = backend.redis
-        
+
         # Find matching keys
         keys = await redis_client.keys(pattern)
-        
+
         if not keys:
             return {
                 "status": "success",
@@ -304,7 +356,7 @@ async def adjust_cache_ttl(pattern: str, new_ttl: int) -> dict[str, Any]:
                 "pattern": pattern,
                 "message": "No keys found matching pattern"
             }
-        
+
         # Update TTL for each key
         updated_count = 0
         for key in keys:
@@ -313,7 +365,7 @@ async def adjust_cache_ttl(pattern: str, new_ttl: int) -> dict[str, Any]:
                 updated_count += 1
             except Exception as e:
                 logger.warning(f"Error updating TTL for key {key}: {e}")
-        
+
         return {
             "status": "success",
             "keys_updated": updated_count,
@@ -321,7 +373,7 @@ async def adjust_cache_ttl(pattern: str, new_ttl: int) -> dict[str, Any]:
             "new_ttl": new_ttl,
             "message": f"Updated TTL for {updated_count} cache entries to {new_ttl}s"
         }
-        
+
     except Exception as e:
         logger.error(f"Error adjusting cache TTL: {e}", exc_info=True)
         return {

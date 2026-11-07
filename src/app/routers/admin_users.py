@@ -120,17 +120,17 @@ async def get_users(
 ):
     """
     Get all users with statistics.
-    
+
     **Requires:** Admin authentication
-    
+
     **Description:**
     Retrieves a complete list of all users in the system along with aggregate statistics
     including total users, active users, admin users, and recently active users.
-    
+
     **Returns:**
     - **users**: List of user objects with id, username, email, is_admin, is_active, created_at
     - **stats**: Statistics object containing total_users, active_users, admin_users, recent_users
-    
+
     **Example Response:**
     ```json
     {
@@ -213,22 +213,22 @@ async def create_user(
 ):
     """
     Create a new user account.
-    
+
     **Requires:** Admin authentication
-    
+
     **Description:**
     Creates a new user account with the specified username, email, password, and admin status.
     Passwords are automatically hashed using bcrypt before storage.
-    
+
     **Parameters:**
     - **username**: Unique username for the new user (alphanumeric and underscores)
     - **email**: Valid email address
     - **password**: Password (minimum 6 characters)
     - **is_admin**: Boolean flag to grant admin privileges (default: false)
-    
+
     **Returns:**
     User object with id, username, email, is_admin, is_active, created_at
-    
+
     **Raises:**
     - **400**: Username or email already exists
     - **422**: Invalid data format
@@ -489,7 +489,7 @@ async def change_user_password(
 
         # Update password
         user.password_hash = hash_password(new_password)
-        
+
         # Increment token version to invalidate all existing tokens
         user.token_version = (user.token_version or 0) + 1
         user.updated_at = datetime.now(UTC)

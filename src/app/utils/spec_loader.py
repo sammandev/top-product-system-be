@@ -35,7 +35,7 @@ def load_spec_payload(data: bytes, filename: str | None = None) -> SpecPayload:
         payload = json.loads(data.decode("utf-8-sig"))
     except Exception as exc:
         raise ValueError(f"Unable to parse spec file as JSON: {exc}") from exc
-    
+
     # Support both old dict format and new array format
     if isinstance(payload, list):
         # New array format: convert to old dict format for backward compatibility

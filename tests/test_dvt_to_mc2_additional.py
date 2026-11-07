@@ -31,10 +31,10 @@ def test_xlsx_integration_post(tmp_path):
     # Create a small XLSX file mimicking DVT layout
     # Build rows that match DVT layout: include header row and one data row
     rows = [
-        ["Model Name:", "HH5K"],
-        ["Chipset:", "BCM"],
-        ["Serial Number:", "Golden_SN..XLSX_1"],
-        ["", ""],
+        ["Model Name:", "HH5K", "", "", ""],
+        ["Chipset:", "BCM", "", "", ""],
+        ["Serial Number:", "Golden_SN..XLSX_1", "", "", ""],
+        ["", "", "", "", ""],
         ["Standard", "BandWidth", "Freq", "DataRate", "Antenna"],
         ["b", "20", "2412", "CCK_11", "0"],
     ]

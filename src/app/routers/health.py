@@ -16,7 +16,7 @@ router = APIRouter(tags=["Health"])
 async def health_check():
     """
     Health check endpoint for monitoring and load balancers.
-    
+
     Returns:
         - status: overall health status
         - timestamp: current server time
@@ -29,7 +29,7 @@ async def health_check():
         "service": "ast-tools-backend",
         "version": "1.0.0",
     }
-    
+
     # Check database connection
     try:
         db = next(get_db())
@@ -45,7 +45,7 @@ async def health_check():
         )
     finally:
         db.close()
-    
+
     return health_status
 
 

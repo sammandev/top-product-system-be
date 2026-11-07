@@ -88,7 +88,7 @@ def parse_criteria_line(line: str) -> CriteriaRule | None:
         except re.error:
             return None
         return CriteriaRule(pattern=compiled, usl=usl, lsl=lsl, target=target, gap=gap)
-    
+
     # Try old format: <USL,LSL> ===> "Target"
     match = _CRITERIA_LINE_PATTERN_OLD.match(line.strip())
     if match:
@@ -101,7 +101,7 @@ def parse_criteria_line(line: str) -> CriteriaRule | None:
         except re.error:
             return None
         return CriteriaRule(pattern=compiled, usl=usl, lsl=lsl, target=target, gap=None)
-    
+
     return None
 
 

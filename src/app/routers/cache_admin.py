@@ -10,8 +10,8 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
 from app.dependencies.authz import get_current_user
-from app.utils.admin_access import is_user_admin
 from app.models.user import User
+from app.utils.admin_access import is_user_admin
 from app.utils.cache_manager import (
     adjust_cache_ttl,
     clear_all_cache,

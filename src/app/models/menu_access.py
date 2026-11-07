@@ -37,15 +37,15 @@ class MenuRoleAccess(Base):
     Junction table to control which roles can access which menus.
     """
     __tablename__ = "menu_role_access"
-    
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     menu_id: Mapped[int] = mapped_column(Integer, ForeignKey("menu_definitions.id", ondelete="CASCADE"), nullable=False)
     role_name: Mapped[str] = mapped_column(String(64), nullable=False, index=True)  # Role name (including 'guest', 'user', 'admin')
     can_view: Mapped[bool | None] = mapped_column(Boolean, default=True)  # Permission to view the menu
-    
+
     # Relationships
     menu: Mapped[MenuDefinition] = relationship("MenuDefinition", back_populates="role_access")
-    
+
     __table_args__ = (
         UniqueConstraint("menu_id", "role_name", name="uq_menu_role"),
     )

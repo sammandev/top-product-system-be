@@ -23,10 +23,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db import Base, get_db
-from app.dependencies.external_api_client import get_dut_client
 from app.dependencies.authz import get_current_user
+from app.dependencies.external_api_client import get_dut_client
 from app.external_services.dut_api_client import DUTAPIClient
-from app.models.test_log import ScoreBreakdown
 from app.models.top_product import TopProduct, TopProductMeasurement
 from app.routers.iplas_proxy import IPLAS_SITES, _get_http_client, _get_site_config
 from app.schemas.dut_schemas import (
@@ -50,30 +49,24 @@ from app.schemas.dut_schemas import (
     DUTProgressSchema,
     DUTRunSummarySchema,
     DUTTestSummarySchema,
-    LatestTestItemsRequestSchema,
+    GenericTestItemSchema,
+    LatestTestItemsByRangeRequestSchema,
+    LatestTestItemsByRangeResponseSchema,
     LatestTestsResponseSchema,
     ModelSchema,
     ModelSummaryRequestSchema,
     ModelSummarySchema,
-    PAActualAdjustedISNGroupSchema,
-    PAActualAdjustedResponseSchema,
     PAActualAdjustedStationDataSchema,
-    PADiffResponseSchema,
-    PADiffStationDataSchema,
-    PAISNGroupSchema,
-    PAItemValueSchema,
-    PAStationDataSchema,
-    PATrendStationDataSchema,
-    PATrendStationItemSchema,
     PAAdjustedPowerDataItemSchema,
     PAAdjustedPowerScoredItemSchema,
     PAAdjustedPowerScoringResponseSchema,
+    PADiffStationDataSchema,
+    PAItemValueSchema,
     PASROMDataItemSchema,
     PASROMEnhancedResponseSchema,
-    GenericTestItemSchema,
-    LatestTestItemsByRangeRequestSchema,
-    LatestTestItemsByRangeResponseSchema,
-    SimplePATrendResponseSchema,
+    PAStationDataSchema,
+    PATrendStationDataSchema,
+    PATrendStationItemSchema,
     SiteSchema,
     StationDeviceListSchema,
     StationDevicePeriodListSchema,
@@ -101,6 +94,7 @@ from app.schemas.dut_schemas import (
     TopProductStationSummarySchema,
 )
 from app.services import dut_metadata_cache, dut_token_service
+from app.utils import dut_cache
 
 logger = logging.getLogger(__name__)
 
@@ -227,7 +221,7 @@ async def _parse_device_results_form(
         "start_time": start_time,
         "end_time": end_time,
     }
-    for key, value in required_values.items():
+    for value in required_values.values():
         if value is None:
             raise HTTPException(status_code=400, detail=_REQUIRED_DEVICE_FIELDS_ERROR)
         if isinstance(value, str):
@@ -593,6 +587,56 @@ async def _get_cached_station_devices(client: DUTAPIClient, station_id: int) -> 
             return []
 
     return await dut_metadata_cache.get_or_set(cache_key, loader, ttl=METADATA_CACHE_TTL)
+
+
+async def _get_cached_station_records(client: DUTAPIClient, station_id: int, dut_id: int) -> dict[str, Any]:
+    cache_key = dut_metadata_cache.build_metadata_key(
+        _client_base_url(client), "station-records", f"{station_id}:{dut_id}"
+    )
+
+    async def loader() -> dict[str, Any]:
+        return await dut_cache.cached_get_station_records(client, station_id, dut_id)
+
+    return await dut_metadata_cache.get_or_set(cache_key, loader, ttl=RECORD_CACHE_TTL)
+
+
+async def _get_cached_latest_nonvalue_record(client: DUTAPIClient, station_id: int, dut_id: int) -> dict[str, Any]:
+    cache_key = dut_metadata_cache.build_metadata_key(
+        _client_base_url(client), "station-latest-nonvalue", f"{station_id}:{dut_id}"
+    )
+
+    async def loader() -> dict[str, Any]:
+        return await client.get_latest_nonvalue_record(station_id, dut_id)
+
+    return await dut_metadata_cache.get_or_set(cache_key, loader, ttl=RECORD_CACHE_TTL)
+
+
+async def _get_cached_station_nonvalue_records(client: DUTAPIClient, station_id: int, dut_id: int) -> dict[str, Any]:
+    cache_key = dut_metadata_cache.build_metadata_key(
+        _client_base_url(client), "station-nonvalue-records", f"{station_id}:{dut_id}"
+    )
+
+    async def loader() -> dict[str, Any]:
+        return await dut_cache.cached_get_station_nonvalue_records(client, station_id, dut_id)
+
+    return await dut_metadata_cache.get_or_set(cache_key, loader, ttl=RECORD_CACHE_TTL)
+
+
+async def _get_cached_pa_test_items_trend(client: DUTAPIClient, payload: dict[str, Any]) -> dict[str, Any]:
+    items_tuple = tuple(sorted(payload.get("test_items") or []))
+    trend_id = (
+        f"{payload.get('station_id')}:"
+        f"{payload.get('start_time')}:"
+        f"{payload.get('end_time')}:"
+        f"{payload.get('model', '')}:"
+        f"{','.join(items_tuple)}"
+    )
+    cache_key = dut_metadata_cache.build_metadata_key(_client_base_url(client), "pa-trend", trend_id)
+
+    async def loader() -> dict[str, Any]:
+        return await dut_cache.cached_get_pa_test_items_trend(client, payload)
+
+    return await dut_metadata_cache.get_or_set(cache_key, loader, ttl=RECORD_CACHE_TTL)
 
 
 async def _get_device_catalog(client: DUTAPIClient) -> dict[str, Any]:
@@ -1952,7 +1996,6 @@ async def get_station_top_products(
     response_model=TopProductBatchResponseSchema,
     response_model_exclude_none=True,
 )
-@cache(expire=120)  # Cache for 2 minutes
 async def get_top_product(
     dut_isns: list[str] = Query(
         ...,
@@ -2025,7 +2068,6 @@ async def get_top_product(
     response_model=TopProductBatchResponseSchema,
     response_model_exclude_none=True,
 )
-@cache(expire=300)  # Cache for 5 minutes (parallel processing + caching improves performance)
 async def get_top_product_with_pa_trends(
     dut_isns: list[str] = Query(
         ...,
@@ -2108,7 +2150,6 @@ async def get_top_product_with_pa_trends(
     summary="Identify the top DUT across selected stations with hierarchical scoring",
     response_model=TopProductBatchResponseSchema,
 )
-@cache(expire=180)  # Cache for 3 minutes (more expensive computation)
 async def get_top_product_hierarchical(
     dut_isns: list[str] = Query(
         ...,
@@ -2612,7 +2653,6 @@ async def get_scored_pa_adjusted_power(
     # Extract latest record metadata
     latest_record = []
     test_date_for_trend = None
-    dut_isn_for_trend = None
 
     if validated.record:
         latest_entry = None
@@ -2627,7 +2667,6 @@ async def get_scored_pa_adjusted_power(
         if latest_entry is not None:
             latest_record = [latest_entry]
             test_date_for_trend = latest_entry.test_date
-            dut_isn_for_trend = latest_entry.isn or dut_id
 
     # Process current PA SROM data
     current_data, has_pa_srom = _process_pa_srom_enhanced(validated)
@@ -4395,8 +4434,14 @@ async def _generate_top_product_batch(
                 raise HTTPException(status_code=500, detail="Failed to process top product request") from exc
             return None, TopProductErrorSchema(dut_isn=current_isn, detail="Failed to process top product request")
 
-    # Execute all ISN processing tasks concurrently
-    tasks = [process_isn(isn) for isn in normalized_isns]
+    # Execute all ISN processing tasks concurrently under bounded semaphore
+    semaphore = asyncio.Semaphore(max(1, DUT_CATALOG_MAX_PARALLEL_REQUESTS))
+
+    async def bounded_process_isn(current_isn: str) -> tuple[TopProductResponseSchema | None, TopProductErrorSchema | None]:
+        async with semaphore:
+            return await process_isn(current_isn)
+
+    tasks = [bounded_process_isn(isn) for isn in normalized_isns]
     completed = await asyncio.gather(*tasks, return_exceptions=True)
 
     # Collect results and errors
@@ -4673,34 +4718,6 @@ def _extract_latest_test_items(rows: list[list[Any]] | None, *, allow_numeric_st
             continue
         usl = _to_float(row[1]) if len(row) > 1 else None
         lsl = _to_float(row[2]) if len(row) > 2 else None
-
-        status: str | None = None
-        if len(row) > 3:
-            for candidate in reversed(row[3:]):
-                if candidate is None:
-                    continue
-                if isinstance(candidate, str):
-                    candidate_str = candidate.strip()
-                    if not candidate_str:
-                        continue
-                    try:
-                        float(candidate_str)
-                        continue
-                    except ValueError:
-                        status = candidate_str
-                        break
-                else:
-                    if allow_numeric_status:
-                        status = str(candidate).strip()
-                        break
-                    try:
-                        float(candidate)
-                        continue
-                    except (TypeError, ValueError):
-                        candidate_str = str(candidate).strip()
-                        if candidate_str:
-                            status = candidate_str
-                            break
 
         definitions.append(TestItemDefinitionSchema(name=name, usl=usl, lsl=lsl))
         seen.add(key)
@@ -5718,6 +5735,9 @@ async def _enrich_evaluations_with_pa_adjusted_power(
         end_time: End of the evaluation time window
         model_hint: Optional model identifier for PA trend queries
     """
+    semaphore = asyncio.Semaphore(max(1, DUT_CATALOG_MAX_PARALLEL_REQUESTS))
+    pa_tasks: list[tuple[StationEvaluation, int, list[str]]] = []
+
     for evaluation in evaluations:
         # Extract PA test items from current measurements
         measurement_rows = [
@@ -5737,19 +5757,27 @@ async def _enrich_evaluations_with_pa_adjusted_power(
             continue
 
         # Fetch and calculate PA adjusted power
-        if evaluation.station_id is None:
+        station_id = evaluation.station_id
+        if station_id is None:
             logger.debug("Skipping PA enrichment for %s: missing station_id", evaluation.station_name)
             continue
 
-        adjusted_power_values = await _fetch_and_calculate_pa_adjusted_power(
-            client=client,
-            station_id=evaluation.station_id,
-            pa_test_items=pa_test_items,
-            start_time=start_time,
-            end_time=end_time,
-            model_hint=model_hint,
-        )
+        pa_tasks.append((evaluation, station_id, pa_test_items))
 
+    async def _bounded_fetch_pa(sid: int, items: list[str]) -> dict[str, dict[str, float]]:
+        async with semaphore:
+            return await _fetch_and_calculate_pa_adjusted_power(
+                client=client,
+                station_id=sid,
+                pa_test_items=items,
+                start_time=start_time,
+                end_time=end_time,
+                model_hint=model_hint,
+            )
+
+    pa_results = await asyncio.gather(*(_bounded_fetch_pa(sid, items) for _, sid, items in pa_tasks))
+
+    for (evaluation, _, _), adjusted_power_values in zip(pa_tasks, pa_results, strict=True):
         if not adjusted_power_values:
             logger.debug("No PA adjusted power values calculated for station %s", evaluation.station_name)
             continue
@@ -5850,6 +5878,11 @@ async def _evaluate_top_products(
     evaluated_station_names: set[str] = set()
     evaluations: list[StationEvaluation] = []
     station_payload_cache: dict[tuple[int | None, int | None], StationRecordResponseSchema] = {}
+    semaphore = asyncio.Semaphore(max(1, DUT_CATALOG_MAX_PARALLEL_REQUESTS))
+
+    pending_candidates: list[
+        tuple[dict[str, Any], str, list[CriteriaRule], dict[str, Any], list[dict[str, Any]], int | None, int | None, str]
+    ] = []
 
     for station_entry in record_data:
         station_name = station_entry.get("name") or "Unknown Station"
@@ -5882,10 +5915,27 @@ async def _evaluate_top_products(
             resolved_station_id = station_entry.get("id")
             candidate_dut_id_value = latest_entry.get("dut_id") or candidate_dut_id
             dut_identifier = latest_entry.get("dut_id__isn") or latest_entry.get("dut_isn") or dut_isn
+            pending_candidates.append(
+                (
+                    station_entry,
+                    station_name,
+                    rules,
+                    latest_entry,
+                    runs,
+                    resolved_station_id,
+                    candidate_dut_id_value,
+                    str(dut_identifier),
+                )
+            )
 
-            if resolved_station_id is None or candidate_dut_id_value is None:
-                station_identifier = station_name if resolved_station_id is None else str(resolved_station_id)
-                try:
+    async def _resolve_candidate(
+        item: tuple[dict[str, Any], str, list[CriteriaRule], dict[str, Any], list[dict[str, Any]], int | None, int | None, str]
+    ):
+        station_entry, station_name, rules, latest_entry, runs, resolved_station_id, candidate_dut_id_value, dut_identifier = item
+        if resolved_station_id is None or candidate_dut_id_value is None:
+            station_identifier = station_name if resolved_station_id is None else str(resolved_station_id)
+            try:
+                async with semaphore:
                     resolved_station_id, candidate_dut_id_value = await _resolve_station_and_dut_ids(
                         client,
                         str(station_identifier),
@@ -5893,37 +5943,52 @@ async def _evaluate_top_products(
                         site_hint=site_hint,
                         model_hint=model_hint,
                     )
-                except HTTPException:
-                    continue
+            except HTTPException:
+                return None
+        return (station_entry, station_name, rules, latest_entry, runs, resolved_station_id, candidate_dut_id_value)
 
-            cache_key = (resolved_station_id, candidate_dut_id_value)
-            station_payload = station_payload_cache.get(cache_key)
-            if station_payload is None:
-                try:
-                    payload = await client.get_station_records(resolved_station_id, candidate_dut_id_value)
-                    station_payload = StationRecordResponseSchema.model_validate(payload)
-                    station_payload_cache[cache_key] = station_payload
-                except Exception as exc:
-                    logger.warning(
-                        "Unable to retrieve station records for station %s (%s) and dut %s: %s",
-                        station_name,
-                        resolved_station_id,
-                        candidate_dut_id_value,
-                        exc,
-                    )
-                    continue
+    resolved_candidates_raw = await asyncio.gather(*(_resolve_candidate(item) for item in pending_candidates))
+    resolved_candidates = [item for item in resolved_candidates_raw if item is not None]
 
-            evaluation = _evaluate_station_candidate(
-                station_entry,
-                station_payload,
-                latest_entry,
-                runs,
-                rules,
-                site_name,
-                model_name,
+    unique_keys: dict[tuple[int, int], str] = {}
+    for _, station_name, _, _, _, resolved_station_id, candidate_dut_id_value in resolved_candidates:
+        if resolved_station_id is not None and candidate_dut_id_value is not None:
+            unique_keys.setdefault((resolved_station_id, candidate_dut_id_value), station_name)
+
+    async def _fetch_candidate_records(key: tuple[int, int], station_name: str) -> None:
+        sid, did = key
+        try:
+            async with semaphore:
+                payload = await _get_cached_station_records(client, sid, did)
+            station_payload_cache[key] = StationRecordResponseSchema.model_validate(payload)
+        except Exception as exc:
+            logger.warning(
+                "Unable to retrieve station records for station %s (%s) and dut %s: %s",
+                station_name,
+                sid,
+                did,
+                exc,
             )
-            if evaluation and evaluation.dut_isn:
-                evaluations.append(evaluation)
+
+    await asyncio.gather(*(_fetch_candidate_records(key, sname) for key, sname in unique_keys.items()))
+
+    for station_entry, _station_name, rules, latest_entry, runs, resolved_station_id, candidate_dut_id_value in resolved_candidates:
+        cache_key = (resolved_station_id, candidate_dut_id_value)
+        station_payload = station_payload_cache.get(cache_key)
+        if station_payload is None:
+            continue
+
+        evaluation = _evaluate_station_candidate(
+            station_entry,
+            station_payload,
+            latest_entry,
+            runs,
+            rules,
+            site_name,
+            model_name,
+        )
+        if evaluation and evaluation.dut_isn:
+            evaluations.append(evaluation)
 
     # UPDATED: Enrich evaluations with PA adjusted power measurements
     if evaluations and start_time and end_time:
@@ -6153,7 +6218,7 @@ async def _fetch_pa_trend_measurements(
 
     # Step 1: Fetch current PA adjusted power values from nonvalue record
     try:
-        nonvalue_payload = await client.get_latest_nonvalue_record(station_id, dut_id)
+        nonvalue_payload = await _get_cached_latest_nonvalue_record(client, station_id, dut_id)
         validated_nonvalue = StationRecordResponseSchema.model_validate(nonvalue_payload)
     except Exception as exc:
         logger.debug(
@@ -6207,7 +6272,7 @@ async def _fetch_pa_trend_measurements(
     }
 
     try:
-        trend_data = await client.get_pa_test_items_trend(trend_payload)
+        trend_data = await _get_cached_pa_test_items_trend(client, trend_payload)
     except Exception as exc:
         logger.warning("Failed to fetch PA trend data for station %s: %s", station_id, exc)
         return []
@@ -6313,7 +6378,7 @@ async def _fetch_pa_trend_measurements(
 
 async def _compute_top_product_response(
     client: DUTAPIClient,
-    db: Session,
+    db: Session | None,
     dut_isn: str,
     *,
     stations: list[str] | None,
@@ -6363,6 +6428,7 @@ async def _compute_top_product_response(
     station_payload_cache: dict[tuple[int, int], StationRecordResponseSchema] = {}
     evaluations: list[StationEvaluation] = []
     response_rows: list[TopProductStationSummarySchema] = []
+    pending_stations: list[Any] = []
     include_patterns, include_tokens, include_signatures, include_is_exact = _compile_test_item_patterns(test_item_filters)
     exclude_patterns, exclude_tokens, exclude_signatures, exclude_is_exact = _compile_test_item_patterns(exclude_test_item_filters)
 
@@ -6500,34 +6566,133 @@ async def _compute_top_product_response(
 
         resolved_station_id = station_id
         resolved_dut_id = latest_entry.get("dut_id")
+        pending_stations.append(
+            (
+                station_entry,
+                station_name_entry,
+                station_rules,
+                candidate_runs,
+                latest_entry,
+                resolved_station_id,
+                resolved_dut_id,
+                (station_include_patterns, station_include_tokens, station_include_signatures, station_include_is_exact),
+                (station_exclude_patterns, station_exclude_tokens, station_exclude_signatures, station_exclude_is_exact),
+            )
+        )
+
+    semaphore = asyncio.Semaphore(max(1, DUT_CATALOG_MAX_PARALLEL_REQUESTS))
+
+    async def _resolve_pending_station(item):
+        (
+            station_entry,
+            station_name_entry,
+            station_rules,
+            candidate_runs,
+            latest_entry,
+            resolved_station_id,
+            resolved_dut_id,
+            inc_bundle,
+            exc_bundle,
+        ) = item
         if resolved_station_id is None or resolved_dut_id is None:
             station_identifier = station_name_entry if resolved_station_id is None else str(resolved_station_id)
             dut_identifier = latest_entry.get("dut_id__isn") or latest_entry.get("dut_isn") or dut_isn
             try:
-                resolved_station_id, resolved_dut_id = await _resolve_station_and_dut_ids(
-                    client,
-                    str(station_identifier),
-                    str(dut_identifier),
-                )
+                async with semaphore:
+                    resolved_station_id, resolved_dut_id = await _resolve_station_and_dut_ids(
+                        client,
+                        str(station_identifier),
+                        str(dut_identifier),
+                    )
             except HTTPException:
-                continue
+                return None
+        return (
+            station_entry,
+            station_name_entry,
+            station_rules,
+            candidate_runs,
+            latest_entry,
+            resolved_station_id,
+            resolved_dut_id,
+            inc_bundle,
+            exc_bundle,
+        )
 
+    resolved_stations_raw = await asyncio.gather(*(_resolve_pending_station(item) for item in pending_stations))
+    resolved_stations = [item for item in resolved_stations_raw if item is not None]
+
+    unique_station_keys: dict[tuple[int, int], str] = {}
+    for _, station_name_entry, _, _, _, resolved_station_id, resolved_dut_id, _, _ in resolved_stations:
+        unique_station_keys.setdefault((resolved_station_id, resolved_dut_id), station_name_entry)
+
+    async def _fetch_station_payload(key: tuple[int, int], sname: str) -> None:
+        sid, did = key
+        try:
+            async with semaphore:
+                payload = await _get_cached_station_records(client, sid, did)
+            station_payload_cache[key] = StationRecordResponseSchema.model_validate(payload)
+        except Exception as exc:
+            logger.warning(
+                "Unable to retrieve station records for station %s (%s) and dut %s: %s",
+                sname,
+                sid,
+                did,
+                exc,
+            )
+
+    await asyncio.gather(*(_fetch_station_payload(key, sname) for key, sname in unique_station_keys.items()))
+
+    pa_trends_by_index: dict[int, list[dict[str, str | float | None | dict]]] = {}
+    if include_pa_trends:
+        async def _fetch_station_pa(idx: int, sname: str, sid: int, did: int, l_entry: dict[str, Any]) -> None:
+            cache_key = (sid, did)
+            if cache_key not in station_payload_cache:
+                return
+            try:
+                entry_test_date = _parse_test_date(l_entry.get("test_date"))
+                entry_dut_isn = l_entry.get("dut_id__isn") or l_entry.get("dut_isn") or l_entry.get("isn") or dut_isn
+                async with semaphore:
+                    pa_measurements = await _fetch_pa_trend_measurements(
+                        client=client,
+                        station_id=sid,
+                        dut_id=did,
+                        dut_isn=entry_dut_isn,
+                        test_date=entry_test_date if entry_test_date != datetime.min else None,
+                        site_hint=site_identifier,
+                        model_hint=model_identifier,
+                    )
+                if pa_measurements:
+                    pa_trends_by_index[idx] = pa_measurements
+            except Exception as exc:
+                logger.warning(
+                    "Failed to fetch PA trend measurements for station %s (%s): %s",
+                    sname,
+                    sid,
+                    exc,
+                )
+
+        await asyncio.gather(
+            *(
+                _fetch_station_pa(i, item[1], item[5], item[6], item[4])
+                for i, item in enumerate(resolved_stations)
+            )
+        )
+
+    for station_idx, (
+        station_entry,
+        station_name_entry,
+        station_rules,
+        candidate_runs,
+        latest_entry,
+        resolved_station_id,
+        resolved_dut_id,
+        (station_include_patterns, station_include_tokens, station_include_signatures, station_include_is_exact),
+        (station_exclude_patterns, station_exclude_tokens, station_exclude_signatures, station_exclude_is_exact),
+    ) in enumerate(resolved_stations):
         cache_key = (resolved_station_id, resolved_dut_id)
         station_payload = station_payload_cache.get(cache_key)
         if station_payload is None:
-            try:
-                payload = await client.get_station_records(resolved_station_id, resolved_dut_id)
-                station_payload = StationRecordResponseSchema.model_validate(payload)
-                station_payload_cache[cache_key] = station_payload
-            except Exception as exc:
-                logger.warning(
-                    "Unable to retrieve station records for station %s (%s) and dut %s: %s",
-                    station_name_entry,
-                    resolved_station_id,
-                    resolved_dut_id,
-                    exc,
-                )
-                continue
+            continue
 
         run_index = _find_run_index(station_payload, latest_entry)
         measurement_matrix: list[
@@ -6535,39 +6700,16 @@ async def _compute_top_product_response(
         ] = []
         measurement_matrix.extend(_compress_station_data(station_payload, run_index))
 
-        # FEATURE: PA trend measurement integration (optional)
-        # Fetch PA trend measurements only if explicitly requested via include_pa_trends flag
         if include_pa_trends:
-            try:
-                entry_test_date = _parse_test_date(latest_entry.get("test_date"))
-                entry_dut_isn = latest_entry.get("dut_id__isn") or latest_entry.get("dut_isn") or latest_entry.get("isn") or dut_isn
-                pa_measurements = await _fetch_pa_trend_measurements(
-                    client=client,
-                    station_id=resolved_station_id,
-                    dut_id=resolved_dut_id,
-                    dut_isn=entry_dut_isn,
-                    test_date=entry_test_date if entry_test_date != datetime.min else None,
-                    site_hint=site_identifier,
-                    model_hint=model_identifier,
-                )
-                if pa_measurements:
-                    logger.debug(
-                        "Adding %d PA trend measurements to station %s (%s)",
-                        len(pa_measurements),
-                        station_name_entry,
-                        resolved_station_id,
-                    )
-                    # Extend measurement matrix with PA items
-                    # Format: [test_item, null, null, nonvalue_actual, trend_target, score]
-                    measurement_matrix.extend(pa_measurements)
-            except Exception as exc:
-                # Non-critical: If PA measurements fail, continue with regular measurements
-                logger.warning(
-                    "Failed to fetch PA trend measurements for station %s (%s): %s",
+            pa_measurements = pa_trends_by_index.get(station_idx)
+            if pa_measurements:
+                logger.debug(
+                    "Adding %d PA trend measurements to station %s (%s)",
+                    len(pa_measurements),
                     station_name_entry,
                     resolved_station_id,
-                    exc,
                 )
+                measurement_matrix.extend(pa_measurements)
 
         measurement_rows: list[dict[str, str | float | None | dict]] = []
         measurement_scores: list[MeasurementScore] = []
@@ -7800,7 +7942,7 @@ async def _fetch_and_calculate_pa_adjusted_power(
 
     # Fetch trend data from external API
     try:
-        trend_data = await client.get_pa_test_items_trend(payload)
+        trend_data = await _get_cached_pa_test_items_trend(client, payload)
     except httpx.HTTPStatusError as exc:
         logger.warning(
             "Failed to fetch PA trend data for station %s: status=%s body=%s",
@@ -7977,7 +8119,7 @@ async def calculate_pa_adjusted_power(request: AdjustedPowerRequestSchema, clien
 
     # Fetch trend data from external API
     try:
-        trend_data = await client.get_pa_test_items_trend(payload)
+        trend_data = await _get_cached_pa_test_items_trend(client, payload)
     except httpx.HTTPStatusError as exc:
         logger.error("Failed to fetch PA trend data: status=%s body=%s", exc.response.status_code, exc.response.text)
         raise HTTPException(status_code=exc.response.status_code, detail="External API request failed") from exc
@@ -8295,7 +8437,7 @@ async def get_pa_trend_auto(
                     trend_items=trend_items,
                 )
                 station_records.append(station_record)
-                logger.info(f"[PA Trend Auto] Added station record")
+                logger.info("[PA Trend Auto] Added station record")
 
             except Exception as exc:
                 logger.error(f"[PA Trend Auto] Error processing station={station}, dut={dut}: {exc}", exc_info=True)
@@ -8550,7 +8692,7 @@ async def get_pa_trend_dex(
                     trend_items=trend_items,
                 )
                 station_records.append(station_record)
-                logger.info(f"[PA Trend Dex] Added station record")
+                logger.info("[PA Trend Dex] Added station record")
 
             except Exception as exc:
                 logger.error(f"[PA Trend Dex] Error processing station={station}, dut={dut}: {exc}", exc_info=True)
@@ -8774,7 +8916,7 @@ async def get_pa_srom_diff(
                     trend_diff_items=trend_diff_items,
                 )
                 station_records.append(station_record)
-                logger.info(f"[PA Diff] Added station record")
+                logger.info("[PA Diff] Added station record")
 
             except Exception as exc:
                 logger.error(f"[PA Diff] Error processing station={station}, dut={dut}: {exc}", exc_info=True)
@@ -9143,7 +9285,7 @@ async def get_latest_pa_srom_all_decimal(
                     data=station_data,
                 )
                 station_records.append(station_record)
-                logger.info(f"[PA Nonvalue] Added station record")
+                logger.info("[PA Nonvalue] Added station record")
 
             except Exception as exc:
                 logger.error(f"[PA Nonvalue] Error processing station={station}, dut={dut}: {exc}", exc_info=True)
@@ -9324,7 +9466,7 @@ async def get_latest_pa_srom_adjusted(
                     data=station_data,
                 )
                 station_records.append(station_record)
-                logger.info(f"[PA Adjusted] Added station record")
+                logger.info("[PA Adjusted] Added station record")
 
             except Exception as exc:
                 logger.error(f"[PA Adjusted] Error processing station={station}, dut={dut}: {exc}", exc_info=True)

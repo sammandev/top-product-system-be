@@ -339,7 +339,7 @@ async def _run_singleflight[T](kind: str, cache_key: str, fetch: Callable[[], Aw
 async def _iter_bounded_in_order[T](
     factories: Sequence[Callable[[], Coroutine[Any, Any, T]]],
     concurrency: int,
-) -> AsyncGenerator[T, None]:
+) -> AsyncGenerator[T]:
     """Run ``factories`` with at most ``concurrency`` in flight, yielding results in input order.
 
     Sliding window: a new task starts only when the oldest one has finished, so at most
@@ -2299,7 +2299,7 @@ async def get_station_search_run_records(
     summary="Get filtered CSV test items from iPLAS",
     description="""
     Fetches test item data from iPLAS with server-side caching and filtering.
-    
+
     This endpoint:
     1. Checks Redis cache for existing data
     2. Uses request deduplication to coalesce concurrent requests for the same data
@@ -2307,7 +2307,7 @@ async def get_station_search_run_records(
     4. Applies test_item_filters on server-side (reduces payload to frontend)
     5. Returns compact records by default; set include_test_items=true for explicit heavy mode
     6. Supports pagination with limit/offset
-    
+
     **Cache TTL**: Data is cached for 3 minutes
     **Request Deduplication**: Concurrent requests for the same data share a single upstream request.
     """,
@@ -2677,17 +2677,17 @@ async def _execute_station_search_run(run_id: str, user_token: str | None) -> No
     response_model=CompactCsvTestItemResponse,
     summary="Get compact CSV test items (without TestItem arrays)",
     description="""
-    Fetches compact test item data from iPLAS - excludes the TestItem arrays 
+    Fetches compact test item data from iPLAS - excludes the TestItem arrays
     to reduce payload size by 60-80%.
-    
+
     Use this endpoint for:
     - Record list views where you don't need test item details
     - Initial page load to show record summaries
     - Performance-critical scenarios
-    
+
     To get full TestItem data for a specific record, use the full endpoint
     with limit=1 and appropriate filters.
-    
+
     **Memory Savings**: Typical response is 10-50KB instead of 500KB+
     """,
 )
@@ -2778,10 +2778,10 @@ async def get_csv_test_items_compact(
     summary="Get test items for a specific record (lazy loading)",
     description="""
     Fetches the TestItem array for a specific record identified by ISN and test start time.
-    
+
     Use this endpoint to lazy-load test item details when a user expands a record
     in the UI, instead of loading all test items upfront.
-    
+
     This is part of the memory optimization strategy - load compact records first,
     then fetch test items only when needed.
     """,
@@ -2903,10 +2903,10 @@ async def get_record_test_items(
     summary="Get unique test item names from iPLAS",
     description="""
     Fetches unique test item names from iPLAS for the selection dialog.
-    
+
     This is a lightweight endpoint that returns only test item names (not full data),
     reducing the initial load from ~500KB to ~5KB.
-    
+
     Returns test items with type information (is_value: true for numeric values).
     """,
 )
@@ -2979,13 +2979,13 @@ CACHED_TEST_ITEMS_TTL_HOURS = 168  # 7 days
     summary="Get cached test item names from database",
     description="""
     Fetches test item names for a station from the database cache.
-    
+
     This is optimized for the "Configure Station" dialog where loading test items
     for long date ranges (30+ days) often times out. The cache key is:
     site + project + station (date range NOT included since test items rarely change).
-    
+
     **Cache TTL**: 7 days in database
-    
+
     On cache miss, fetches from iPLAS using a 7-day window and saves to database.
     Use `force_refresh=true` to manually refresh the cache.
     """,
@@ -3240,9 +3240,9 @@ async def get_server_time() -> IplasServerTimeResponse:
     summary="Get site/project list from iPLAS",
     description="""
     Fetches the list of all available site/project pairs from iPLAS.
-    
+
     **Cache TTL**: 24 hours (data rarely changes)
-    
+
     Note: This endpoint queries all configured sites and aggregates results.
     """,
 )
@@ -3332,7 +3332,7 @@ async def get_site_projects(
     summary="Get station list for a project from iPLAS",
     description="""
     Fetches the list of stations for a specific site/project from iPLAS.
-    
+
     **Cache TTL**: 1 hour
     """,
 )
@@ -3410,7 +3410,7 @@ async def get_stations(
     summary="Get device list for a station from iPLAS",
     description="""
     Fetches the list of device IDs for a specific station within a time range.
-    
+
     **Cache TTL**: 5 minutes
     """,
 )
@@ -3491,12 +3491,12 @@ async def get_devices(
     summary="Search DUT by ISN from iPLAS",
     description="""
     Searches for DUT test data by ISN across all stations.
-    
+
     **Cache TTL**: 5 minutes
-    
+
     **Performance**: Uses parallel HTTP requests to query all sites simultaneously.
     This is significantly faster than querying sites sequentially.
-    
+
     Note: This queries all configured sites to find the ISN.
     """,
 )
@@ -3616,12 +3616,12 @@ async def search_by_isn(
     summary="Batch search DUT by multiple ISNs from iPLAS",
     description="""
     Searches for DUT test data by multiple ISNs in parallel.
-    
+
     **Performance**: Uses parallel HTTP requests to search up to 100 ISNs simultaneously.
     This is significantly faster than making individual ISN search requests.
-    
+
     **Cache TTL**: 5 minutes per ISN
-    
+
     **Limits**: Maximum 100 ISNs per request.
     """,
 )
@@ -3962,15 +3962,15 @@ async def _get_stations_for_project(
     summary="Get station list from ISN",
     description="""
     Looks up an ISN to find its site/project, then returns all stations for that project.
-    
+
     This is useful when you only have an ISN and want to know all available test stations.
-    
+
     **Flow**:
     1. Search for the ISN across all configured sites
     2. Extract the site/project from the first matching record
     3. Fetch the complete station list for that project
-    
-    **Cache TTL**: 
+
+    **Cache TTL**:
     - ISN lookup: 5 minutes
     - Station list: 1 hour
     """,
@@ -4019,19 +4019,19 @@ async def get_stations_from_isn(
     summary="Get station lists from multiple ISNs",
     description="""
     Looks up multiple ISNs to find their site/project pairs, then returns station lists.
-    
-    Results are deduplicated - if multiple ISNs belong to the same project, 
+
+    Results are deduplicated - if multiple ISNs belong to the same project,
     the station list is only fetched once.
-    
+
     **Flow**:
     1. Search for each ISN across all configured sites
     2. Group ISNs by unique site/project pairs
     3. Fetch station lists for each unique project
-    
+
     **Limits**:
     - Maximum 50 ISNs per request
-    
-    **Cache TTL**: 
+
+    **Cache TTL**:
     - ISN lookup: 5 minutes
     - Station list: 1 hour
     """,
@@ -4108,7 +4108,7 @@ async def get_stations_from_isn_batch(
     summary="Download test log attachments from iPLAS",
     description="""
     Downloads test log attachments from iPLAS.
-    
+
     Supports multiple downloads in a single request.
     Returns base64-encoded file content.
     """,
@@ -4169,9 +4169,9 @@ async def download_attachment(
     "/download-csv-log",
     response_model=IplasDownloadCsvLogResponse,
     summary="Download CSV test logs from iPLAS",
-    description="""        
+    description="""
     **Important**: The test_end_time field MUST include milliseconds (e.g., '2026/01/22 18:57:05.000')
-    
+
     Returns CSV file content as string with optional filename from response header.
     """,
 )
@@ -4315,14 +4315,14 @@ async def _download_single_attachment(
     summary="Batch download test logs (TXT, CSV, or both)",
     description="""
     Downloads multiple test logs in a single request, packaging them into a zip archive.
-    
+
     **Download Types**:
     - `txt`: Download TXT attachments only
-    - `csv`: Download CSV test logs only  
+    - `csv`: Download CSV test logs only
     - `all`: Download both TXT and CSV logs (default)
-    
+
     **Performance**: Uses parallel requests for faster downloads.
-    
+
     **Returns**: Base64-encoded zip file containing all requested logs.
     """,
 )
@@ -4455,7 +4455,7 @@ async def batch_download(
     summary="Verify token access for site/project",
     description="""
     Verifies that the provided token has access to the specified site/project.
-    
+
     This is useful for validating user-provided tokens before making other requests.
     """,
 )
@@ -4504,17 +4504,17 @@ async def verify_access(
     summary="Get test items by ISN from iPLAS (cross-station search)",
     description="""
     Searches for an ISN across all related test stations within a date range.
-    
+
     This is more flexible than the /isn_search` endpoint because it:
     - Supports date range filtering (begin_time/end_time)
     - Can filter by specific station or device
     - Returns test items from ALL stations that processed this ISN
-    
+
     **Use Cases:**
     - Track a DUT through the entire production flow
     - Find all test records for a specific serial number
     - Compare test results across different stations for the same ISN
-    
+
     **Cache TTL**: 5 minutes
     """,
 )
@@ -4649,15 +4649,15 @@ async def get_test_item_by_isn(
     summary="Stream CSV test items as NDJSON",
     description="""
     Streams test item data as newline-delimited JSON (NDJSON) for reduced memory usage.
-    
+
     Benefits:
     - Frontend can process records as they arrive (progressive rendering)
     - Reduced peak memory usage on both backend and frontend
     - Better UX for large datasets (users see data immediately)
-    
+
     Response format: One JSON object per line, each line is a complete record.
     Content-Type: application/x-ndjson
-    
+
     Use this endpoint when fetching large datasets (1000+ records) to avoid
     loading everything into memory at once.
     """,
@@ -4815,10 +4815,10 @@ async def stream_csv_test_items(
     summary="Export selected test items to CSV or XLSX",
     description="""
     Export selected test items from multiple records to a CSV or XLSX file.
-    
+
     For XLSX format, records are grouped by station into separate sheets.
     The output format uses a transposed layout where each record is a column:
-    
+
     ```
     TEST,STATUS,UCL,LCL,VALUE
     ISN,,,,,"Record1_ISN","Record2_ISN",...
@@ -4827,7 +4827,7 @@ async def stream_csv_test_items(
     TestItem1,PASS,UCL_VAL,LCL_VAL,Value1,Value2,...
     TestItem2,FAIL,UCL_VAL,LCL_VAL,Value1,Value2,...
     ```
-    
+
     Returns base64-encoded file content for browser download.
     """,
 )

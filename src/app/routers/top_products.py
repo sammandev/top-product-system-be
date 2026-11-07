@@ -565,7 +565,7 @@ async def create_top_product(
         logger.error(f"Error creating top product: {e}", exc_info=True)
         from fastapi import HTTPException
 
-        raise HTTPException(status_code=500, detail=f"Failed to create top product: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create top product: {str(e)}") from e
 
 
 @router.post(
@@ -644,7 +644,7 @@ async def create_top_products_bulk(
         logger.error(f"Error creating top products in bulk: {e}", exc_info=True)
         from fastapi import HTTPException
 
-        raise HTTPException(status_code=500, detail=f"Failed to create top products: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create top products: {str(e)}") from e
 
 
 @router.delete(

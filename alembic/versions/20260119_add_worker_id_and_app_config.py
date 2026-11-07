@@ -5,8 +5,9 @@ Revises: ce0545504c00
 Create Date: 2026-01-19
 """
 
-from alembic import op
 import sqlalchemy as sa
+
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "8f24c7d7c2b1"
@@ -27,7 +28,7 @@ def upgrade() -> None:
             GROUP BY LOWER(username)
         )
     """)
-    
+
     # Now lowercase all remaining usernames
     op.execute("UPDATE users SET username = LOWER(username) WHERE username != LOWER(username)")
 
